@@ -1,0 +1,6 @@
+- insert:
+    # Browser discovery requires one root package row; it is otherwise inert.
+    - id: dsh-config-client
+      name: dsh-config
+    - id: dsh-config-usage-api
+      name: dsh-config/usage-api
