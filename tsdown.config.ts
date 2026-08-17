@@ -4,7 +4,7 @@ const clientExternals = ["react", "react/jsx-runtime"];
 
 export default defineConfig([
   {
-    entry: { index: "src/index.ts", "usage-api": "src/usage-api.ts" },
+    entry: { index: "src/index.ts", "usage-api": "src/usage-api.ts", "approval-review": "src/approval-review.ts" },
     dts: true,
     fixedExtension: false,
     format: "esm",

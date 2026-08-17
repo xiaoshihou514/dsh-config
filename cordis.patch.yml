@@ -4,3 +4,5 @@
       name: dsh-config
     - id: dsh-config-usage-api
       name: dsh-config/usage-api
+    - id: dsh-config-approval-review
+      name: dsh-config/approval-review
