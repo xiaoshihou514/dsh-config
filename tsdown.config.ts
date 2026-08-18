@@ -9,7 +9,8 @@ export default defineConfig([
       "usage-api": "src/usage-api.ts",
       "approval-review": "src/approval-review.ts",
       opencode: "src/opencode-provider.ts",
-      "codex-provider": "src/codex-provider.ts"
+      "codex-provider": "src/codex-provider.ts",
+      "inject-once": "src/inject-once.ts"
     },
     dts: true,
     fixedExtension: false,

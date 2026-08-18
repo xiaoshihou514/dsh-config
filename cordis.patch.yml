@@ -10,3 +10,5 @@
       name: dsh-config/opencode
     - id: dsh-config-codex-provider
       name: dsh-config/codex-provider
+    - id: dsh-config-inject-once
+      name: dsh-config/inject-once
