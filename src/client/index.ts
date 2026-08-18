@@ -10,6 +10,7 @@ import type { ClientContext } from "@deepseek-ai/dsh-client-runtime/client";
 import { UsageTrigger } from "./UsageTrigger.tsx";
 import { AutoApproveToggle } from "./AutoApproveToggle.tsx";
 import { ApprovalReviewCard, type ApprovalReviewCardInjected, type ApprovalReviewSettings } from "./ApprovalReviewCard.tsx";
+import { CodexLoginCard } from "./CodexLoginCard.tsx";
 
 export const inject = ["slots", "connection", "settingsScope"];
 
@@ -46,5 +47,14 @@ export function apply(ctx: ClientContext): void {
       inject: approvalInjected
     },
     ApprovalReviewCard
+  ));
+  ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
+    {
+      name: "settings.plugin.item",
+      id: "dsh-config-codex-login",
+      order: 45,
+      inject: () => ({})
+    },
+    CodexLoginCard
   ));
 }

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, readFile, rename, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { OAuthAuth, OAuthCredential } from '@earendil-works/pi-ai'
 
 interface CodexAuthFile {
@@ -65,17 +65,35 @@ function credentials(auth: CodexAuthFile): OAuthCredential {
   return { type: 'oauth', access, refresh, expires: expiresAt(access) }
 }
 
-async function saveRefreshed(path: string, auth: CodexAuthFile, next: OAuthCredential): Promise<void> {
+export async function hasCodexSubscription(path = codexAuthFile()): Promise<boolean> {
+  try {
+    credentials(await readAuth(path))
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function saveCodexCredentials(path: string, next: OAuthCredential): Promise<void> {
+  let auth: CodexAuthFile = {}
+  try {
+    auth = await readAuth(path)
+  } catch (error) {
+    if ((error as { cause?: NodeJS.ErrnoException }).cause?.code !== 'ENOENT') throw error
+  }
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`
   const updated: CodexAuthFile = {
     ...auth,
+    auth_mode: 'chatgpt',
     last_refresh: new Date().toISOString(),
     tokens: {
       ...auth.tokens,
       access_token: next.access,
       refresh_token: next.refresh,
+      ...typeof next.accountId === 'string' ? { account_id: next.accountId } : {},
     },
   }
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   await writeFile(temporary, `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 })
   await chmod(temporary, 0o600)
   await rename(temporary, path)
@@ -87,7 +105,7 @@ async function resolveToken(oauth: OAuthAuth, path: string, now: () => number): 
   if (current.expires > now() + REFRESH_EARLY_MS) return current.access
 
   const refreshed = await oauth.refresh(current)
-  await saveRefreshed(path, auth, refreshed)
+  await saveCodexCredentials(path, refreshed)
   return refreshed.access
 }
 

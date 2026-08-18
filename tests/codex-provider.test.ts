@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { OAuthAuth, OAuthCredential } from '@earendil-works/pi-ai'
 import { describe, expect, it, vi } from 'vitest'
 import { codexSubscriptionAccessToken } from '../src/codex-auth.ts'
-import { createCodexAdapter, PROVIDER } from '../src/codex-provider.ts'
+import { CodexLoginManager, createCodexAdapter, PROVIDER } from '../src/codex-provider.ts'
 
 function token(exp: number): string {
   return `header.${Buffer.from(JSON.stringify({ exp })).toString('base64url')}.signature`
@@ -64,5 +64,28 @@ describe('Codex 订阅提供方', () => {
     const models = await createCodexAdapter().listModels(PROVIDER)
     expect(models.length).toBeGreaterThan(0)
     expect(models.every(model => model.provider === PROVIDER)).toBe(true)
+  })
+
+  it('可在 DSH 内发起 OAuth 并保存登录凭据', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-codex-login-'))
+    const authFile = join(root, 'auth.json')
+    const next: OAuthCredential = {
+      type: 'oauth', access: token(3_000), refresh: 'new', expires: 3_000_000, accountId: 'account',
+    }
+    const loginOAuth = oauth(async credential => credential)
+    loginOAuth.login = async (interaction) => {
+      expect(await interaction.prompt({ type: 'select', message: '方式', options: [] })).toBe('browser')
+      interaction.notify({ type: 'auth_url', url: 'https://auth.openai.com/test' })
+      return next
+    }
+    const manager = new CodexLoginManager(loginOAuth, authFile)
+
+    await expect(manager.start()).resolves.toMatchObject({ state: 'pending', url: 'https://auth.openai.com/test' })
+    await vi.waitFor(() => expect(manager.status()).toEqual({ state: 'success' }))
+    const saved = JSON.parse(await readFile(authFile, 'utf8')) as Record<string, any>
+    expect(saved).toMatchObject({
+      auth_mode: 'chatgpt',
+      tokens: { access_token: next.access, refresh_token: next.refresh, account_id: 'account' },
+    })
   })
 })

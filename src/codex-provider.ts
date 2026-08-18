@@ -1,14 +1,109 @@
 import type { Context } from '@deepseek-ai/cordis'
+import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
-import { codexSubscriptionAccessToken } from './codex-auth.ts'
+import type { AuthInteraction, OAuthAuth, OAuthCredential } from '@earendil-works/pi-ai'
+import { codexAuthFile, codexSubscriptionAccessToken, hasCodexSubscription, saveCodexCredentials } from './codex-auth.ts'
 
 export const name = 'dsh-config-codex-provider'
-export const inject = ['llm']
+export const inject = ['llm', 'webServer']
 
 export const PROVIDER = 'openai-codex'
+const LOGIN_ROUTE = '/dsh-config/codex-login'
+const LOGIN_HEADER = 'x-dsh-config'
+const LOGIN_HEADER_VALUE = 'codex-login'
+
+export type CodexLoginStatus =
+  | { state: 'idle' }
+  | { state: 'pending'; url?: string }
+  | { state: 'success' }
+  | { state: 'error'; message: string }
+
+export class CodexLoginManager {
+  private value: CodexLoginStatus = { state: 'idle' }
+  private controller: AbortController | undefined
+
+  constructor(
+    private readonly oauth: OAuthAuth,
+    private readonly authFile = codexAuthFile(),
+  ) {}
+
+  status(): CodexLoginStatus {
+    return this.value
+  }
+
+  async currentStatus(): Promise<CodexLoginStatus> {
+    if (this.value.state === 'idle' && await hasCodexSubscription(this.authFile)) {
+      this.value = { state: 'success' }
+    }
+    return this.value
+  }
+
+  async start(): Promise<CodexLoginStatus> {
+    this.cancel()
+    const controller = new AbortController()
+    this.controller = controller
+    this.value = { state: 'pending' }
+    let reveal: (() => void) | undefined
+    const revealed = new Promise<void>((resolve) => { reveal = resolve })
+    const interaction: AuthInteraction = {
+      signal: controller.signal,
+      prompt: async (prompt) => {
+        if (prompt.type === 'select') return 'browser'
+        return new Promise<string>((_resolve, reject) => {
+          const signal = prompt.signal ?? controller.signal
+          if (signal.aborted) {
+            reject(new Error('登录已取消'))
+            return
+          }
+          signal.addEventListener('abort', () => reject(new Error('登录已取消')), { once: true })
+        })
+      },
+      notify: (event) => {
+        if (event.type !== 'auth_url') return
+        this.value = { state: 'pending', url: event.url }
+        reveal?.()
+      },
+    }
+    const run = this.oauth.login(interaction).then(async (credential: OAuthCredential) => {
+      if (this.controller !== controller) return
+      await saveCodexCredentials(this.authFile, credential)
+      this.value = { state: 'success' }
+      reveal?.()
+    }).catch((error: unknown) => {
+      if (this.controller !== controller) return
+      if (controller.signal.aborted) {
+        this.value = { state: 'idle' }
+      } else {
+        const detail = error instanceof Error ? error.message : String(error)
+        this.value = { state: 'error', message: `登录失败：${detail}` }
+      }
+      reveal?.()
+    }).finally(() => {
+      if (this.controller === controller) this.controller = undefined
+    })
+    void run
+    await revealed
+    return this.value
+  }
+
+  cancel(): void {
+    this.controller?.abort()
+    this.controller = undefined
+    if (this.value.state === 'pending') this.value = { state: 'idle' }
+  }
+}
+
+function writeJson(response: Parameters<WebRoute['handler']>[1], status: number, body: unknown): void {
+  response.writeHead(status, {
+    'cache-control': 'no-store',
+    'content-type': 'application/json; charset=utf-8',
+    'x-content-type-options': 'nosniff',
+  })
+  response.end(JSON.stringify(body))
+}
 
 export function createCodexAdapter(): PiAiAdapter {
   const catalogProvider = openaiCodexProvider()
@@ -48,5 +143,35 @@ export function createCodexAdapter(): PiAiAdapter {
 }
 
 export function apply(ctx: Context): void {
+  const catalogProvider = openaiCodexProvider()
+  const oauth = catalogProvider.auth.oauth
+  if (oauth === undefined) throw new Error('Codex 模型提供方没有提供订阅登录能力')
+  const login = new CodexLoginManager(oauth)
   ctx.llm.registerAdapter([PROVIDER], createCodexAdapter())
+  const route: WebRoute = {
+    kind: 'exact',
+    path: LOGIN_ROUTE,
+    handler: async (request, response) => {
+      if (request.headers[LOGIN_HEADER] !== LOGIN_HEADER_VALUE) {
+        response.writeHead(403).end()
+        return
+      }
+      if (request.method === 'GET') {
+        writeJson(response, 200, { ok: true, ...await login.currentStatus() })
+        return
+      }
+      if (request.method === 'POST') {
+        const status = await login.start()
+        writeJson(response, status.state === 'error' ? 500 : 200, { ok: status.state !== 'error', ...status })
+        return
+      }
+      if (request.method === 'DELETE') {
+        login.cancel()
+        writeJson(response, 200, { ok: true, state: 'idle' })
+        return
+      }
+      response.writeHead(405, { allow: 'GET, POST, DELETE' }).end()
+    },
+  }
+  ctx.effect(() => ctx.webServer.register(route), 'dsh-config: Codex 订阅登录')
 }
