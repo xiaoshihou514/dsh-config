@@ -90,8 +90,22 @@ export function apply(ctx: Context): void {
   const headers = new WeakMap<object, Header>();
   const pending = new Map<string, UsageRecord>();
   const path = dataPath();
-  let file = load(path);
+  // 内存态即权威（写队列只落后毫秒级）：读取不等待写队列，避免被磁盘保存卡住。
+  let file = load(path).then((loaded) => {
+    refreshCache(loaded);
+    return loaded;
+  });
   let writes = Promise.resolve();
+  // 惰性序列化缓存：数据变化时置空，仅在被请求时才重新 stringify；
+  // etag 为「条数:末条 id」，空闲轮询直接 304，零 payload。
+  let serialized: string | null = null;
+  let etag = "";
+
+  const refreshCache = (next: UsageFile): void => {
+    const last = next.records[next.records.length - 1];
+    etag = `${next.records.length}:${last?.id ?? ""}`;
+    serialized = null;
+  };
 
   const account = (session: { id: string; header: { cwd?: string } }, event: SessionEvent): void => {
     if (event.type === "request/header") {
@@ -133,6 +147,7 @@ export function apply(ctx: Context): void {
       else next.records.push(record);
       pending.delete(id);
       file = Promise.resolve(next);
+      refreshCache(next);
       await save(path, next);
     }).catch((error: unknown) => {
       ctx.logger("dsh-config").warn("无法保存 Token 用量：%s", error instanceof Error ? error.message : String(error));
@@ -152,14 +167,21 @@ export function apply(ctx: Context): void {
         response.writeHead(405).end();
         return;
       }
-      await writes;
+      if (etag !== "" && request.headers["if-none-match"] === etag) {
+        response.writeHead(304).end();
+        return;
+      }
       const current = await file;
+      if (serialized === null) {
+        serialized = JSON.stringify({ ok: true, records: current.records });
+      }
       response.writeHead(200, {
         "cache-control": "no-store",
         "content-type": "application/json; charset=utf-8",
-        "x-content-type-options": "nosniff"
+        "x-content-type-options": "nosniff",
+        etag
       });
-      response.end(JSON.stringify({ ok: true, records: current.records }));
+      response.end(serialized);
     }
   };
   ctx.effect(() => ctx.webServer.register(route), "dsh-config: token calendar API");

@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
 // Type-only: pulls the ctx.approval / approval/request merge.
 import type { ApprovalOutcome, ApprovalRequest } from "@deepseek-ai/dsh-user-approval";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
@@ -85,6 +86,8 @@ interface ReviewRecord {
   mode: string
   justification: string
   verdict: Verdict | "SKIPPED"
+  /** The reviewer endpoint's HTTP status when it answered; absent on network failure. */
+  status?: number
   latencyMs: number
 }
 
@@ -161,39 +164,68 @@ async function resolveKey(ctx: Context): Promise<string | undefined> {
   return resolved?.value;
 }
 
-async function review(config: Config, key: string, toolName: string, mode: string, justification: string, argumentsText: string): Promise<Verdict> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.timeoutMs ?? 8_000);
-  try {
-    const response = await fetch(config.baseUrl ?? DEFAULT_BASE_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model: config.model ?? DEFAULT_MODEL,
-        temperature: 0,
-        max_tokens: 8,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: JSON.stringify({
-            tool: toolName,
-            requestedMode: mode,
-            justification,
-            arguments: argumentsText.slice(0, config.maxArgumentsChars ?? 4_000),
-          }) },
-        ],
-      }),
-      signal: controller.signal,
-    });
-    if (!response.ok) return "UNCERTAIN";
-    const payload = await response.json() as { choices?: { message?: { content?: string } }[] };
-    const content = payload.choices?.[0]?.message?.content;
-    const verdict = content?.trim().split(/\s+/)[0]?.toUpperCase();
-    return verdict === "ALLOW" || verdict === "DENY" ? verdict : "UNCERTAIN";
-  } catch {
-    return "UNCERTAIN";
-  } finally {
-    clearTimeout(timer);
+/** One review attempt outcome, with the HTTP status when the endpoint answered. */
+interface ReviewResult {
+  verdict: Verdict;
+  status?: number;
+}
+
+const MAX_ATTEMPTS = 3;
+const RETRY_BASE_MS = 250;
+/** 指数退避：第 n 次重试前等待 RETRY_BASE_MS * 2^(n-1)（250 / 500 / 1000 …）。 */
+const retryDelay = (attempt: number): number => RETRY_BASE_MS * 2 ** (attempt - 1);
+
+async function review(config: Config, key: string, toolName: string, mode: string, justification: string, argumentsText: string): Promise<ReviewResult> {
+  let lastStatus: number | undefined;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), config.timeoutMs ?? 8_000);
+    try {
+      const response = await fetch(config.baseUrl ?? DEFAULT_BASE_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+        body: JSON.stringify({
+          model: config.model ?? DEFAULT_MODEL,
+          temperature: 0,
+          max_tokens: 8,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: JSON.stringify({
+              tool: toolName,
+              requestedMode: mode,
+              justification,
+              arguments: argumentsText.slice(0, config.maxArgumentsChars ?? 4_000),
+            }) },
+          ],
+        }),
+        signal: controller.signal,
+      });
+      lastStatus = response.status;
+      // 免费档常见 429（访问量过大）：指数退避重试，仍失败按 UNCERTAIN 交还用户。
+      if (response.status === 429 || response.status >= 500) {
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelay(attempt)));
+          continue;
+        }
+        return { verdict: "UNCERTAIN", ...lastStatus !== undefined ? { status: lastStatus } : {} };
+      }
+      if (!response.ok) return { verdict: "UNCERTAIN", ...lastStatus !== undefined ? { status: lastStatus } : {} };
+      const payload = await response.json() as { choices?: { message?: { content?: string } }[] };
+      const content = payload.choices?.[0]?.message?.content;
+      const verdict = content?.trim().split(/\s+/)[0]?.toUpperCase();
+      return { verdict: verdict === "ALLOW" || verdict === "DENY" ? verdict : "UNCERTAIN", ...lastStatus !== undefined ? { status: lastStatus } : {} };
+    } catch {
+      // 网络错误同样指数退避重试。
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelay(attempt)));
+        continue;
+      }
+      return { verdict: "UNCERTAIN", ...lastStatus !== undefined ? { status: lastStatus } : {} };
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  return { verdict: "UNCERTAIN", ...lastStatus !== undefined ? { status: lastStatus } : {} };
 }
 
 async function appendRecord(ctx: Context, record: ReviewRecord): Promise<void> {
@@ -280,20 +312,42 @@ export function apply(ctx: Context, config: Config): void {
     },
   };
 
+  // 审查器尝试过但没能自动放行时，往对话注入一条插件来源的说明（user-approval
+  // 切换策略时的同款做法：会话日志有记录、对话可见、模型可读）。
+  const notify = (req: ApprovalRequest, text: string): void => {
+    try {
+      req.agent.inject(createUserMessage({
+        content: [{ type: "text", text }],
+        source: { kind: "plugin", plugin: "dsh-config" },
+      }));
+    } catch (error) {
+      ctx.logger("dsh-config").warn("自动审批通知注入失败：%s", error instanceof Error ? error.message : String(error));
+    }
+  };
+
   ctx.on("approval/request", async (req: ApprovalRequest, next: () => Promise<ApprovalOutcome>): Promise<ApprovalOutcome> => {
     try {
       if (toggles.get(req.agent.session.id) !== true) return next();
       if (req.reason === undefined || !req.reason.startsWith("escalate sandbox to")) return next();
       const parsed = parseReason(req.reason);
       if (parsed === undefined || parsed.mode === "") return next();
-      if (parsed.mode === "danger-full-access" && config.allowDangerFullAccess === false) return next();
+      if (parsed.mode === "danger-full-access" && config.allowDangerFullAccess === false) {
+        notify(req, "已配置不允许自动放行完全访问，已转人工审批。");
+        return next();
+      }
       const argumentsText = findToolArguments(req);
       if (argumentsText === undefined) return next();
-      if (DENYLIST.some((pattern) => pattern.test(argumentsText) || pattern.test(parsed.justification))) return next();
+      if (DENYLIST.some((pattern) => pattern.test(argumentsText) || pattern.test(parsed.justification))) {
+        notify(req, "该操作命中危险命令黑名单，已转人工审批。");
+        return next();
+      }
       const key = await resolveKey(ctx);
-      if (key === undefined) return next();
+      if (key === undefined) {
+        notify(req, "未配置智谱 API Key，自动审批不可用，已转人工审批。");
+        return next();
+      }
       const started = Date.now();
-      const verdict = await review(config, key, req.toolName, parsed.mode, parsed.justification, argumentsText);
+      const result = await review(config, key, req.toolName, parsed.mode, parsed.justification, argumentsText);
       await appendRecord(ctx, {
         time: started,
         sessionId: req.agent.session.id,
@@ -301,10 +355,20 @@ export function apply(ctx: Context, config: Config): void {
         toolName: req.toolName,
         mode: parsed.mode,
         justification: parsed.justification,
-        verdict,
+        verdict: result.verdict,
+        ...result.status !== undefined ? { status: result.status } : {},
         latencyMs: Date.now() - started,
       });
-      return verdict === "ALLOW" ? "allowed-once" : next();
+      if (result.verdict === "ALLOW") return "allowed-once";
+      if (result.status === undefined || result.status >= 400) {
+        const detail = result.status !== undefined ? `（HTTP ${result.status}）` : "（网络/超时）";
+        notify(req, `自动审批暂不可用：智谱模型限流/请求失败${detail}，已转人工审批。`);
+      } else if (result.verdict === "DENY") {
+        notify(req, "AI 审核判定该操作不安全，已转人工确认。");
+      } else {
+        notify(req, "AI 审核结果不明确，已转人工审批。");
+      }
+      return next();
     } catch (error) {
       ctx.logger("dsh-config").warn("自动审批审查失败，交还用户：%s", error instanceof Error ? error.message : String(error));
       return next();

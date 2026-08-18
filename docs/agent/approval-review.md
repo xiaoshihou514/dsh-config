@@ -43,4 +43,19 @@
 
 - 客户端（开关按钮、卡片）随 bundle 热更新，刷新即见。
 - 宿主插件行是 bundle patch 新增，**需要重启 dsh web** 才挂载（路由 + 审查器）；重启后开关才真正生效。
-- 审查记录：`$DSH_HOME/dsh-config/approval-review.jsonl`（JSONL，含会话、callId、目标模式、justification、结论、耗时）。
+- 审查记录：`$DSH_HOME/dsh-config/approval-review.jsonl`（JSONL，含会话、callId、目标模式、justification、结论、状态码、耗时）。
+
+## 失败告知（对话记录）
+
+审查器**尝试过但没能自动放行**时，向会话注入一条插件来源的 user 消息（`agent.inject(createUserMessage)`，与 user-approval 策略切换通知同款做法——会话日志有记录、对话可见、模型可读）：
+
+| 场景 | 对话文案 |
+| --- | --- |
+| 智谱请求失败（429/5xx/超时/网络） | 自动审批暂不可用：智谱模型限流/请求失败（HTTP xxx），已转人工审批 |
+| AI 结论 DENY | AI 审核判定该操作不安全，已转人工确认 |
+| AI 结论 UNCERTAIN（请求正常） | AI 审核结果不明确，已转人工审批 |
+| 命中危险命令黑名单 | 该操作命中危险命令黑名单，已转人工审批 |
+| 未配置智谱 Key | 未配置智谱 API Key，自动审批不可用，已转人工审批 |
+| allowDangerFullAccess=false 且目标为完全访问 | 已配置不允许自动放行完全访问，已转人工审批 |
+
+不注入的情况：开关未开启、非提权请求（正常路径，与原来一致）。注入失败不影响审批流程（try/catch 兜底）。

@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  IconDataOutline16, IconGoalOutline16, IconListPenOutline16,
+  IconDataOutline16, IconListPenOutline16,
   IconRightUpOutline16, IconSparkle16
 } from "./icons.tsx";
 
@@ -95,15 +95,6 @@ function dayStart(time: number): number {
 function mondayOf(time: number): number {
   const date = new Date(dayStart(time));
   date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
-  return date.getTime();
-}
-
-function bucketStart(time: number, view: View): number {
-  if (view === "day") return dayStart(time);
-  if (view === "week") return mondayOf(time);
-  const date = new Date(time);
-  date.setHours(0, 0, 0, 0);
-  date.setDate(1);
   return date.getTime();
 }
 
@@ -202,6 +193,8 @@ function Summary({ label: title, value, hint }: { label: string; value: string; 
 interface DayCell {
   at: number;
   records: RecordItem[];
+  tokens: number;
+  cost: number;
   future: boolean;
 }
 
@@ -218,15 +211,28 @@ export function UsageSection() {
   const [selected, setSelected] = useState<Bucket | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const etagRef = useRef<string | null>(null);
 
   useEffect(() => {
     let stale = false;
     const refresh = async () => {
       try {
-        const response = await fetch("/dsh-config/usage", { headers: { "x-dsh-config": "usage-calendar" } });
+        const headers: Record<string, string> = { "x-dsh-config": "usage-calendar" };
+        if (etagRef.current !== null) headers["if-none-match"] = etagRef.current;
+        const response = await fetch("/dsh-config/usage", { headers });
+        // 304：数据未变，跳过解析与重渲染。
+        if (response.status === 304) {
+          if (!stale) { setError(null); setLoading(false); }
+          return;
+        }
         const payload = await response.json() as { ok?: boolean; records?: RecordItem[] };
         if (!response.ok || !payload.ok || !Array.isArray(payload.records)) throw new Error("读取用量数据失败");
-        if (!stale) { setRecords(payload.records); setError(null); }
+        const nextEtag = response.headers.get("etag");
+        if (!stale) {
+          if (nextEtag !== null) etagRef.current = nextEtag;
+          setRecords(payload.records);
+          setError(null);
+        }
       } catch {
         if (!stale) setError("暂时无法读取用量数据，请确认 dsh-config 已完整加载。");
       } finally {
@@ -248,6 +254,24 @@ export function UsageSection() {
   const todayStart = useMemo(() => dayStart(Date.now()), []);
   const thisMonday = useMemo(() => mondayOf(todayStart), [todayStart]);
 
+  // 一次遍历建立「日 → 记录/汇总」索引：格子与周/月分桶全部 O(1) 查表，
+  // 替代原先每个格子对全部记录 filter（records × 364 次扫描）。
+  const byDay = useMemo(() => {
+    const map = new Map<number, { records: RecordItem[]; tokens: number; cost: number }>();
+    for (const record of filtered) {
+      const at = dayStart(record.at);
+      let entry = map.get(at);
+      if (entry === undefined) {
+        entry = { records: [], tokens: 0, cost: 0 };
+        map.set(at, entry);
+      }
+      entry.records.push(record);
+      entry.tokens += record.inputTokens + record.outputTokens + record.cacheReadTokens + record.cacheWriteTokens;
+      entry.cost += costOf(record);
+    }
+    return map;
+  }, [filtered]);
+
   const dayWeeks = useMemo(() => {
     const weeks: { start: number; days: DayCell[] }[] = [];
     for (let week = 51; week >= 0; week -= 1) {
@@ -255,21 +279,26 @@ export function UsageSection() {
       const days: DayCell[] = [];
       for (let offset = 0; offset < 7; offset += 1) {
         const at = start + offset * DAY;
-        days.push({ at, future: at > todayStart, records: filtered.filter((record) => dayStart(record.at) === at) });
+        const entry = byDay.get(at);
+        days.push({ at, future: at > todayStart, records: entry?.records ?? [], tokens: entry?.tokens ?? 0, cost: entry?.cost ?? 0 });
       }
       weeks.push({ start, days });
     }
     return weeks;
-  }, [filtered, thisMonday, todayStart]);
+  }, [byDay, thisMonday, todayStart]);
 
   const weekBuckets = useMemo(() => {
     const buckets: Bucket[] = [];
     for (let week = 15; week >= 0; week -= 1) {
       const start = thisMonday - week * 7 * DAY;
-      buckets.push({ start, records: filtered.filter((record) => bucketStart(record.at, "week") === start) });
+      const records: RecordItem[] = [];
+      for (const [at, entry] of byDay) {
+        if (at >= start && at < start + 7 * DAY) records.push(...entry.records);
+      }
+      buckets.push({ start, records });
     }
     return buckets;
-  }, [filtered, thisMonday]);
+  }, [byDay, thisMonday]);
 
   const monthBuckets = useMemo(() => {
     const now = new Date(todayStart);
@@ -278,10 +307,15 @@ export function UsageSection() {
     for (let offset = 11; offset >= 0; offset -= 1) {
       const total = anchor - offset;
       const start = new Date(Math.floor(total / 12), total % 12, 1).getTime();
-      buckets.push({ start, records: filtered.filter((record) => bucketStart(record.at, "month") === start) });
+      const end = new Date(Math.floor(total / 12), (total % 12) + 1, 1).getTime();
+      const records: RecordItem[] = [];
+      for (const [at, entry] of byDay) {
+        if (at >= start && at < end) records.push(...entry.records);
+      }
+      buckets.push({ start, records });
     }
     return buckets;
-  }, [filtered, todayStart]);
+  }, [byDay, todayStart]);
 
   const displayed = useMemo(() => view === "day"
     ? dayWeeks.flatMap((week) => week.days).flatMap((day) => day.records)
@@ -308,19 +342,22 @@ export function UsageSection() {
     };
   }, [filtered]);
 
-  const dayMaximum = useMemo(() => Math.max(...dayWeeks.flatMap((week) => week.days).map((day) => tokensOf(day.records)), 0), [dayWeeks]);
+  const dayMaximum = useMemo(() => Math.max(...dayWeeks.flatMap((week) => week.days).map((day) => day.tokens), 0), [dayWeeks]);
   const weekMaximum = useMemo(() => Math.max(...weekBuckets.map((bucket) => tokensOf(bucket.records)), 0), [weekBuckets]);
   const monthMaximum = useMemo(() => Math.max(...monthBuckets.map((bucket) => tokensOf(bucket.records)), 0), [monthBuckets]);
 
   const dayMonthLabels = useMemo(() => {
-    const labels: { left: number; text: string }[] = [];
+    const labels: { left: number; text: string; index: number }[] = [];
     dayWeeks.forEach((week, index) => {
       const text = monthLabelFor(week.start);
       if (text !== undefined || index === 0) {
-        labels.push({ left: Math.min((index / 52) * 100, 94), text: text ?? `${new Date(week.start).getMonth() + 1}月` });
+        labels.push({ left: Math.min((index / 52) * 100, 94), text: text ?? `${new Date(week.start).getMonth() + 1}月`, index });
       }
     });
-    return labels;
+    // 首列的强制标签与紧邻的月份起始标签间距不足一个标签宽时会重叠
+    // （渲染成「8月月」）：间隔 ≤1 列就去掉强制标签。
+    if (labels.length >= 2 && (labels[1]?.index ?? 0) - (labels[0]?.index ?? 0) <= 1) labels.shift();
+    return labels.map(({ left, text }) => ({ left, text }));
   }, [dayWeeks]);
 
   const weekMonthLabels = useMemo(() => {
@@ -339,19 +376,9 @@ export function UsageSection() {
     return labels;
   }, [weekBuckets]);
 
-  const rows = useMemo(() => {
-    if (selected === null) return [];
-    const map = new Map<string, { project: string; calls: number; tokens: number; cost: number }>();
-    for (const record of selected.records) {
-      const entry = map.get(record.project) ?? { project: record.project, calls: 0, tokens: 0, cost: 0 };
-      entry.calls += 1;
-      entry.tokens += record.inputTokens + record.outputTokens + record.cacheReadTokens + record.cacheWriteTokens;
-      entry.cost += costOf(record);
-      map.set(record.project, entry);
-    }
-    return Array.from(map.values()).sort((a, b) => b.tokens - a.tokens);
-  }, [selected]);
   const selectedTotals = useMemo(() => selected === null ? null : total(selected.records), [selected]);
+  // 选中色块时下方汇总显示该时段数据，否则显示当前视图区间。
+  const shown = selectedTotals ?? totals;
 
   const switchView = (next: View) => { setView(next); setSelected(null); };
 
@@ -385,8 +412,9 @@ export function UsageSection() {
       <Metric icon={<IconDataOutline16 size={16} />} value={number(metrics.tokens)} label="累计 Token 数" />
       <Metric icon={<IconRightUpOutline16 size={16} />} value={number(metrics.peakDay)} label="单日峰值 Token" />
       <Metric icon={<IconListPenOutline16 size={16} />} value={money(metrics.cost)} label="累计费用" />
-      <Metric icon={<IconSparkle16 size={16} />} value={`${metrics.current} 天`} label="当前连续天数" />
-      <Metric icon={<IconGoalOutline16 size={16} />} value={`${metrics.longest} 天`} label="最长连续天数" />
+      <div title={`当前连续 ${metrics.current} 天 · 最长连续 ${metrics.longest} 天`} style={{ flex: "none", width: 44, height: 44, display: "grid", placeItems: "center", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 10, background: "var(--dsw-alias-bg-layer-2)", color: "var(--dsw-alias-label-tertiary)", cursor: "help" }}>
+        <IconSparkle16 size={18} />
+      </div>
     </div>
 
     <div style={{ marginTop: 18, border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 12, background: "var(--dsw-alias-bg-layer-3)", padding: "16px 16px 14px" }}>
@@ -404,10 +432,11 @@ export function UsageSection() {
           </div>
           {dayWeeks.map((week) => <div key={week.start} style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: DAY_GAP }}>
             {week.days.map((day) => {
-              const tokens = tokensOf(day.records);
+              const tokens = day.tokens;
               const level = levelOf(tokens, dayMaximum);
-              const interactive = !day.future && day.records.length > 0;
-              return <button key={day.at} type="button" disabled={!interactive} title={interactive ? `${fullLabel(day.at, "day")}：${number(tokens)} Token，${money(total(day.records).cost)}` : undefined} onClick={() => setSelected({ start: day.at, records: day.records })} style={{ width: "100%", height: DAY_CELL, borderRadius: 3, border: 0, padding: 0, background: cellColor(level), cursor: interactive ? "pointer" : "default", opacity: day.future ? 0.35 : 1 }} />;
+              // 过去日期都可点（空块点开显示「该时段暂无用量记录」），仅未来不可点。
+              const interactive = !day.future;
+              return <button key={day.at} type="button" disabled={!interactive} title={`${fullLabel(day.at, "day")}：${number(tokens)} Token，${money(day.cost)}`} onClick={() => setSelected({ start: day.at, records: day.records })} style={{ width: "100%", height: DAY_CELL, borderRadius: 3, border: 0, padding: 0, background: cellColor(level), cursor: interactive ? "pointer" : "default", opacity: day.future ? 0.35 : 1, outline: selected?.start === day.at ? "2px solid var(--dsw-alias-state-business-primary)" : undefined, outlineOffset: 1 }} />;
             })}
           </div>)}
         </div>
@@ -422,8 +451,7 @@ export function UsageSection() {
             {weekBuckets.slice(column * 4, column * 4 + 4).map((bucket) => {
               const tokens = tokensOf(bucket.records);
               const level = levelOf(tokens, weekMaximum);
-              const interactive = bucket.records.length > 0;
-              return <button key={bucket.start} type="button" disabled={!interactive} title={interactive ? `${fullLabel(bucket.start, "week")}：${number(tokens)} Token，${money(total(bucket.records).cost)}` : undefined} onClick={() => setSelected({ start: bucket.start, records: bucket.records })} style={{ width: "100%", height: WEEK_CELL, borderRadius: 4, border: 0, padding: 0, background: cellColor(level), cursor: interactive ? "pointer" : "default" }} />;
+              return <button key={bucket.start} type="button" title={`${fullLabel(bucket.start, "week")}：${number(tokens)} Token，${money(total(bucket.records).cost)}`} onClick={() => setSelected({ start: bucket.start, records: bucket.records })} style={{ width: "100%", height: WEEK_CELL, borderRadius: 4, border: 0, padding: 0, background: cellColor(level), cursor: "pointer", outline: selected?.start === bucket.start ? "2px solid var(--dsw-alias-state-business-primary)" : undefined, outlineOffset: 1 }} />;
             })}
           </div>)}
         </div>
@@ -436,9 +464,8 @@ export function UsageSection() {
         {monthBuckets.map((bucket) => {
           const tokens = tokensOf(bucket.records);
           const level = levelOf(tokens, monthMaximum);
-          const interactive = bucket.records.length > 0;
           return <div key={bucket.start} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-            <button type="button" disabled={!interactive} title={interactive ? `${fullLabel(bucket.start, "month")}：${number(tokens)} Token，${money(total(bucket.records).cost)}` : undefined} onClick={() => setSelected({ start: bucket.start, records: bucket.records })} style={{ width: MONTH_CELL, height: MONTH_CELL, borderRadius: 5, border: 0, padding: 0, background: cellColor(level), cursor: interactive ? "pointer" : "default" }} />
+            <button type="button" title={`${fullLabel(bucket.start, "month")}：${number(tokens)} Token，${money(total(bucket.records).cost)}`} onClick={() => setSelected({ start: bucket.start, records: bucket.records })} style={{ width: MONTH_CELL, height: MONTH_CELL, borderRadius: 5, border: 0, padding: 0, background: cellColor(level), cursor: "pointer", outline: selected?.start === bucket.start ? "2px solid var(--dsw-alias-state-business-primary)" : undefined, outlineOffset: 1 }} />
             <span style={{ fontSize: 10, color: "var(--dsw-alias-label-tertiary)" }}>{new Date(bucket.start).getMonth() + 1}月</span>
           </div>;
         })}
@@ -450,38 +477,21 @@ export function UsageSection() {
         <span>{view === "day" ? label(dayWeeks.at(-1)?.start ?? Date.now(), "day") : view === "week" ? label(weekBuckets.at(-1)?.start ?? Date.now(), "week") : label(monthBuckets.at(-1)?.start ?? Date.now(), "month")}</span>
       </div>
 
-      {selected !== null && selectedTotals !== null ? (
-        <div style={{ marginTop: 16, borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
-            <strong style={{ fontSize: 13 }}>{fullLabel(selected.start, view)}</strong>
-            <button type="button" onClick={() => setSelected(null)} style={{ border: 0, background: "none", padding: 0, color: "var(--dsw-alias-label-tertiary)", cursor: "pointer", fontSize: 12 }}>取消选择</button>
-          </div>
-          {rows.length === 0 ? <p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>该时段暂无用量记录。</p> : <div style={{ display: "grid", gridTemplateColumns: "1fr 56px 96px 84px", gap: "6px 12px", fontSize: 12, alignItems: "baseline" }}>
-            <span style={{ color: "var(--dsw-alias-label-tertiary)" }}>项目</span>
-            <span style={{ color: "var(--dsw-alias-label-tertiary)", textAlign: "right" }}>调用</span>
-            <span style={{ color: "var(--dsw-alias-label-tertiary)", textAlign: "right" }}>Token</span>
-            <span style={{ color: "var(--dsw-alias-label-tertiary)", textAlign: "right" }}>费用</span>
-            {rows.map((row) => <Fragment key={row.project}>
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.project}</span>
-              <span style={{ textAlign: "right" }}>{row.calls}</span>
-              <span style={{ textAlign: "right" }}>{number(row.tokens)}</span>
-              <span style={{ textAlign: "right" }}>{money(row.cost)}</span>
-            </Fragment>)}
-            <span style={{ borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 6 }}>合计</span>
-            <span style={{ borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 6, textAlign: "right" }}>{selectedTotals.calls}</span>
-            <span style={{ borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 6, textAlign: "right" }}>{number(selectedTotals.input + selectedTotals.output + selectedTotals.cacheRead + selectedTotals.cacheWrite)}</span>
-            <span style={{ borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 6, textAlign: "right" }}>{money(selectedTotals.cost)}</span>
-          </div>}
-          <p style={{ margin: "8px 0 0", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>该时段 高峰 {money(selectedTotals.peakCost)} · 闲时 {money(selectedTotals.offCost)}</p>
-        </div>
-      ) : <p style={{ margin: "14px 0 0", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>点击色块查看该{view === "day" ? "日" : view === "week" ? "周" : "月"}各项目用量。</p>}
+      {selected === null ? <p style={{ margin: "14px 0 0", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>点击色块查看该{view === "day" ? "日" : view === "week" ? "周" : "月"}用量，下方汇总会同步切换。</p> : null}
     </div>
 
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, marginTop: 20, padding: "13px 0", borderTop: "1px solid var(--dsw-alias-border-l2)", borderBottom: "1px solid var(--dsw-alias-border-l2)" }}>
-      <Summary label="实际费用" value={money(totals.cost)} hint={`高峰 ${money(totals.peakCost)} · 闲时 ${money(totals.offCost)}`} />
-      <Summary label="Token 总数" value={number(totals.input + totals.cacheRead + totals.cacheWrite + totals.output)} hint={`${number(totals.calls)} 次模型调用`} />
-      <Summary label="输入 / 输出" value={`${number(totals.input + totals.cacheWrite)} / ${number(totals.output)}`} hint="未命中输入 / 输出" />
-      <Summary label="缓存命中" value={number(totals.cacheRead)} hint={`缓存写入 ${number(totals.cacheWrite)}`} />
+    {selected !== null && selectedTotals !== null ? (
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 20 }}>
+        <strong style={{ fontSize: 13 }}>{fullLabel(selected.start, view)} 合计</strong>
+        <button type="button" onClick={() => setSelected(null)} style={{ border: 0, background: "none", padding: 0, color: "var(--dsw-alias-label-tertiary)", cursor: "pointer", fontSize: 12 }}>取消选择</button>
+      </div>
+    ) : null}
+
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, marginTop: selected === null ? 20 : 12, padding: "13px 0", borderTop: "1px solid var(--dsw-alias-border-l2)", borderBottom: "1px solid var(--dsw-alias-border-l2)" }}>
+      <Summary label="实际费用" value={money(shown.cost)} hint={`高峰 ${money(shown.peakCost)} · 闲时 ${money(shown.offCost)}`} />
+      <Summary label="Token 总数" value={number(shown.input + shown.cacheRead + shown.cacheWrite + shown.output)} hint={`${number(shown.calls)} 次模型调用`} />
+      <Summary label="输入 / 输出" value={`${number(shown.input + shown.cacheWrite)} / ${number(shown.output)}`} hint="未命中输入 / 输出" />
+      <Summary label="缓存命中" value={number(shown.cacheRead)} hint={`缓存写入 ${number(shown.cacheWrite)}`} />
     </div>
 
     <p style={{ margin: "12px 0 0", color: "var(--dsw-alias-label-tertiary)", fontSize: 11, lineHeight: 1.55 }}>{loading ? "正在读取用量…" : `费用按 DeepSeek 官方 V4-Flash / V4-Pro 峰谷单价估算：高峰（北京时间 9:00-12:00、14:00-18:00）按高峰价，其余时段半价；缓存写入按未命中输入计费。全部累计 ${money(allTime.cost)}。`}</p>
