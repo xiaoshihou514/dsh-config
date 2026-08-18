@@ -8,3 +8,5 @@
       name: dsh-config/approval-review
     - id: dsh-config-opencode
       name: dsh-config/opencode
+    - id: dsh-config-codex-provider
+      name: dsh-config/codex-provider

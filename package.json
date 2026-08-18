@@ -11,6 +11,7 @@
     "./usage-api": { "types": "./lib/usage-api.d.ts", "default": "./lib/usage-api.js" },
     "./approval-review": { "types": "./lib/approval-review.d.ts", "default": "./lib/approval-review.js" },
     "./opencode": { "types": "./lib/opencode.d.ts", "default": "./lib/opencode.js" },
+    "./codex-provider": { "types": "./lib/codex-provider.d.ts", "default": "./lib/codex-provider.js" },
     "./client": { "types": "./lib/client.d.ts", "default": "./lib/client.js" },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
@@ -19,6 +20,7 @@
   "scripts": {
     "build": "tsdown",
     "check": "tsc --noEmit",
+    "test": "vitest run",
     "prepare": "pnpm run build"
   },
   "dsh": {
@@ -36,15 +38,19 @@
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm-pi-ai": "^0.1.0-rc.5",
     "react": "^18.2.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm-pi-ai": "^0.1.0-rc.5",
+    "@earendil-works/pi-ai": "^0.82.1",
     "@deepseek-ai/dsh-user-approval": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-sandbox-policy": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
     "@deepseek-ai/schemastery": "^3.18.1",
     "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
@@ -58,7 +64,8 @@
     "@types/react": "^18.3.1",
     "react": "^18.2.0",
     "tsdown": "^0.22.2",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
   },
   "engines": { "node": "^22.19.0 || >=24" }
 }
