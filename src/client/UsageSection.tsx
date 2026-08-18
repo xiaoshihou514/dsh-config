@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  IconDataOutline16, IconListPenOutline16,
+  IconDataOutline16, IconGoalOutline16, IconListPenOutline16,
   IconRightUpOutline16, IconSparkle16
 } from "./icons.tsx";
 
@@ -396,7 +396,7 @@ export function UsageSection() {
           <span style={{ width: 26, height: 26, display: "grid", placeItems: "center", borderRadius: 7, color: "var(--dsw-alias-state-success-primary)", background: "color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, transparent)" }}>
             <IconDataOutline16 size={16} />
           </span>
-          Token 用量
+          词元用量
         </h2>
         <p style={{ margin: "6px 0 0", color: "var(--dsw-alias-label-tertiary)", fontSize: 12 }}>仅统计 DeepSeek 官方模型 · 自动保存</p>
       </div>
@@ -409,17 +409,21 @@ export function UsageSection() {
     {error ? <p role="status" style={{ color: "var(--dsw-alias-label-error)", fontSize: 12, margin: "14px 0 0" }}>{error}</p> : null}
 
     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 18 }}>
-      <Metric icon={<IconDataOutline16 size={16} />} value={number(metrics.tokens)} label="累计 Token 数" />
-      <Metric icon={<IconRightUpOutline16 size={16} />} value={number(metrics.peakDay)} label="单日峰值 Token" />
+      <Metric icon={<IconDataOutline16 size={16} />} value={number(metrics.tokens)} label="累计词元数" />
+      <Metric icon={<IconRightUpOutline16 size={16} />} value={number(metrics.peakDay)} label="单日峰值词元" />
       <Metric icon={<IconListPenOutline16 size={16} />} value={money(metrics.cost)} label="累计费用" />
-      <div title={`当前连续 ${metrics.current} 天 · 最长连续 ${metrics.longest} 天`} style={{ flex: "none", width: 44, height: 44, display: "grid", placeItems: "center", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 10, background: "var(--dsw-alias-bg-layer-2)", color: "var(--dsw-alias-label-tertiary)", cursor: "help" }}>
-        <IconSparkle16 size={18} />
-      </div>
     </div>
 
     <div style={{ marginTop: 18, border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 12, background: "var(--dsw-alias-bg-layer-3)", padding: "16px 16px 14px" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <strong style={{ fontSize: 14 }}>Token 活动</strong>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <span title="当前连续天数" style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--dsw-alias-label-secondary)", fontSize: 12 }}>
+            <IconSparkle16 size={14} /> {metrics.current} 天
+          </span>
+          <span title="最长连续天数" style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--dsw-alias-label-tertiary)", fontSize: 12 }}>
+            <IconGoalOutline16 size={14} /> {metrics.longest} 天
+          </span>
+        </div>
         <div role="tablist" aria-label="统计粒度" style={{ display: "inline-flex", padding: 3, border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 9 }}>
           {([["day", "每日"], ["week", "每周"], ["month", "每月"]] as const).map(([id, text]) => <button key={id} role="tab" aria-selected={view === id} onClick={() => switchView(id)} style={{ border: 0, borderRadius: 6, padding: "5px 11px", cursor: "pointer", font: "inherit", fontSize: 12, color: "inherit", background: view === id ? "var(--dsw-alias-bg-layer-2)" : "transparent", boxShadow: view === id ? "0 1px 2px #00000012" : undefined }}>{text}</button>)}
         </div>
@@ -436,7 +440,7 @@ export function UsageSection() {
               const level = levelOf(tokens, dayMaximum);
               // 过去日期都可点（空块点开显示「该时段暂无用量记录」），仅未来不可点。
               const interactive = !day.future;
-              return <button key={day.at} type="button" disabled={!interactive} title={`${fullLabel(day.at, "day")}：${number(tokens)} Token，${money(day.cost)}`} onClick={() => setSelected({ start: day.at, records: day.records })} style={{ width: "100%", height: DAY_CELL, borderRadius: 3, border: 0, padding: 0, background: cellColor(level), cursor: interactive ? "pointer" : "default", opacity: day.future ? 0.35 : 1, outline: selected?.start === day.at ? "2px solid var(--dsw-alias-state-business-primary)" : undefined, outlineOffset: 1 }} />;
+              return <button key={day.at} type="button" disabled={!interactive} title={`${fullLabel(day.at, "day")}：${number(tokens)} 词元，${money(day.cost)}`} onClick={() => setSelected({ start: day.at, records: day.records })} style={{ width: "100%", height: DAY_CELL, borderRadius: 3, border: 0, padding: 0, background: cellColor(level), cursor: interactive ? "pointer" : "default", opacity: day.future ? 0.35 : 1, outline: selected?.start === day.at ? "2px solid var(--dsw-alias-state-business-primary)" : undefined, outlineOffset: 1 }} />;
             })}
           </div>)}
         </div>
@@ -451,7 +455,7 @@ export function UsageSection() {
             {weekBuckets.slice(column * 4, column * 4 + 4).map((bucket) => {
               const tokens = tokensOf(bucket.records);
               const level = levelOf(tokens, weekMaximum);
-              return <button key={bucket.start} type="button" title={`${fullLabel(bucket.start, "week")}：${number(tokens)} Token，${money(total(bucket.records).cost)}`} onClick={() => setSelected({ start: bucket.start, records: bucket.records })} style={{ width: "100%", height: WEEK_CELL, borderRadius: 4, border: 0, padding: 0, background: cellColor(level), cursor: "pointer", outline: selected?.start === bucket.start ? "2px solid var(--dsw-alias-state-business-primary)" : undefined, outlineOffset: 1 }} />;
+              return <button key={bucket.start} type="button" title={`${fullLabel(bucket.start, "week")}：${number(tokens)} 词元，${money(total(bucket.records).cost)}`} onClick={() => setSelected({ start: bucket.start, records: bucket.records })} style={{ width: "100%", height: WEEK_CELL, borderRadius: 4, border: 0, padding: 0, background: cellColor(level), cursor: "pointer", outline: selected?.start === bucket.start ? "2px solid var(--dsw-alias-state-business-primary)" : undefined, outlineOffset: 1 }} />;
             })}
           </div>)}
         </div>
@@ -465,7 +469,7 @@ export function UsageSection() {
           const tokens = tokensOf(bucket.records);
           const level = levelOf(tokens, monthMaximum);
           return <div key={bucket.start} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-            <button type="button" title={`${fullLabel(bucket.start, "month")}：${number(tokens)} Token，${money(total(bucket.records).cost)}`} onClick={() => setSelected({ start: bucket.start, records: bucket.records })} style={{ width: MONTH_CELL, height: MONTH_CELL, borderRadius: 5, border: 0, padding: 0, background: cellColor(level), cursor: "pointer", outline: selected?.start === bucket.start ? "2px solid var(--dsw-alias-state-business-primary)" : undefined, outlineOffset: 1 }} />
+            <button type="button" title={`${fullLabel(bucket.start, "month")}：${number(tokens)} 词元，${money(total(bucket.records).cost)}`} onClick={() => setSelected({ start: bucket.start, records: bucket.records })} style={{ width: MONTH_CELL, height: MONTH_CELL, borderRadius: 5, border: 0, padding: 0, background: cellColor(level), cursor: "pointer", outline: selected?.start === bucket.start ? "2px solid var(--dsw-alias-state-business-primary)" : undefined, outlineOffset: 1 }} />
             <span style={{ fontSize: 10, color: "var(--dsw-alias-label-tertiary)" }}>{new Date(bucket.start).getMonth() + 1}月</span>
           </div>;
         })}
@@ -489,7 +493,7 @@ export function UsageSection() {
 
     <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, marginTop: selected === null ? 20 : 12, padding: "13px 0", borderTop: "1px solid var(--dsw-alias-border-l2)", borderBottom: "1px solid var(--dsw-alias-border-l2)" }}>
       <Summary label="实际费用" value={money(shown.cost)} hint={`高峰 ${money(shown.peakCost)} · 闲时 ${money(shown.offCost)}`} />
-      <Summary label="Token 总数" value={number(shown.input + shown.cacheRead + shown.cacheWrite + shown.output)} hint={`${number(shown.calls)} 次模型调用`} />
+      <Summary label="词元总数" value={number(shown.input + shown.cacheRead + shown.cacheWrite + shown.output)} hint={`${number(shown.calls)} 次模型调用`} />
       <Summary label="输入 / 输出" value={`${number(shown.input + shown.cacheWrite)} / ${number(shown.output)}`} hint="未命中输入 / 输出" />
       <Summary label="缓存命中" value={number(shown.cacheRead)} hint={`缓存写入 ${number(shown.cacheWrite)}`} />
     </div>
