@@ -6,3 +6,4 @@
 
 - Token 用量统计和热力图
 - 提权自动审批
+- OpenCode Free免费模型供应商

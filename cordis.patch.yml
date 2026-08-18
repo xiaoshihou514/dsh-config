@@ -6,3 +6,5 @@
       name: dsh-config/usage-api
     - id: dsh-config-approval-review
       name: dsh-config/approval-review
+    - id: dsh-config-opencode
+      name: dsh-config/opencode

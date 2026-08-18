@@ -1,6 +1,7 @@
 /** Browser entry: mounts the sidebar usage entry, the composer auto-approve toggle, and the approval-review config card. */
 
 import type {} from "@deepseek-ai/dsh-client-ui-slots";
+import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {} from "@deepseek-ai/dsh-client-ui-sidebar/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-settings-plugins/client";
@@ -8,12 +9,14 @@ import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client
 import type { ClientContext } from "@deepseek-ai/dsh-client-runtime/client";
 import { UsageTrigger } from "./UsageTrigger.tsx";
 import { AutoApproveToggle } from "./AutoApproveToggle.tsx";
-import { ApprovalReviewCard, type ApprovalReviewCardInjected } from "./ApprovalReviewCard.tsx";
+import { ApprovalReviewCard, type ApprovalReviewCardInjected, type ApprovalReviewSettings } from "./ApprovalReviewCard.tsx";
 
-export const inject = ["slots", "connection"];
+export const inject = ["slots", "connection", "settingsScope"];
 
 export function apply(ctx: ClientContext): void {
+  const approvalScope = ctx.settingsScope.bind<ApprovalReviewSettings>({ namespace: "dsh-config-approval" });
   const approvalInjected = (): ApprovalReviewCardInjected => ({
+    scope: approvalScope,
     api: (ctx.get("connection") as ConnectionHandle).api,
   });
 

@@ -13,23 +13,34 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { attributionHeaders, createUserMessage } from "@deepseek-ai/dsh-llm";
+import { settingsNamespace } from "@deepseek-ai/dsh-settings";
 // Type-only: pulls the ctx.approval / approval/request merge.
 import type { ApprovalOutcome, ApprovalRequest } from "@deepseek-ai/dsh-user-approval";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
 
 export const name = "dsh-config-approval-review";
-export const inject = ["approval", "webServer"];
+export const inject = ["approval", "webServer", "settings"];
 
 const ROUTE = "/dsh-config/auto-approval";
+const MODELS_ROUTE = "/dsh-config/opencode-models";
 const HEADER = "x-dsh-config";
 const HEADER_VALUE = "auto-approval";
 const SESSION_PATTERN = /^[a-zA-Z0-9-]{1,100}$/;
 
+/** 设置命名空间：用户可在卡片里选择回退用的 opencode 免费模型。 */
+const SETTINGS_NAMESPACE = settingsNamespace("dsh-config-approval");
+const SETTINGS_SCHEMA = z.object({ fallbackModel: z.string().default("") });
+
 const KEY_REF = "ZHIPU_API_KEY";
 const DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 const DEFAULT_MODEL = "glm-4.7-flash";
+const OPENCODE_MODELS_URL = "https://opencode.ai/zen/v1/models";
+/** 免密回退端点（opencode 免费模型，不携带 Authorization 头）。 */
+const FALLBACK_BASE_URL = "https://opencode.ai/zen/v1/chat/completions";
+const FALLBACK_MODEL = "deepseek-v4-flash-free";
+const FREE_SUFFIX = "-free";
 
 /** Destructive patterns that always skip auto-review and go to the user. */
 const DENYLIST: readonly RegExp[] = [
@@ -66,6 +77,14 @@ export interface Config {
   allowDangerFullAccess?: boolean
   /** Tool-call arguments truncation length sent to the reviewer. */
   maxArgumentsChars?: number
+  /**
+   * 免密回退端点（默认 opencode Zen 免费档）。opencode free 是供应商不是单个
+   * 模型——`fallbackModel` 从 `*-free` 模型里选一个，限流/下架时可换。
+   */
+  fallbackBaseUrl?: string
+  fallbackModel?: string
+  /** 是否启用免密回退端点。 */
+  fallback?: boolean
 }
 
 export const Config = z.object({
@@ -74,6 +93,9 @@ export const Config = z.object({
   timeoutMs: z.number().default(8_000),
   allowDangerFullAccess: z.boolean().default(true),
   maxArgumentsChars: z.number().default(4_000),
+  fallbackBaseUrl: z.string().default(FALLBACK_BASE_URL),
+  fallbackModel: z.string().default(FALLBACK_MODEL),
+  fallback: z.boolean().default(true),
 });
 
 type Verdict = "ALLOW" | "DENY" | "UNCERTAIN";
@@ -209,34 +231,30 @@ const UNAVAILABLE_COOLDOWN_MS = 10 * 60 * 1_000;
 /** 指数退避：第 n 次重试前等待 RETRY_BASE_MS * 2^(n-1)（250 / 500 / 1000 …）。 */
 const retryDelay = (attempt: number): number => RETRY_BASE_MS * 2 ** (attempt - 1);
 
-async function review(config: Config, key: string, toolName: string, mode: string, justification: string, argumentsText: string, userPrompt: string | undefined): Promise<ReviewResult> {
+/** 一次审查尝试的目标端点。 */
+interface ReviewEndpoint {
+  baseUrl: string;
+  model: string;
+  /** 有 key 才发送 Authorization 头；无 key 按免密端点处理。 */
+  key?: string;
+}
+
+/** 对单个端点带指数退避的审查尝试（429/5xx/网络错误重试）。 */
+async function attemptEndpoint(config: Config, endpoint: ReviewEndpoint, payload: string): Promise<ReviewResult> {
   let lastStatus: number | undefined;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), config.timeoutMs ?? 8_000);
     try {
-      const response = await fetch(config.baseUrl ?? DEFAULT_BASE_URL, {
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (endpoint.key !== undefined) headers.authorization = `Bearer ${endpoint.key}`;
+      const response = await fetch(endpoint.baseUrl, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          model: config.model ?? DEFAULT_MODEL,
-          temperature: 0,
-          max_tokens: 8,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: JSON.stringify({
-              tool: toolName,
-              requestedMode: mode,
-              justification,
-              arguments: argumentsText.slice(0, config.maxArgumentsChars ?? 4_000),
-              ...userPrompt !== undefined ? { userPrompt: userPrompt.slice(0, 1_000) } : {},
-            }) },
-          ],
-        }),
+        headers,
+        body: payload,
         signal: controller.signal,
       });
       lastStatus = response.status;
-      // 免费档常见 429（访问量过大）：指数退避重试，仍失败按 UNCERTAIN 交还用户。
       if (response.status === 429 || response.status >= 500) {
         if (attempt < MAX_ATTEMPTS) {
           await new Promise((resolve) => setTimeout(resolve, retryDelay(attempt)));
@@ -245,12 +263,11 @@ async function review(config: Config, key: string, toolName: string, mode: strin
         return { verdict: "UNCERTAIN", ...lastStatus !== undefined ? { status: lastStatus } : {} };
       }
       if (!response.ok) return { verdict: "UNCERTAIN", ...lastStatus !== undefined ? { status: lastStatus } : {} };
-      const payload = await response.json() as { choices?: { message?: { content?: string } }[] };
-      const content = payload.choices?.[0]?.message?.content;
+      const parsed = await response.json() as { choices?: { message?: { content?: string } }[] };
+      const content = parsed.choices?.[0]?.message?.content;
       const verdict = content?.trim().split(/\s+/)[0]?.toUpperCase();
       return { verdict: verdict === "ALLOW" || verdict === "DENY" ? verdict : "UNCERTAIN", ...lastStatus !== undefined ? { status: lastStatus } : {} };
     } catch {
-      // 网络错误同样指数退避重试。
       if (attempt < MAX_ATTEMPTS) {
         await new Promise((resolve) => setTimeout(resolve, retryDelay(attempt)));
         continue;
@@ -261,6 +278,49 @@ async function review(config: Config, key: string, toolName: string, mode: strin
     }
   }
   return { verdict: "UNCERTAIN", ...lastStatus !== undefined ? { status: lastStatus } : {} };
+}
+
+/**
+ * 审查总入口：按 智谱（有 key 时）→ opencode 免密端点 的顺序轮询。
+ * 前一个端点请求失败（429/5xx/网络）就换下一个；某个端点返回了模型结论
+ * （HTTP 2xx）即采用。全部失败返回最后一次失败（UNCERTAIN）。
+ */
+async function review(config: Config, key: string, fallbackModel: string, toolName: string, mode: string, justification: string, argumentsText: string, userPrompt: string | undefined): Promise<ReviewResult> {
+  const endpoints: ReviewEndpoint[] = [];
+  if (key !== undefined) {
+    endpoints.push({ baseUrl: config.baseUrl ?? DEFAULT_BASE_URL, model: config.model ?? DEFAULT_MODEL, key });
+  }
+  if (config.fallback !== false) {
+    endpoints.push({ baseUrl: config.fallbackBaseUrl ?? FALLBACK_BASE_URL, model: fallbackModel || FALLBACK_MODEL });
+  }
+
+  const payloadFor = (model: string): string => JSON.stringify({
+    model,
+    temperature: 0,
+    max_tokens: 8,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: JSON.stringify({
+        tool: toolName,
+        requestedMode: mode,
+        justification,
+        arguments: argumentsText.slice(0, config.maxArgumentsChars ?? 4_000),
+        ...userPrompt !== undefined ? { userPrompt: userPrompt.slice(0, 1_000) } : {},
+      }) },
+    ],
+  });
+
+  let last: ReviewResult = { verdict: "UNCERTAIN" };
+  for (const endpoint of endpoints) {
+    const result = await attemptEndpoint(config, endpoint, payloadFor(endpoint.model));
+    // 请求失败（无 2xx）→ 换下一个端点；拿到模型结论（2xx）即采用。
+    if (result.status === undefined || result.status >= 400) {
+      last = result;
+      continue;
+    }
+    return result;
+  }
+  return last;
 }
 
 async function appendRecord(ctx: Context, record: ReviewRecord): Promise<void> {
@@ -293,6 +353,10 @@ function respond(res: { writeHead(code: number, headers?: Record<string, string>
  * @param config - reviewer configuration.
  */
 export function apply(ctx: Context, config: Config): void {
+  const scope = ctx.settings.register(SETTINGS_NAMESPACE, SETTINGS_SCHEMA);
+  /** 用户选择的回退模型（卡片里选 OpenCode Free 的某个 *-free 模型），留空用配置默认。 */
+  const fallbackModel = (): string => scope.get().fallbackModel || config.fallbackModel || FALLBACK_MODEL;
+
   const toggles = new Map<string, boolean>();
   let writes = Promise.resolve();
   void loadToggles().then((loaded) => { for (const [session, enabled] of loaded) toggles.set(session, enabled); })
@@ -384,7 +448,7 @@ export function apply(ctx: Context, config: Config): void {
         return next();
       }
       const started = Date.now();
-      const result = await review(config, key, req.toolName, parsed.mode, parsed.justification, argumentsText, context.userPrompt);
+      const result = await review(config, key, fallbackModel(), req.toolName, parsed.mode, parsed.justification, argumentsText, context.userPrompt);
       await appendRecord(ctx, {
         time: started,
         sessionId: req.agent.session.id,
@@ -422,6 +486,42 @@ export function apply(ctx: Context, config: Config): void {
   }, { prepend: true });
 
   ctx.effect(() => ctx.webServer.register(route), "dsh-config: auto-approval toggle API");
+
+  // OpenCode Free 免费模型列表代理（同源，避免浏览器 CORS；60 秒缓存）。
+  const modelsRoute: WebRoute = {
+    kind: "exact",
+    path: MODELS_ROUTE,
+    handler: async (request, response) => {
+      if (request.headers[HEADER] !== HEADER_VALUE || request.method !== "GET") {
+        response.writeHead(403).end();
+        return;
+      }
+      respond(response, 200, { ok: true, models: await openCodeFreeModels() });
+    },
+  };
+  ctx.effect(() => ctx.webServer.register(modelsRoute), "dsh-config: opencode models API");
+}
+
+/** OpenCode Free 免费模型列表（* -free 后缀），60 秒内缓存。 */
+let freeModelsCache: { at: number; models: string[] } | null = null;
+const FREE_MODELS_TTL_MS = 60 * 1_000;
+
+async function openCodeFreeModels(): Promise<string[]> {
+  if (freeModelsCache !== null && Date.now() - freeModelsCache.at < FREE_MODELS_TTL_MS) return freeModelsCache.models;
+  const models: string[] = [];
+  try {
+    const response = await fetch(OPENCODE_MODELS_URL, { headers: attributionHeaders() });
+    if (response.ok) {
+      const parsed = await response.json() as { data?: { id?: string }[] };
+      for (const item of parsed.data ?? []) {
+        if (item.id !== undefined && item.id.endsWith(FREE_SUFFIX)) models.push(item.id);
+      }
+    }
+  } catch {
+    // 拉取失败返回空列表，卡片退回默认项。
+  }
+  freeModelsCache = { at: Date.now(), models };
+  return models;
 }
 
 /** Read a request body up to a small cap. */
