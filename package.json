@@ -31,6 +31,10 @@
       "types": "./lib/inject-once.d.ts",
       "default": "./lib/inject-once.js"
     },
+    "./overflow-recovery": {
+      "types": "./lib/overflow-recovery.d.ts",
+      "default": "./lib/overflow-recovery.js"
+    },
     "./client": {
       "types": "./lib/client.d.ts",
       "default": "./lib/client.js"
