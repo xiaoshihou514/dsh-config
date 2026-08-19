@@ -8,32 +8,24 @@ import {
 } from "./icons.tsx";
 
 type View = "day" | "week" | "month";
-type Model = "deepseek-v4-flash" | "deepseek-v4-pro";
 
+/** host 已算好的单条明细（仅今天存在）。 */
 interface RecordItem {
   id: string;
   at: number;
   project: string;
-  model: Model;
+  model: string;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  cost: number;
+  peakCost: number;
+  offCost: number;
 }
 
-/** 一档单价：高峰 / 闲时（元 / 百万 tokens）。 */
-interface Tier {
-  peak: number;
-  off: number;
-}
-
-interface Price {
-  hit: Tier;
-  miss: Tier;
-  output: Tier;
-}
-
-interface Totals {
+/** 一天的聚合桶（历史数据只有这个，明细已归档）。 */
+interface CellSummary {
   calls: number;
   input: number;
   output: number;
@@ -44,78 +36,81 @@ interface Totals {
   offCost: number;
 }
 
-/** DeepSeek 官方 2026-08-17 起生效的峰谷单价（元 / 百万 tokens）。 */
-const price: Record<Model, Price> = {
-  "deepseek-v4-flash": {
-    hit: { peak: 0.1, off: 0.05 },
-    miss: { peak: 3, off: 1.5 },
-    output: { peak: 9, off: 4.5 },
-  },
-  "deepseek-v4-pro": {
-    hit: { peak: 0.3, off: 0.15 },
-    miss: { peak: 9, off: 4.5 },
-    output: { peak: 27, off: 13.5 },
-  },
-};
-
-/**
- * 高峰时段按北京时间（UTC+8，无夏令时）判定：9:00-12:00、14:00-18:00 为高峰。
- */
-function isPeak(time: number): boolean {
-  const hour = new Date(time + 8 * 3_600_000).getUTCHours();
-  return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18);
+interface DaySummary {
+  total: CellSummary;
+  byProject: Record<string, CellSummary>;
+  byModel: Record<string, CellSummary>;
+  cells: Record<string, CellSummary>;
 }
 
-/** 单条记录的估算费用（元），按自身发生时间取高峰或闲时单价。 */
-function costOf(record: RecordItem): number {
-  const unit = price[record.model];
-  const tier = isPeak(record.at) ? "peak" : "off";
+interface UsagePayload {
+  ok?: boolean;
+  days?: Record<string, DaySummary>;
+  today?: RecordItem[];
+}
+
+interface Totals extends CellSummary {
+  tokens: number;
+}
+
+function emptySummary(): CellSummary {
+  return {
+    calls: 0,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    peakCost: 0,
+    offCost: 0,
+  };
+}
+
+function addCell(target: CellSummary, source: CellSummary): CellSummary {
+  return {
+    calls: target.calls + source.calls,
+    input: target.input + source.input,
+    output: target.output + source.output,
+    cacheRead: target.cacheRead + source.cacheRead,
+    cacheWrite: target.cacheWrite + source.cacheWrite,
+    cost: target.cost + source.cost,
+    peakCost: target.peakCost + source.peakCost,
+    offCost: target.offCost + source.offCost,
+  };
+}
+
+function tokensOf(summary: CellSummary): number {
   return (
-    (record.cacheReadTokens * unit.hit[tier] +
-      (record.inputTokens + record.cacheWriteTokens) * unit.miss[tier] +
-      record.outputTokens * unit.output[tier]) /
-    1_000_000
+    summary.input +
+    summary.output +
+    summary.cacheRead +
+    summary.cacheWrite
   );
 }
 
-function total(records: readonly RecordItem[]): Totals {
-  return records.reduce<Totals>(
-    (sum, record) => {
-      const cost = costOf(record);
-      return {
-        calls: sum.calls + 1,
-        input: sum.input + record.inputTokens,
-        output: sum.output + record.outputTokens,
-        cacheRead: sum.cacheRead + record.cacheReadTokens,
-        cacheWrite: sum.cacheWrite + record.cacheWriteTokens,
-        cost: sum.cost + cost,
-        peakCost: sum.peakCost + (isPeak(record.at) ? cost : 0),
-        offCost: sum.offCost + (isPeak(record.at) ? 0 : cost),
-      };
-    },
-    {
-      calls: 0,
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      peakCost: 0,
-      offCost: 0,
-    },
+function totalsOf(summary: CellSummary): Totals {
+  return { ...summary, tokens: tokensOf(summary) };
+}
+
+function sumCells(items: readonly CellSummary[]): CellSummary {
+  return items.reduce<CellSummary>(
+    (sum, cell) => addCell(sum, cell),
+    emptySummary(),
   );
 }
 
-function tokensOf(records: readonly RecordItem[]): number {
-  return records.reduce(
-    (sum, record) =>
-      sum +
-      record.inputTokens +
-      record.outputTokens +
-      record.cacheReadTokens +
-      record.cacheWriteTokens,
-    0,
-  );
+/** 某天在项目/模型筛选下应使用的聚合桶。 */
+function summaryFor(
+  day: DaySummary | undefined,
+  project: string,
+  model: string,
+): CellSummary {
+  if (day === undefined) return emptySummary();
+  if (project === "全部项目" && model === "全部模型") return day.total;
+  if (project !== "全部项目" && model !== "全部模型")
+    return day.cells[`${project}\u0000${model}`] ?? emptySummary();
+  if (project !== "全部项目") return day.byProject[project] ?? emptySummary();
+  return day.byModel[model] ?? emptySummary();
 }
 
 const DAY = 86_400_000;
@@ -124,6 +119,10 @@ function dayStart(time: number): number {
   const date = new Date(time);
   date.setHours(0, 0, 0, 0);
   return date.getTime();
+}
+
+function dayKeyToStart(key: string): number {
+  return new Date(`${key}T00:00:00`).getTime();
 }
 
 function mondayOf(time: number): number {
@@ -176,20 +175,18 @@ function money(value: number): string {
   return `¥${value < 0.01 && value > 0 ? value.toFixed(4) : value.toFixed(2)}`;
 }
 
-function dayKey(time: number): string {
+function dayKeyOf(time: number): string {
   const date = new Date(time);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function isNextDay(a: string, b: string): boolean {
   return (
-    new Date(`${b}T00:00:00`).getTime() -
-      new Date(`${a}T00:00:00`).getTime() ===
-    DAY
+    dayKeyToStart(b) - dayKeyToStart(a) === DAY
   );
 }
 
-/** 连续使用天数：当前连续（截至最近有记录的一天）与历史最长连续。 */
+/** 连续使用天数（按聚合里的自然日键）。 */
 function streaks(dayKeys: readonly string[]): {
   current: number;
   longest: number;
@@ -214,7 +211,6 @@ function streaks(dayKeys: readonly string[]): {
   return { current, longest };
 }
 
-/** 若该周（以周一开头）内出现某月的 1 号，返回该月的月份标签（GitHub 式）。 */
 function monthLabelFor(weekStart: number): string | undefined {
   const monday = new Date(weekStart);
   const firstOfMonth = new Date(
@@ -227,14 +223,12 @@ function monthLabelFor(weekStart: number): string | undefined {
     : undefined;
 }
 
-/** 热力等级：0-4，按 token 量与区间最大值占比。 */
 function levelOf(value: number, maximum: number): number {
   if (value <= 0 || maximum <= 0) return 0;
   const ratio = value / maximum;
   return Math.min(4, Math.max(1, Math.ceil(ratio * 4)));
 }
 
-/** 热力色：0 级为底色，1-4 级把主题成功色按比例混入底色，随明暗主题自适应。 */
 function cellColor(level: number): string {
   const base = "var(--dsw-alias-bg-layer-2)";
   if (level === 0) return base;
@@ -328,23 +322,24 @@ function Summary({
 
 interface DayCell {
   at: number;
-  records: RecordItem[];
-  tokens: number;
-  cost: number;
+  summary: CellSummary;
   future: boolean;
 }
 
 interface Bucket {
   start: number;
-  records: RecordItem[];
+  summary: CellSummary;
 }
 
 export function UsageSection() {
-  const [records, setRecords] = useState<RecordItem[]>([]);
+  const [days, setDays] = useState<Record<string, DaySummary>>({});
+  const [today, setToday] = useState<RecordItem[]>([]);
   const [view, setView] = useState<View>("day");
   const [project, setProject] = useState("全部项目");
   const [model, setModel] = useState("全部模型");
-  const [selected, setSelected] = useState<Bucket | null>(null);
+  const [selected, setSelected] = useState<{ start: number; summary: CellSummary } | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const etagRef = useRef<string | null>(null);
@@ -367,16 +362,19 @@ export function UsageSection() {
           }
           return;
         }
-        const payload = (await response.json()) as {
-          ok?: boolean;
-          records?: RecordItem[];
-        };
-        if (!response.ok || !payload.ok || !Array.isArray(payload.records))
+        const payload = (await response.json()) as UsagePayload;
+        if (
+          !response.ok ||
+          !payload.ok ||
+          payload.days === undefined ||
+          !Array.isArray(payload.today)
+        )
           throw new Error("读取用量数据失败");
         const nextEtag = response.headers.get("etag");
         if (!stale) {
           if (nextEtag !== null) etagRef.current = nextEtag;
-          setRecords(payload.records);
+          setDays(payload.days);
+          setToday(payload.today);
           setError(null);
         }
       } catch {
@@ -396,57 +394,44 @@ export function UsageSection() {
     };
   }, []);
 
-  const projects = useMemo(
-    () => [
-      "全部项目",
-      ...Array.from(new Set(records.map((record) => record.project))).sort(),
-    ],
-    [records],
-  );
-  const models = useMemo(
-    () => [
-      "全部模型",
-      ...Array.from(new Set(records.map((record) => record.model))).sort(),
-    ],
-    [records],
-  );
-  const filtered = useMemo(
-    () =>
-      records.filter(
-        (record) =>
-          (project === "全部项目" || record.project === project) &&
-          (model === "全部模型" || record.model === model),
-      ),
-    [project, model, records],
-  );
+  // 项目/模型列表：今天的明细 + 聚合桶键（历史项目/模型也能出现）。
+  const projects = useMemo(() => {
+    const set = new Set(today.map((record) => record.project));
+    for (const day of Object.values(days)) {
+      for (const name of Object.keys(day.byProject)) set.add(name);
+    }
+    return ["全部项目", ...Array.from(set).sort()];
+  }, [days, today]);
+  const models = useMemo(() => {
+    const set = new Set(today.map((record) => record.model));
+    for (const day of Object.values(days)) {
+      for (const name of Object.keys(day.byModel)) set.add(name);
+    }
+    return ["全部模型", ...Array.from(set).sort()];
+  }, [days, today]);
+
+  // 筛选后的按天聚合索引：key = 自然日字符串。
+  const filteredDays = useMemo(() => {
+    const map = new Map<string, CellSummary>();
+    for (const [key, day] of Object.entries(days)) {
+      map.set(key, summaryFor(day, project, model));
+    }
+    return map;
+  }, [days, project, model]);
 
   const todayStart = useMemo(() => dayStart(Date.now()), []);
   const thisMonday = useMemo(() => mondayOf(todayStart), [todayStart]);
 
-  // 一次遍历建立「日 → 记录/汇总」索引：格子与周/月分桶全部 O(1) 查表，
-  // 替代原先每个格子对全部记录 filter（records × 364 次扫描）。
-  const byDay = useMemo(() => {
-    const map = new Map<
-      number,
-      { records: RecordItem[]; tokens: number; cost: number }
-    >();
-    for (const record of filtered) {
-      const at = dayStart(record.at);
-      let entry = map.get(at);
-      if (entry === undefined) {
-        entry = { records: [], tokens: 0, cost: 0 };
-        map.set(at, entry);
-      }
-      entry.records.push(record);
-      entry.tokens +=
-        record.inputTokens +
-        record.outputTokens +
-        record.cacheReadTokens +
-        record.cacheWriteTokens;
-      entry.cost += costOf(record);
+  // 热力图格子：直接查聚合（O(天数)），历史数据无需逐条。
+  const dayCells = useMemo(() => {
+    const cells = new Map<number, DayCell>();
+    for (const [key, summary] of filteredDays) {
+      if (summary.calls <= 0) continue;
+      const at = dayKeyToStart(key);
+      cells.set(at, { at, summary, future: at > todayStart });
     }
-    return map;
-  }, [filtered]);
+    return cells;
+  }, [filteredDays, todayStart]);
 
   const dayWeeks = useMemo(() => {
     const weeks: { start: number; days: DayCell[] }[] = [];
@@ -455,32 +440,28 @@ export function UsageSection() {
       const days: DayCell[] = [];
       for (let offset = 0; offset < 7; offset += 1) {
         const at = start + offset * DAY;
-        const entry = byDay.get(at);
-        days.push({
-          at,
-          future: at > todayStart,
-          records: entry?.records ?? [],
-          tokens: entry?.tokens ?? 0,
-          cost: entry?.cost ?? 0,
-        });
+        days.push(
+          dayCells.get(at) ?? { at, summary: emptySummary(), future: at > todayStart },
+        );
       }
       weeks.push({ start, days });
     }
     return weeks;
-  }, [byDay, thisMonday, todayStart]);
+  }, [dayCells, thisMonday, todayStart]);
 
   const weekBuckets = useMemo(() => {
     const buckets: Bucket[] = [];
     for (let week = 15; week >= 0; week -= 1) {
       const start = thisMonday - week * 7 * DAY;
-      const records: RecordItem[] = [];
-      for (const [at, entry] of byDay) {
-        if (at >= start && at < start + 7 * DAY) records.push(...entry.records);
+      const cells: CellSummary[] = [];
+      for (const [key, summary] of filteredDays) {
+        const at = dayKeyToStart(key);
+        if (at >= start && at < start + 7 * DAY) cells.push(summary);
       }
-      buckets.push({ start, records });
+      buckets.push({ start, summary: sumCells(cells) });
     }
     return buckets;
-  }, [byDay, thisMonday]);
+  }, [filteredDays, thisMonday]);
 
   const monthBuckets = useMemo(() => {
     const now = new Date(todayStart);
@@ -494,66 +475,59 @@ export function UsageSection() {
         (total % 12) + 1,
         1,
       ).getTime();
-      const records: RecordItem[] = [];
-      for (const [at, entry] of byDay) {
-        if (at >= start && at < end) records.push(...entry.records);
+      const cells: CellSummary[] = [];
+      for (const [key, summary] of filteredDays) {
+        const at = dayKeyToStart(key);
+        if (at >= start && at < end) cells.push(summary);
       }
-      buckets.push({ start, records });
+      buckets.push({ start, summary: sumCells(cells) });
     }
     return buckets;
-  }, [byDay, todayStart]);
+  }, [filteredDays, todayStart]);
 
-  const displayed = useMemo(
-    () =>
+  // 当前视图展示区间的汇总（与筛选联动）。
+  const totals = useMemo(() => {
+    const shown =
       view === "day"
-        ? dayWeeks.flatMap((week) => week.days).flatMap((day) => day.records)
+        ? dayWeeks.flatMap((week) => week.days).map((day) => day.summary)
         : view === "week"
-          ? weekBuckets.flatMap((bucket) => bucket.records)
-          : monthBuckets.flatMap((bucket) => bucket.records),
-    [view, dayWeeks, weekBuckets, monthBuckets],
+          ? weekBuckets.map((bucket) => bucket.summary)
+          : monthBuckets.map((bucket) => bucket.summary);
+    return totalsOf(sumCells(shown));
+  }, [view, dayWeeks, weekBuckets, monthBuckets]);
+  const allTime = useMemo(
+    () => totalsOf(sumCells(Array.from(filteredDays.values()))),
+    [filteredDays],
   );
-  const totals = useMemo(() => total(displayed), [displayed]);
-  const allTime = useMemo(() => total(filtered), [filtered]);
 
   const metrics = useMemo(() => {
-    const all = total(filtered);
-    const dayTotals = new Map<string, number>();
-    for (const record of filtered) {
-      const key = dayKey(record.at);
-      dayTotals.set(
-        key,
-        (dayTotals.get(key) ?? 0) +
-          record.inputTokens +
-          record.outputTokens +
-          record.cacheReadTokens +
-          record.cacheWriteTokens,
-      );
-    }
-    const { current, longest } = streaks(Array.from(dayTotals.keys()));
+    const all = sumCells(Array.from(filteredDays.values()));
+    const { current, longest } = streaks(Array.from(filteredDays.keys()));
+    let peakDay = 0;
+    for (const summary of filteredDays.values()) peakDay = Math.max(peakDay, tokensOf(summary));
     return {
-      tokens: all.input + all.output + all.cacheRead + all.cacheWrite,
-      peakDay: Math.max(...dayTotals.values(), 0),
+      tokens: tokensOf(all),
+      peakDay,
       cost: all.cost,
       current,
       longest,
     };
-  }, [filtered]);
+  }, [filteredDays]);
 
   const dayMaximum = useMemo(
     () =>
       Math.max(
-        ...dayWeeks.flatMap((week) => week.days).map((day) => day.tokens),
+        ...dayWeeks.flatMap((week) => week.days).map((day) => tokensOf(day.summary)),
         0,
       ),
     [dayWeeks],
   );
   const weekMaximum = useMemo(
-    () => Math.max(...weekBuckets.map((bucket) => tokensOf(bucket.records)), 0),
+    () => Math.max(...weekBuckets.map((bucket) => tokensOf(bucket.summary)), 0),
     [weekBuckets],
   );
   const monthMaximum = useMemo(
-    () =>
-      Math.max(...monthBuckets.map((bucket) => tokensOf(bucket.records)), 0),
+    () => Math.max(...monthBuckets.map((bucket) => tokensOf(bucket.summary)), 0),
     [monthBuckets],
   );
 
@@ -569,8 +543,6 @@ export function UsageSection() {
         });
       }
     });
-    // 首列的强制标签与紧邻的月份起始标签间距不足一个标签宽时会重叠
-    // （渲染成「8月月」）：间隔 ≤1 列就去掉强制标签。
     if (
       labels.length >= 2 &&
       (labels[1]?.index ?? 0) - (labels[0]?.index ?? 0) <= 1
@@ -601,12 +573,8 @@ export function UsageSection() {
     return labels;
   }, [weekBuckets]);
 
-  const selectedTotals = useMemo(
-    () => (selected === null ? null : total(selected.records)),
-    [selected],
-  );
-  // 选中色块时下方汇总显示该时段数据，否则显示当前视图区间。
-  const shown = selectedTotals ?? totals;
+  // 选中色块时显示该时段汇总，否则显示当前视图区间汇总。
+  const shown = selected !== null ? totalsOf(selected.summary) : totals;
 
   const switchView = (next: View) => {
     setView(next);
@@ -665,7 +633,7 @@ export function UsageSection() {
               fontSize: 12,
             }}
           >
-            仅统计 DeepSeek 官方模型 · 自动保存
+            DeepSeek 官方 + OpenCode Free + Codex 订阅 · 历史按天聚合缓存 · 自动保存
           </p>
         </div>
         <div
@@ -883,18 +851,17 @@ export function UsageSection() {
                   }}
                 >
                   {week.days.map((day) => {
-                    const tokens = day.tokens;
+                    const tokens = tokensOf(day.summary);
                     const level = levelOf(tokens, dayMaximum);
-                    // 过去日期都可点（空块点开显示「该时段暂无用量记录」），仅未来不可点。
                     const interactive = !day.future;
                     return (
                       <button
                         key={day.at}
                         type="button"
                         disabled={!interactive}
-                        title={`${fullLabel(day.at, "day")}：${number(tokens)} 词元，${money(day.cost)}`}
+                        title={`${fullLabel(day.at, "day")}：${number(tokens)} 词元，${money(day.summary.cost)}`}
                         onClick={() =>
-                          setSelected({ start: day.at, records: day.records })
+                          setSelected({ start: day.at, summary: day.summary })
                         }
                         style={{
                           width: "100%",
@@ -960,18 +927,15 @@ export function UsageSection() {
                   {weekBuckets
                     .slice(column * 4, column * 4 + 4)
                     .map((bucket) => {
-                      const tokens = tokensOf(bucket.records);
+                      const tokens = tokensOf(bucket.summary);
                       const level = levelOf(tokens, weekMaximum);
                       return (
                         <button
                           key={bucket.start}
                           type="button"
-                          title={`${fullLabel(bucket.start, "week")}：${number(tokens)} 词元，${money(total(bucket.records).cost)}`}
+                          title={`${fullLabel(bucket.start, "week")}：${number(tokens)} 词元，${money(bucket.summary.cost)}`}
                           onClick={() =>
-                            setSelected({
-                              start: bucket.start,
-                              records: bucket.records,
-                            })
+                            setSelected({ start: bucket.start, summary: bucket.summary })
                           }
                           style={{
                             width: "100%",
@@ -1023,7 +987,7 @@ export function UsageSection() {
             }}
           >
             {monthBuckets.map((bucket) => {
-              const tokens = tokensOf(bucket.records);
+              const tokens = tokensOf(bucket.summary);
               const level = levelOf(tokens, monthMaximum);
               return (
                 <div
@@ -1037,12 +1001,9 @@ export function UsageSection() {
                 >
                   <button
                     type="button"
-                    title={`${fullLabel(bucket.start, "month")}：${number(tokens)} 词元，${money(total(bucket.records).cost)}`}
+                    title={`${fullLabel(bucket.start, "month")}：${number(tokens)} 词元，${money(bucket.summary.cost)}`}
                     onClick={() =>
-                      setSelected({
-                        start: bucket.start,
-                        records: bucket.records,
-                      })
+                      setSelected({ start: bucket.start, summary: bucket.summary })
                     }
                     style={{
                       width: MONTH_CELL,
@@ -1129,7 +1090,7 @@ export function UsageSection() {
         ) : null}
       </div>
 
-      {selected !== null && selectedTotals !== null ? (
+      {selected !== null ? (
         <div
           style={{
             display: "flex",
@@ -1176,9 +1137,7 @@ export function UsageSection() {
         />
         <Summary
           label="词元总数"
-          value={number(
-            shown.input + shown.cacheRead + shown.cacheWrite + shown.output,
-          )}
+          value={number(shown.tokens)}
           hint={`${number(shown.calls)} 次模型调用`}
         />
         <Summary
@@ -1203,7 +1162,7 @@ export function UsageSection() {
       >
         {loading
           ? "正在读取用量…"
-          : `费用按 DeepSeek 官方 V4-Flash / V4-Pro 峰谷单价估算：高峰（北京时间 9:00-12:00、14:00-18:00）按高峰价，其余时段半价；缓存写入按未命中输入计费。全部累计 ${money(allTime.cost)}。`}
+          : `费用按 DeepSeek 官方 V4-Flash / V4-Pro 峰谷单价估算：高峰（北京时间 9:00-12:00、14:00-18:00）按高峰价，其余时段半价；缓存写入按未命中输入计费。OpenCode Free 与 Codex 订阅仅统计词元、不计费。历史数据按天聚合缓存（仅今天保留逐条明细）。全部累计 ${money(allTime.cost)}。`}
       </p>
     </section>
   );

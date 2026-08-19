@@ -26,6 +26,7 @@ export function CodexLoginCard() {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<LoginStatus>({ state: "idle" });
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     void request("GET")
@@ -53,13 +54,15 @@ export function CodexLoginCard() {
   const login = async () => {
     if (busy) return;
     setBusy(true);
+    setCopied(false);
     const popup = window.open("", "_blank");
     try {
       const next = await request("POST");
       setStatus(next);
       if (next.state === "pending" && next.url !== undefined) {
+        // 弹窗能开就直接跳；开不了（被拦截/默认浏览器不兼容）时，
+        // 链接仍以明文展示在卡片里，可点击或复制到任意浏览器/设备。
         if (popup !== null) popup.location.href = next.url;
-        else window.open(next.url, "_blank", "noopener,noreferrer");
       } else {
         popup?.close();
       }
@@ -71,6 +74,17 @@ export function CodexLoginCard() {
       });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const copyUrl = async () => {
+    if (status.state !== "pending" || status.url === undefined) return;
+    try {
+      await navigator.clipboard.writeText(status.url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* 剪贴板不可用时静默（链接仍可直接点击） */
     }
   };
 
@@ -181,16 +195,67 @@ export function CodexLoginCard() {
             配置目录中，不会发送到浏览器前端。
           </p>
           {status.state === "pending" ? (
-            <p
+            <div
               role="status"
               style={{
                 margin: 0,
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
                 fontSize: 12,
                 color: "var(--dsw-alias-label-secondary)",
               }}
             >
-              请在新窗口中完成登录，此页面会自动更新。
-            </p>
+              <p style={{ margin: 0, lineHeight: 1.5 }}>
+                请在新窗口/新打开的页面中完成登录；如果弹窗被拦截或想用其他
+                浏览器/设备，请手动打开下面的链接：
+              </p>
+              {status.url !== undefined ? (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <a
+                    href={status.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: 12,
+                      lineHeight: 1.4,
+                      color: "inherit",
+                      textDecoration: "underline",
+                      wordBreak: "break-all",
+                      maxWidth: "100%",
+                    }}
+                  >
+                    {status.url}
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => void copyUrl()}
+                    style={{
+                      appearance: "none",
+                      border: "1px solid var(--dsw-alias-border-l2)",
+                      borderRadius: 6,
+                      padding: "3px 10px",
+                      font: "inherit",
+                      fontSize: 12,
+                      cursor: "pointer",
+                      background: "var(--dsw-alias-bg-layer-3)",
+                      color: "var(--dsw-alias-label-secondary)",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {copied ? "已复制" : "复制链接"}
+                  </button>
+                </div>
+              ) : null}
+            </div>
           ) : null}
           {status.state === "error" ? (
             <p

@@ -58,9 +58,13 @@ export function apply(ctx: Context, config: Config): void {
       // 内置恢复未接管（未注册 / 放弃 / 重试次数用尽）：自己补一次压缩重试。
       const used = usedRetries.get(agent) ?? 0;
       if (used >= maxOverflowCompactions) return undefined;
-      const engine: CompactionEngine | undefined = agent.ctx.compaction;
-      if (engine === undefined) return undefined; // 作用域内没有压缩引擎，无法恢复
       try {
+        // 用 get() 而非属性访问：不声明 inject 也能安全探测 compaction 服务
+        // （属性访问会抛 "cannot get property ... without inject"）。
+        const engine = agent.ctx.get("compaction") as
+          | CompactionEngine
+          | undefined;
+        if (engine === undefined) return undefined; // 作用域内没有压缩引擎，无法恢复
         const result = await engine.compactIfNeeded(
           agent,
           "context-overflow",

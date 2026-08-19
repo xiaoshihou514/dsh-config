@@ -2,6 +2,15 @@ import { defineConfig } from "tsdown";
 
 const clientExternals = ["react", "react/jsx-runtime"];
 
+/**
+ * pi-ai 必须保持 external：它的 OAuth 加载器用变量动态 import
+ * `importOAuthModule("./openai-codex.ts")` 相对自身包内解析，打进插件 bundle
+ * 后相对路径会指向插件 lib/（找不到 openai-codex.js）。运行时从 node_modules
+ * 加载 pi-ai 即可让该相对导入落在 pi-ai 自己的 dist/auth/oauth/ 下。
+ */
+const nodeExternal = (id: string): boolean =>
+  id === "@earendil-works/pi-ai" || id.startsWith("@earendil-works/pi-ai/");
+
 export default defineConfig([
   {
     entry: {
@@ -18,7 +27,8 @@ export default defineConfig([
     format: "esm",
     outDir: "lib",
     platform: "node",
-    splitting: false
+    splitting: false,
+    external: nodeExternal
   },
   {
     entry: { client: "src/client/index.ts" },

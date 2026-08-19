@@ -3,24 +3,32 @@
  * provider（路由 `opencode-free`），自动提供 /models 里所有 `*-free` 模型。
  * 免费模型要求**不携带 Authorization 头**（带无效 key 会 401），按 IP 限流、
  * 非零保留（数据可能用于改进模型）。非流式调用：整段返回后按块发射。
- * 推理等级与原生 DeepSeek 适配器共用 off/high/max 词汇表：resolveModel
- * 声明 efforts 让原生选择器出现，stream 把生效等级映射到 wire 参数
- * （high/max → reasoning_effort；off → thinking disabled）。
+ * 推理等级与 codex/pi-ai 同一套标准词汇表（off/minimal/low/medium/high/xhigh/max，
+ * 即 OpenAI 兼容供应商的标准 reasoning_effort 取值，zen 网关已验证透传）：
+ * resolveModel 声明 efforts 让原生选择器出现，stream 把生效等级映射到 wire
+ * （等级原样 → reasoning_effort；off → thinking disabled；标题生成不干预）。
+ * 工具调用完整支持：请求携带 tools（OpenAI function 格式），assistant 的
+ * tool-call 历史 → tool_calls、工具结果 → {role:"tool"} 消息，响应里的
+ * tool_calls 解析回 harness 的 tool-call 块。
  * 错误归类与原生适配器一致：400 + 上下文超限 → CONTEXT_WINDOW_EXCEEDED，
  * 由 harness 内置压缩恢复（+ dsh-config overflow-recovery 兜底）自动压缩重试。
  */
 
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   CONTEXT_WINDOW_EXCEEDED_CODE,
+  CallId,
   LlmAdapter,
   LlmError,
   QUOTA_EXCEEDED_CODE,
   ReasoningEffortId,
+  RetryPolicySchema,
   attributionHeaders,
   isContextWindowExceededError,
   isQuotaExceededError,
+  resolveRetryPolicy,
   type ContentBlock,
   type FinishReason,
   type GenerateOptions,
@@ -28,8 +36,12 @@ import {
   type LlmReasoningEffortInfo,
   type LlmResolvedModelInfo,
   type Message,
+  type ResolvedRetryPolicy,
+  type RetryPolicyConfig,
   type StreamChunk,
   type TokenUsage,
+  type ToolCallBlock,
+  type ToolResultBlock,
 } from "@deepseek-ai/dsh-llm";
 
 export const name = "dsh-config-opencode";
@@ -42,15 +54,39 @@ const DEFAULT_MODEL = "deepseek-v4-flash-free";
 const FREE_SUFFIX = "-free";
 const MODELS_FETCH_TIMEOUT_MS = 4_000;
 
-/** 与原生 DeepSeek 适配器相同的推理等级词汇表，切换供应商时选择不丢失。 */
-const OFF_REASONING_EFFORT = ReasoningEffortId("off");
-const HIGH_REASONING_EFFORT = ReasoningEffortId("high");
-const MAX_REASONING_EFFORT = ReasoningEffortId("max");
-const REASONING_EFFORTS: readonly LlmReasoningEffortInfo[] = [
-  { id: OFF_REASONING_EFFORT, name: "Off" },
-  { id: HIGH_REASONING_EFFORT, name: "High" },
-  { id: MAX_REASONING_EFFORT, name: "Max" },
+/** 与 codex/pi-ai 目录一致的标准推理等级（升序），选择器展示与 wire 值都由此派生。 */
+const THINKING_LEVELS: readonly ModelThinkingLevel[] = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
 ];
+
+const REASONING_EFFORTS: readonly LlmReasoningEffortInfo[] =
+  THINKING_LEVELS.map((level) => ({
+    id: ReasoningEffortId(level),
+    name: `${level.charAt(0).toUpperCase()}${level.slice(1)}`,
+  }));
+
+/**
+ * opencode free 免费档按 IP 限流、窗口较长：比 harness 默认（2 次、500ms 起步）
+ * 更耐心的指数退避（1s 起步 ×2、封顶 30s、20% 抖动、最多 3 次重试）。
+ */
+const DEFAULT_RETRY_POLICY: RetryPolicyConfig = {
+  mode: "normal",
+  maxRetries: 3,
+  retryableCodes: [
+    "EMPTY_RESPONSE",
+    "RATE_LIMIT",
+    "SERVER",
+    "TIMEOUT",
+    "TRANSPORT",
+  ],
+  backoff: { initialDelayMs: 1_000, maxDelayMs: 30_000, jitterRatio: 0.2 },
+};
 
 export interface Config {
   /** chat completions 端点。 */
@@ -63,8 +99,10 @@ export interface Config {
   models?: string[];
   /** 每请求默认输出上限。 */
   maxTokens?: number;
-  /** 默认推理等级（与原生 deepseek 一致，默认 high）。 */
-  reasoningEffort?: "off" | "high" | "max";
+  /** 默认推理等级（标准词汇表之一，默认 high）。 */
+  reasoningEffort?: ModelThinkingLevel;
+  /** 限流/网络错误的指数退避重试策略（默认见 DEFAULT_RETRY_POLICY）。 */
+  retryPolicy?: RetryPolicyConfig;
 }
 
 export const Config = z.object({
@@ -73,19 +111,32 @@ export const Config = z.object({
   contextWindow: z.number().default(DEFAULT_CONTEXT_WINDOW),
   models: z.array(z.string()).default([DEFAULT_MODEL]),
   maxTokens: z.number().default(8192),
-  reasoningEffort: z.union(["off", "high", "max"]).default("high"),
+  reasoningEffort: z.union([...THINKING_LEVELS]).default("high"),
+  retryPolicy: RetryPolicySchema.default(DEFAULT_RETRY_POLICY),
 });
+
+interface OpenAiToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
 
 interface OpenAiMessage {
   role: string;
-  content: string;
+  content?: string | null;
+  tool_calls?: OpenAiToolCall[];
+  tool_call_id?: string;
 }
 
 interface OpenAiResponse {
   choices?: {
     index?: number;
     finish_reason?: string | null;
-    message?: { content?: string | null; reasoning_content?: string | null };
+    message?: {
+      content?: string | null;
+      reasoning_content?: string | null;
+      tool_calls?: OpenAiToolCall[];
+    };
   }[];
   usage?: {
     prompt_tokens?: number;
@@ -99,15 +150,22 @@ interface ModelList {
   data?: { id?: string }[];
 }
 
-/** 从 harness Message 提取纯文本块（图片/工具结果等非文本块不发送）。 */
-function textContent(message: Message): string {
+/** 从块列表提取纯文本。 */
+function textOf(blocks: readonly ContentBlock[]): string {
   const parts: string[] = [];
-  for (const part of message.content) {
+  for (const part of blocks) {
     if (part.type === "text") parts.push(part.text);
   }
   return parts.join("\n");
 }
 
+/**
+ * 序列化 harness 会话为 OpenAI chat completions 消息。关键：
+ * - assistant 的 tool-call 块 → `tool_calls`（OpenAI 格式，与文本共存）；
+ * - harness 里工具结果在 user 消息内（tool-result 块）→ wire 拆成独立
+ *   `{role:"tool", tool_call_id}` 消息（OpenAI 要求，与原生 deepseek 适配器一致）；
+ * - reasoning 块不发送（wire 无对应位置，文本+tool_calls 已足够）。
+ */
 function serializeMessages(
   system: string | undefined,
   messages: readonly Message[],
@@ -116,10 +174,39 @@ function serializeMessages(
   if (system !== undefined && system.length > 0)
     out.push({ role: "system", content: system });
   for (const message of messages) {
-    out.push({
-      role: message.role === "assistant" ? "assistant" : "user",
-      content: textContent(message),
-    });
+    const text = textOf(message.content);
+    const toolCalls = message.content.filter(
+      (part): part is ToolCallBlock => part.type === "tool-call",
+    );
+    const toolResults = message.content.filter(
+      (part): part is ToolResultBlock => part.type === "tool-result",
+    );
+    if (message.role === "assistant") {
+      if (text.length > 0 || toolCalls.length > 0) {
+        out.push({
+          role: "assistant",
+          content: text.length > 0 ? text : null,
+          ...(toolCalls.length > 0
+            ? {
+                tool_calls: toolCalls.map((call) => ({
+                  id: call.id,
+                  type: "function" as const,
+                  function: { name: call.name, arguments: call.arguments },
+                })),
+              }
+            : {}),
+        });
+      }
+    } else {
+      if (text.length > 0) out.push({ role: "user", content: text });
+      for (const result of toolResults) {
+        out.push({
+          role: "tool",
+          tool_call_id: result.toolCallId,
+          content: textOf(result.content),
+        });
+      }
+    }
   }
   return out;
 }
@@ -128,9 +215,10 @@ function mapFinishReason(reason: string | null | undefined): FinishReason {
   return reason === "length" ? { kind: "max-tokens" } : { kind: "stop" };
 }
 
-/** 校验推理等级：只接受与原生 DeepSeek 相同的 off/high/max（运行时已按声明清单预校验，这里是直达适配器的兜底）。 */
-function validateReasoningEffort(effort: string): "off" | "high" | "max" {
-  if (effort === "off" || effort === "high" || effort === "max") return effort;
+/** 校验推理等级：只接受标准词汇表内的等级（运行时已按声明清单预校验，这里是直达适配器的兜底）。 */
+function validateReasoningEffort(effort: string): ModelThinkingLevel {
+  if ((THINKING_LEVELS as readonly string[]).includes(effort))
+    return effort as ModelThinkingLevel;
   throw new LlmError(
     `OpenCode Free does not support reasoning effort "${effort}"`,
     "UNSUPPORTED_REASONING_EFFORT",
@@ -156,20 +244,21 @@ function httpErrorCode(status: number, detail: string): string {
 }
 
 /**
- * 与原生 DeepSeek 适配器相同的思考/推理等级解析：off 关闭思考（thinking disabled），
- * high/max 开启并带上 reasoning_effort（zen 网关已验证接受该参数）。会话标题生成不思考。
+ * 标准词汇表 → wire 映射（与 pi-ai openai-completions 派发一致）：等级原样
+ * 作为 reasoning_effort（zen 网关已验证接受 low/high/max/minimal 等取值）；
+ * off 关闭思考（thinking disabled，与原生 DeepSeek 语义一致）；标题生成不干预。
  */
 function resolveThinking(options: GenerateOptions): {
-  thinking?: "enabled" | "disabled";
-  reasoningEffort?: "high" | "max";
+  thinking?: "disabled";
+  reasoningEffort?: Exclude<ModelThinkingLevel, "off">;
 } {
-  if (options.purpose === "session-title") return { thinking: "disabled" };
+  if (options.purpose === "session-title") return {};
   const effort =
     options.reasoningEffort === undefined
       ? undefined
       : validateReasoningEffort(options.reasoningEffort);
   if (effort === "off") return { thinking: "disabled" };
-  if (effort === "high" || effort === "max") return { reasoningEffort: effort };
+  if (effort !== undefined) return { reasoningEffort: effort };
   return {};
 }
 
@@ -183,6 +272,14 @@ class OpenCodeAdapter extends LlmAdapter {
 
   providerInfo(provider: string) {
     return { id: provider, name: "OpenCode Free" };
+  }
+
+  /** 限流/网络失败的指数退避重试策略（harness 重试循环执行退避）。 */
+  providerRetryPolicy(_provider: string): ResolvedRetryPolicy {
+    return resolveRetryPolicy(
+      this.config.retryPolicy,
+      "opencode-free retryPolicy",
+    );
   }
 
   /**
@@ -222,13 +319,6 @@ class OpenCodeAdapter extends LlmAdapter {
     provider: string,
     model: string,
   ): Promise<LlmResolvedModelInfo> {
-    const configured = this.config.reasoningEffort;
-    const defaultEffort =
-      configured === "off"
-        ? OFF_REASONING_EFFORT
-        : configured === "max"
-          ? MAX_REASONING_EFFORT
-          : HIGH_REASONING_EFFORT;
     return {
       provider,
       id: model,
@@ -239,7 +329,10 @@ class OpenCodeAdapter extends LlmAdapter {
       ...(this.config.maxTokens !== undefined
         ? { defaultMaxTokens: this.config.maxTokens }
         : {}),
-      reasoning: { efforts: REASONING_EFFORTS, defaultEffort },
+      reasoning: {
+        efforts: REASONING_EFFORTS,
+        defaultEffort: ReasoningEffortId(this.config.reasoningEffort ?? "high"),
+      },
     };
   }
 
@@ -254,6 +347,18 @@ class OpenCodeAdapter extends LlmAdapter {
       body.temperature = options.temperature;
     if (options.stop !== undefined && options.stop.length > 0)
       body.stop = options.stop;
+    if (options.tools !== undefined && options.tools.length > 0) {
+      body.tools = options.tools.map((tool) => ({
+        type: "function",
+        function: {
+          name: tool.name,
+          ...(tool.description !== undefined && tool.description.length > 0
+            ? { description: tool.description }
+            : {}),
+          parameters: tool.parameters,
+        },
+      }));
+    }
 
     const thinking = resolveThinking(options);
     if (thinking.thinking !== undefined)
@@ -305,7 +410,9 @@ class OpenCodeAdapter extends LlmAdapter {
     const choice = parsed.choices?.[0];
     const reasoning = choice?.message?.reasoning_content ?? undefined;
     const content = choice?.message?.content ?? undefined;
+    const toolCalls = choice?.message?.tool_calls ?? [];
 
+    let nextIndex = 0;
     if (reasoning !== undefined && reasoning.length > 0) {
       yield { type: "block-start", index: 0, blockType: "reasoning" };
       yield { type: "reasoning-delta", index: 0, text: reasoning };
@@ -314,15 +421,43 @@ class OpenCodeAdapter extends LlmAdapter {
         index: 0,
         block: { type: "reasoning", text: reasoning },
       };
+      nextIndex = 1;
     }
-    const textIndex = reasoning !== undefined && reasoning.length > 0 ? 1 : 0;
     if (content !== undefined && content.length > 0) {
-      yield { type: "block-start", index: textIndex, blockType: "text" };
-      yield { type: "text-delta", index: textIndex, text: content };
+      yield { type: "block-start", index: nextIndex, blockType: "text" };
+      yield { type: "text-delta", index: nextIndex, text: content };
       yield {
         type: "block-end",
-        index: textIndex,
+        index: nextIndex,
         block: { type: "text", text: content },
+      };
+      nextIndex += 1;
+    }
+    for (const call of toolCalls) {
+      const index = nextIndex;
+      const callId = CallId(call.id);
+      nextIndex += 1;
+      yield {
+        type: "block-start",
+        index,
+        blockType: "tool-call",
+      };
+      yield {
+        type: "tool-call-delta",
+        index,
+        id: callId,
+        name: call.function.name,
+        argumentsDelta: call.function.arguments,
+      };
+      yield {
+        type: "block-end",
+        index,
+        block: {
+          type: "tool-call",
+          id: callId,
+          name: call.function.name,
+          arguments: call.function.arguments,
+        },
       };
     }
 
