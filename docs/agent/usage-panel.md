@@ -14,10 +14,10 @@ dsh-config 在 DSH Web **侧边栏设置上方的「用量」入口**（`sidebar
 
 DeepSeek 官方 2026-08-17 起改用峰谷计价：高峰时段为北京时间 9:00-12:00、14:00-18:00，其余为闲时，闲时价格为高峰的一半（元 / 百万 tokens）：
 
-| 模型 | 缓存命中 高峰 / 闲时 | 未命中输入 高峰 / 闲时 | 输出 高峰 / 闲时 |
-| --- | --- | --- | --- |
-| deepseek-v4-flash | 0.10 / 0.05 | 3.0 / 1.5 | 9.0 / 4.5 |
-| deepseek-v4-pro | 0.30 / 0.15 | 9.0 / 4.5 | 27.0 / 13.5 |
+| 模型              | 缓存命中 高峰 / 闲时 | 未命中输入 高峰 / 闲时 | 输出 高峰 / 闲时 |
+| ----------------- | -------------------- | ---------------------- | ---------------- |
+| deepseek-v4-flash | 0.10 / 0.05          | 3.0 / 1.5              | 9.0 / 4.5        |
+| deepseek-v4-pro   | 0.30 / 0.15          | 9.0 / 4.5              | 27.0 / 13.5      |
 
 前端 `isPeak()` 用 UTC+8（北京时区无夏令时）判定记录时间是否落在高峰窗口，每条记录按自身发生时间取对应单价；「实际费用」卡片同时展示高峰 / 闲时费用拆分。
 
@@ -26,7 +26,7 @@ DeepSeek 官方 2026-08-17 起改用峰谷计价：高峰时段为北京时间 9
 - Host 半侧：`src/usage-api.ts`（记账 + `/dsh-config/usage` 只读接口）。
 - 浏览器半侧：`src/client/index.ts`（分区 + 侧边栏入口注册）与 `src/client/UsageSection.tsx`（面板 UI）。
 - 入口：注册 `sidebar.footer.action`（id `usage`、order 0），在**设置入口上方**渲染自带图标的「用量」按钮（宽栏图标+文字、窄栏圆形图标，样式逐项对齐设置触发器 `.trigger`），点击打开自绘弹窗（`src/client/UsageTrigger.tsx`，外壳逐项对齐设置弹窗 SettingsRoot：`bg-layer-2`、无边框、lv3 阴影、54px 顶栏、官方关闭按钮）。图标由插件自己控制，不依赖壳层按 id 硬编码的图标映射。
-- 图标：`src/client/icons.tsx` 从 `@deepseek-ai/dsh-client-ui-primitives`（`src/icons`，ic_ds_* 字形）**内联**了 5 个 SVG。不直接 import 该包：其已发布 lib 没有 icons-only 子入口，根入口会连带 markdown/katex 图（含 `katex.min.css` 实引），tsdown 无法打包（需 `@tsdown/css`），且 `treeshake: { moduleSideEffects: false }` 挡不住 css-guard 的加载。
+- 图标：`src/client/icons.tsx` 从 `@deepseek-ai/dsh-client-ui-primitives`（`src/icons`，ic*ds*\* 字形）**内联**了 5 个 SVG。不直接 import 该包：其已发布 lib 没有 icons-only 子入口，根入口会连带 markdown/katex 图（含 `katex.min.css` 实引），tsdown 无法打包（需 `@tsdown/css`），且 `treeshake: { moduleSideEffects: false }` 挡不住 css-guard 的加载。
 
 ## 界面（2026-08-17 重做，参考 Codex 用量页）
 

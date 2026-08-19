@@ -16,14 +16,27 @@ export function AutoApproveToggle({ sessionId }: { sessionId?: string }) {
     if (sessionId === undefined) return;
     let stale = false;
     const controller = new AbortController();
-    void fetch(`/dsh-config/auto-approval?session=${encodeURIComponent(sessionId)}`, {
-      headers: HEADER,
-      signal: controller.signal,
-    })
-      .then((response) => response.json() as Promise<{ ok?: boolean; enabled?: boolean }>)
-      .then((payload) => { if (!stale && payload.ok === true) setEnabled(payload.enabled === true); })
-      .catch(() => { /* 宿主不可达时保持关闭 */ });
-    return () => { stale = true; controller.abort(); };
+    void fetch(
+      `/dsh-config/auto-approval?session=${encodeURIComponent(sessionId)}`,
+      {
+        headers: HEADER,
+        signal: controller.signal,
+      },
+    )
+      .then(
+        (response) =>
+          response.json() as Promise<{ ok?: boolean; enabled?: boolean }>,
+      )
+      .then((payload) => {
+        if (!stale && payload.ok === true) setEnabled(payload.enabled === true);
+      })
+      .catch(() => {
+        /* 宿主不可达时保持关闭 */
+      });
+    return () => {
+      stale = true;
+      controller.abort();
+    };
   }, [sessionId]);
 
   const toggle = async () => {
@@ -37,7 +50,10 @@ export function AutoApproveToggle({ sessionId }: { sessionId?: string }) {
         headers: { "content-type": "application/json", ...HEADER },
         body: JSON.stringify({ session: sessionId, enabled: next }),
       });
-      const payload = await response.json() as { ok?: boolean; enabled?: boolean };
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        enabled?: boolean;
+      };
       if (payload.ok !== true) setEnabled(!next); // 失败回滚
     } catch {
       setEnabled(!next); // 网络失败回滚
@@ -69,7 +85,9 @@ export function AutoApproveToggle({ sessionId }: { sessionId?: string }) {
         background: enabled
           ? "color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, transparent)"
           : "var(--dsw-alias-interactive-bg-hover)",
-        color: enabled ? "var(--dsw-alias-state-business-primary)" : "var(--dsw-alias-label-secondary)",
+        color: enabled
+          ? "var(--dsw-alias-state-business-primary)"
+          : "var(--dsw-alias-label-secondary)",
         opacity: busy ? 0.7 : 1,
         transition: "background .16s, color .16s, opacity .16s",
       }}

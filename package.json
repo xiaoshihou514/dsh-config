@@ -7,17 +7,43 @@
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
-    ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" },
-    "./usage-api": { "types": "./lib/usage-api.d.ts", "default": "./lib/usage-api.js" },
-    "./approval-review": { "types": "./lib/approval-review.d.ts", "default": "./lib/approval-review.js" },
-    "./opencode": { "types": "./lib/opencode.d.ts", "default": "./lib/opencode.js" },
-    "./codex-provider": { "types": "./lib/codex-provider.d.ts", "default": "./lib/codex-provider.js" },
-    "./inject-once": { "types": "./lib/inject-once.d.ts", "default": "./lib/inject-once.js" },
-    "./client": { "types": "./lib/client.d.ts", "default": "./lib/client.js" },
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./usage-api": {
+      "types": "./lib/usage-api.d.ts",
+      "default": "./lib/usage-api.js"
+    },
+    "./approval-review": {
+      "types": "./lib/approval-review.d.ts",
+      "default": "./lib/approval-review.js"
+    },
+    "./opencode": {
+      "types": "./lib/opencode.d.ts",
+      "default": "./lib/opencode.js"
+    },
+    "./codex-provider": {
+      "types": "./lib/codex-provider.d.ts",
+      "default": "./lib/codex-provider.js"
+    },
+    "./inject-once": {
+      "types": "./lib/inject-once.d.ts",
+      "default": "./lib/inject-once.js"
+    },
+    "./client": {
+      "types": "./lib/client.d.ts",
+      "default": "./lib/client.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
-  "files": ["lib", "cordis.patch.yml", "justfile", "README.md"],
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "justfile",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsdown",
     "check": "tsc --noEmit",
@@ -25,7 +51,9 @@
     "prepare": "pnpm run build"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "inject": [
@@ -72,5 +100,7 @@
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
   },
-  "engines": { "node": "^22.19.0 || >=24" }
+  "engines": {
+    "node": "^22.19.0 || >=24"
+  }
 }

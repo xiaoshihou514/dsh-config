@@ -1,4 +1,4 @@
 allowBuilds:
   # pi-ai 间接依赖；两者的生命周期脚本均不是本插件运行所必需。
-  '@google/genai': false
+  "@google/genai": false
   protobufjs: false

@@ -40,12 +40,17 @@ interface Header {
 }
 
 function dataPath(): string {
-  return join(process.env.DSH_HOME?.trim() || join(homedir(), ".dsh"), "dsh-config", "usage.json");
+  return join(
+    process.env.DSH_HOME?.trim() || join(homedir(), ".dsh"),
+    "dsh-config",
+    "usage.json",
+  );
 }
 
 function modelFor(header: Header | undefined): Model | undefined {
   if (header?.provider !== PROVIDER) return undefined;
-  return header.model === "deepseek-v4-pro" || header.model === "deepseek-v4-flash"
+  return header.model === "deepseek-v4-pro" ||
+    header.model === "deepseek-v4-flash"
     ? header.model
     : undefined;
 }
@@ -57,7 +62,11 @@ function projectName(cwd: string | undefined): string {
 async function load(path: string): Promise<UsageFile> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+    ) {
       const candidate = parsed as Partial<UsageFile>;
       if (candidate.version === 1 && Array.isArray(candidate.records)) {
         return { version: 1, records: candidate.records.filter(isRecord) };
@@ -70,18 +79,34 @@ async function load(path: string): Promise<UsageFile> {
 }
 
 function isRecord(value: unknown): value is UsageRecord {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
   const record = value as Partial<UsageRecord>;
-  return typeof record.id === "string" && typeof record.at === "number" && typeof record.project === "string"
-    && (record.model === "deepseek-v4-flash" || record.model === "deepseek-v4-pro")
-    && [record.inputTokens, record.outputTokens, record.cacheReadTokens, record.cacheWriteTokens]
-      .every((count) => typeof count === "number" && Number.isFinite(count) && count >= 0);
+  return (
+    typeof record.id === "string" &&
+    typeof record.at === "number" &&
+    typeof record.project === "string" &&
+    (record.model === "deepseek-v4-flash" ||
+      record.model === "deepseek-v4-pro") &&
+    [
+      record.inputTokens,
+      record.outputTokens,
+      record.cacheReadTokens,
+      record.cacheWriteTokens,
+    ].every(
+      (count) =>
+        typeof count === "number" && Number.isFinite(count) && count >= 0,
+    )
+  );
 }
 
 async function save(path: string, value: UsageFile): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
+  await writeFile(temporary, `${JSON.stringify(value)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   await rename(temporary, path);
 }
 
@@ -107,19 +132,32 @@ export function apply(ctx: Context): void {
     serialized = null;
   };
 
-  const account = (session: { id: string; header: { cwd?: string } }, event: SessionEvent): void => {
+  const account = (
+    session: { id: string; header: { cwd?: string } },
+    event: SessionEvent,
+  ): void => {
     if (event.type === "request/header") {
       headers.set(session, event.data.header.config);
       return;
     }
-    let usage: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number } | undefined;
+    let usage:
+      | {
+          inputTokens: number;
+          outputTokens: number;
+          cacheReadTokens?: number;
+          cacheWriteTokens?: number;
+        }
+      | undefined;
     let turn: number | undefined;
     let step: number | undefined;
     if (event.type === "assistant/chunk" && event.data.chunk.type === "usage") {
       usage = event.data.chunk.usage;
       turn = event.data.turn;
       step = event.data.step;
-    } else if (event.type === "assistant/message" && event.data.usage !== undefined) {
+    } else if (
+      event.type === "assistant/message" &&
+      event.data.usage !== undefined
+    ) {
       usage = event.data.usage;
       turn = event.data.turn;
       step = event.data.step;
@@ -136,22 +174,29 @@ export function apply(ctx: Context): void {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       cacheReadTokens: usage.cacheReadTokens ?? 0,
-      cacheWriteTokens: usage.cacheWriteTokens ?? 0
+      cacheWriteTokens: usage.cacheWriteTokens ?? 0,
     });
-    writes = writes.then(async () => {
-      const next = await file;
-      const record = pending.get(id);
-      if (record === undefined) return;
-      const index = next.records.findIndex((entry) => entry.id === id);
-      if (index >= 0) next.records[index] = record;
-      else next.records.push(record);
-      pending.delete(id);
-      file = Promise.resolve(next);
-      refreshCache(next);
-      await save(path, next);
-    }).catch((error: unknown) => {
-      ctx.logger("dsh-config").warn("无法保存 Token 用量：%s", error instanceof Error ? error.message : String(error));
-    });
+    writes = writes
+      .then(async () => {
+        const next = await file;
+        const record = pending.get(id);
+        if (record === undefined) return;
+        const index = next.records.findIndex((entry) => entry.id === id);
+        if (index >= 0) next.records[index] = record;
+        else next.records.push(record);
+        pending.delete(id);
+        file = Promise.resolve(next);
+        refreshCache(next);
+        await save(path, next);
+      })
+      .catch((error: unknown) => {
+        ctx
+          .logger("dsh-config")
+          .warn(
+            "无法保存 Token 用量：%s",
+            error instanceof Error ? error.message : String(error),
+          );
+      });
   };
 
   ctx.on("session/event", account);
@@ -179,10 +224,13 @@ export function apply(ctx: Context): void {
         "cache-control": "no-store",
         "content-type": "application/json; charset=utf-8",
         "x-content-type-options": "nosniff",
-        etag
+        etag,
       });
       response.end(serialized);
-    }
+    },
   };
-  ctx.effect(() => ctx.webServer.register(route), "dsh-config: token calendar API");
+  ctx.effect(
+    () => ctx.webServer.register(route),
+    "dsh-config: token calendar API",
+  );
 }
