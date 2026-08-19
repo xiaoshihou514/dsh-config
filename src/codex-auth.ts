@@ -24,8 +24,8 @@ const REFRESH_EARLY_MS = 5 * 60_000;
 let refreshInFlight: Promise<string> | undefined;
 
 export function codexAuthFile(): string {
-  const root = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
-  return join(root, "auth.json");
+  const root = process.env.CODEX_HOME?.trim() || join(homedir(), ".dsh");
+  return join(root, "codex", "auth.json");
 }
 
 function expiresAt(accessToken: string): number {
