@@ -10,7 +10,8 @@ export default defineConfig([
       "approval-review": "src/approval-review.ts",
       opencode: "src/opencode-provider.ts",
       "codex-provider": "src/codex-provider.ts",
-      "inject-once": "src/inject-once.ts"
+      "inject-once": "src/inject-once.ts",
+      "overflow-recovery": "src/overflow-recovery.ts"
     },
     dts: true,
     fixedExtension: false,

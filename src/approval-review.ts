@@ -535,25 +535,26 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => ctx.webServer.register(modelsRoute), "dsh-config: opencode models API");
 }
 
-/** OpenCode Free 免费模型列表（* -free 后缀），60 秒内缓存。 */
-let freeModelsCache: { at: number; models: string[] } | null = null;
-const FREE_MODELS_TTL_MS = 60 * 1_000;
+/** OpenCode Free 免费模型列表：成功结果会话生命周期缓存；失败不缓存、下次重试。 */
+let freeModelsCache: string[] | null = null;
 
 async function openCodeFreeModels(): Promise<string[]> {
-  if (freeModelsCache !== null && Date.now() - freeModelsCache.at < FREE_MODELS_TTL_MS) return freeModelsCache.models;
+  if (freeModelsCache !== null) return freeModelsCache;
   const models: string[] = [];
+  let succeeded = false;
   try {
-    const response = await fetch(OPENCODE_MODELS_URL, { headers: attributionHeaders() });
+    const response = await fetch(OPENCODE_MODELS_URL, { headers: attributionHeaders(), signal: AbortSignal.timeout(4_000) });
     if (response.ok) {
       const parsed = await response.json() as { data?: { id?: string }[] };
       for (const item of parsed.data ?? []) {
         if (item.id !== undefined && item.id.endsWith(FREE_SUFFIX)) models.push(item.id);
       }
+      succeeded = true;
     }
   } catch {
-    // 拉取失败返回空列表，卡片退回默认项。
+    // 网络失败：返回空列表（卡片有默认项兜底），不缓存、下次重试。
   }
-  freeModelsCache = { at: Date.now(), models };
+  if (succeeded) freeModelsCache = models;
   return models;
 }
 

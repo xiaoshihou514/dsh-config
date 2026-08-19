@@ -12,3 +12,5 @@
       name: dsh-config/codex-provider
     - id: dsh-config-inject-once
       name: dsh-config/inject-once
+    - id: dsh-config-overflow-recovery
+      name: dsh-config/overflow-recovery

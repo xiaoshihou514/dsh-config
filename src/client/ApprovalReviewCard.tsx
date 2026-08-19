@@ -101,7 +101,7 @@ export function ApprovalReviewCard({ scope, api }: ApprovalReviewCardInjected) {
     >
       <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
         <span style={{ fontSize: 15, fontWeight: 600, lineHeight: 1.4, color: "var(--dsw-alias-label-primary)" }}>自动模式</span>
-        <span style={{ fontSize: 13, lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary)" }}>提权先经 AI 自动审核，通过仅放行本次；智谱失败自动回退 OpenCode Free</span>
+        <span style={{ fontSize: 13, lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary)" }}>提权回先经大模型尝试自动审核</span>
       </span>
       {dirty ? <span style={{ flex: "none", borderRadius: 999, padding: "1px 8px", fontSize: 11, lineHeight: "17px", fontWeight: 500, whiteSpace: "nowrap", background: "var(--dsw-alias-bg-module-platform)", color: "var(--dsw-alias-label-secondary)" }}>未保存</span> : null}
       <span style={{ flex: "none", color: "var(--dsw-alias-label-tertiary)", transition: "transform .16s", transform: open ? "rotate(180deg)" : undefined, display: "inline-flex" }}>
@@ -121,11 +121,10 @@ export function ApprovalReviewCard({ scope, api }: ApprovalReviewCardInjected) {
           <option value="">默认（{DEFAULT_FALLBACK_MODEL}）</option>
           {models.map((model) => <option key={model} value={model}>{model}</option>)}
         </select>
-        <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary)" }}>回退端点（免认证，按 IP 限流）；免费模型会轮换，列表实时拉取。</p>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "12px 0", borderTop: "1px solid var(--dsw-alias-border-l2)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 500, lineHeight: 1.5, color: "var(--dsw-alias-label-primary)" }}>智谱 API Key</span>
+          <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 500, lineHeight: 1.5, color: "var(--dsw-alias-label-primary)" }}>智谱密钥</span>
           <span style={{ borderRadius: 999, padding: "1px 8px", fontSize: 11, lineHeight: "17px", whiteSpace: "nowrap", fontWeight: 500, background: "var(--dsw-alias-bg-module-platform)", color: "var(--dsw-alias-label-secondary)" }}>
             {configured ? "已配置" : "未配置"}
           </span>
@@ -139,8 +138,8 @@ export function ApprovalReviewCard({ scope, api }: ApprovalReviewCardInjected) {
           style={{ height: 34, padding: "0 12px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, background: "var(--dsw-alias-bg-layer-3)", font: "inherit", fontSize: 13, lineHeight: 1.5, color: "var(--dsw-alias-label-primary)" }}
         />
         <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary)" }}>
-          存储在 ZHIPU_API_KEY 凭据中，不会回传到浏览器。留空则跳过智谱、直接走 OpenCode Free。{' '}
-          <a href={KEY_PAGE} target="_blank" rel="noreferrer" style={{ color: "var(--dsw-alias-label-primary-bluish)" }}>前往 bigmodel.cn 获取免费 Key</a>
+          留空则跳过智谱、直接走 OpenCode Free。{' '}
+          <a href={KEY_PAGE} target="_blank" rel="noreferrer" style={{ color: "var(--dsw-alias-label-primary-bluish)" }}>前往 bigmodel.cn 免费获取密钥</a>
         </p>
       </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, padding: "12px 0 4px", borderTop: "1px solid var(--dsw-alias-border-l2)" }}>
