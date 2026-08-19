@@ -263,6 +263,8 @@ interface ReviewResult {
   /** 模型给出的理由（JSON reason 字段）。 */
   reason?: string;
   status?: number;
+  /** 模型原始回复片段（诊断用；content 为空时含 reasoning 提示）。 */
+  raw?: string;
 }
 
 /**
@@ -382,14 +384,25 @@ async function attemptEndpoint(
           };
         }[];
       };
-      const content = parsed.choices?.[0]?.message?.content ?? "";
-      const parsedVerdict = parseVerdict(content);
+      const message = parsed.choices?.[0]?.message;
+      const content = message?.content ?? "";
+      // thinking 模型可能把预算花在思考上：content 为空时把 reasoning_content
+      // 也交给解析器兜底（思考末尾可能带 JSON），并记录原始片段便于诊断。
+      const fallback = content.trim().length === 0 ? (message?.reasoning_content ?? "") : "";
+      const parsedVerdict = parseVerdict(
+        content.trim().length === 0 ? fallback : content,
+      );
+      const raw =
+        content.trim().length > 0
+          ? content.slice(0, 200)
+          : `(content空, reasoning ${(message?.reasoning_content ?? "").length}字)${fallback.slice(0, 120)}`;
       return {
         verdict: parsedVerdict.verdict,
         ...(parsedVerdict.reason !== undefined
           ? { reason: parsedVerdict.reason }
           : {}),
         ...(lastStatus !== undefined ? { status: lastStatus } : {}),
+        raw,
       };
     } catch {
       if (attempt < MAX_ATTEMPTS) {
@@ -447,6 +460,9 @@ async function review(
       model,
       temperature: 0,
       max_tokens: 1024,
+      // 审查只需判定，关闭思考：避免 thinking 模型把预算花在推理上导致
+      // content 为空（智谱/opencode 后端均支持该字段）。
+      thinking: { type: "disabled" },
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         {
@@ -696,6 +712,7 @@ export function apply(ctx: Context, config: Config): void {
           verdict: result.verdict,
           ...(result.reason !== undefined ? { reason: result.reason } : {}),
           ...(result.status !== undefined ? { status: result.status } : {}),
+          ...(result.raw !== undefined ? { raw: result.raw } : {}),
           latencyMs: Date.now() - started,
         });
         const reasonNote =

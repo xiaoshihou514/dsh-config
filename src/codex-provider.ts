@@ -1,6 +1,9 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
-import { resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
+import {
+  resolveRetryPolicy,
+  type RetryPolicyConfig,
+} from "@deepseek-ai/dsh-llm";
 import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
 import type { ResolvedPiAiProviderProfile } from "@deepseek-ai/dsh-llm-pi-ai";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
@@ -23,6 +26,20 @@ export const PROVIDER = "openai-codex";
 const LOGIN_ROUTE = "/dsh-config/codex-login";
 const LOGIN_HEADER = "x-dsh-config";
 const LOGIN_HEADER_VALUE = "codex-login";
+
+/** 与 opencode free 同款的限流/网络错误指数退避：1s 起步 ×2、封顶 30s、20% 抖动、最多 3 次重试。 */
+const CODEX_RETRY_POLICY: RetryPolicyConfig = {
+  mode: "normal",
+  maxRetries: 3,
+  retryableCodes: [
+    "EMPTY_RESPONSE",
+    "RATE_LIMIT",
+    "SERVER",
+    "TIMEOUT",
+    "TRANSPORT",
+  ],
+  backoff: { initialDelayMs: 1_000, maxDelayMs: 30_000, jitterRatio: 0.2 },
+};
 
 export type CodexLoginStatus =
   | { state: "idle" }
@@ -158,7 +175,7 @@ export function createCodexAdapter(): PiAiAdapter {
     provider: PROVIDER,
     displayName: "Codex 订阅",
     streamIdleTimeoutMs: 300_000,
-    retryPolicy: resolveRetryPolicy(undefined, "Codex 订阅重试策略"),
+    retryPolicy: resolveRetryPolicy(CODEX_RETRY_POLICY, "Codex 订阅重试策略"),
     piProvider,
     configuredMaxTokens: new Map(),
   };
