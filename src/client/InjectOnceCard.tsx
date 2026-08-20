@@ -1,31 +1,44 @@
 import { useEffect, useState } from "react";
-import type { SettingsScope } from "@deepseek-ai/dsh-client-runtime/client";
 import { IconChevronDownOutline14 } from "./icons.tsx";
 
-export interface InjectOnceSettings {
-  prompt?: string;
+const HEADER = { "x-dsh-config": "inject-once" };
+
+async function loadPrompt(): Promise<string> {
+  const response = await fetch("/dsh-config/inject-once", {
+    headers: HEADER,
+  });
+  const body = (await response.json()) as { ok?: boolean; prompt?: string };
+  if (!response.ok || body.ok !== true || typeof body.prompt !== "string")
+    throw new Error("读取备忘录失败");
+  return body.prompt;
 }
 
-export function InjectOnceCard({
-  scope,
-}: {
-  scope: SettingsScope<InjectOnceSettings>;
-}) {
+async function savePrompt(prompt: string): Promise<void> {
+  const response = await fetch("/dsh-config/inject-once", {
+    method: "PUT",
+    headers: { ...HEADER, "content-type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  const body = (await response.json()) as { ok?: boolean };
+  if (!response.ok || body.ok !== true) throw new Error("保存备忘录失败");
+}
+
+export function InjectOnceCard() {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [saved, setSaved] = useState("");
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  const refresh = () => {
-    const value = scope.getSnapshot().value?.prompt ?? "";
-    setDraft(value);
-    setSaved(value);
-  };
-
   useEffect(() => {
-    refresh();
-    return scope.subscribe(refresh);
+    void loadPrompt()
+      .then((value) => {
+        setDraft(value);
+        setSaved(value);
+      })
+      .catch(() => {
+        /* 后端不可达时保持空 */
+      });
   }, []);
 
   const dirty = draft !== saved;
@@ -33,7 +46,7 @@ export function InjectOnceCard({
     setSaving(true);
     setFailed(false);
     try {
-      await scope.set("prompt", draft);
+      await savePrompt(draft);
       setSaved(draft);
     } catch {
       setFailed(true);

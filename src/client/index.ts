@@ -11,7 +11,7 @@ import { UsageTrigger } from "./UsageTrigger.tsx";
 import { AutoApproveToggle } from "./AutoApproveToggle.tsx";
 import { ApprovalReviewCard, type ApprovalReviewCardInjected, type ApprovalReviewSettings } from "./ApprovalReviewCard.tsx";
 import { CodexLoginCard } from "./CodexLoginCard.tsx";
-import { InjectOnceCard, type InjectOnceSettings } from "./InjectOnceCard.tsx";
+import { InjectOnceCard } from "./InjectOnceCard.tsx";
 
 export const inject = ["slots", "connection", "settingsScope"];
 
@@ -21,7 +21,6 @@ export function apply(ctx: ClientContext): void {
     scope: approvalScope,
     api: (ctx.get("connection") as ConnectionHandle).api,
   });
-  const injectOnceScope = ctx.settingsScope.bind<InjectOnceSettings>({ namespace: "dsh-config-inject-once" });
 
   ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register(
     {
@@ -64,7 +63,7 @@ export function apply(ctx: ClientContext): void {
       name: "settings.plugin.item",
       id: "dsh-config-inject-once",
       order: 50,
-      inject: () => ({ scope: injectOnceScope })
+      inject: () => ({})
     },
     InjectOnceCard
   ));

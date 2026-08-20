@@ -67,6 +67,7 @@ export function biliSearch(client: BiliClient) {
                 play: { type: "integer" },
                 danmaku: { type: "integer" },
                 bvid: { type: "string" },
+                aid: { type: "integer" },
                 epId: { type: "integer" },
                 seasonId: { type: "integer" },
                 mid: { type: "integer" },
