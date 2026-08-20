@@ -61,11 +61,14 @@ describe("单次提醒触发边界", () => {
       | undefined;
     const ctx = {
       settings: { register: () => ({ get: () => ({ prompt: "全局规则" }) }) },
+      // 本测试无 webServer 服务：get 返回 undefined 走"跳过路由注册"分支，effect 置为空操作
+      get: () => undefined,
+      effect: () => undefined,
       on: (event: string, hook: typeof listener) => {
         if (event === "agent/pre-step") listener = hook;
       },
     };
-    apply(ctx as never, {});
+    apply(ctx as never, { prompt: "全局规则" });
     const prompt = createUserMessage({
       content: [{ type: "text", text: "开始" }],
       source: { kind: "user" },

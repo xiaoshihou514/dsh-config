@@ -205,8 +205,19 @@ function createRun(
         if (selected === null) {
           throw new Error("没有可用的音频流（可能需要登录或该视频无音频轨）");
         }
-        await downloadToFile(client.http, selected.url, targetPath, signal, onProgress);
-        return;
+        // 依次尝试 base_url 与备用镜像（CDN 可能被网络环境拦截，对齐原版 backup 优先探测）
+        const candidates = [selected.url, ...(selected.backupUrls ?? [])];
+        let lastError: unknown;
+        for (const candidate of candidates) {
+          try {
+            await downloadToFile(client.http, candidate, targetPath, signal, onProgress);
+            return;
+          } catch (error) {
+            if (signal.aborted) throw error;
+            lastError = error;
+          }
+        }
+        throw lastError ?? new Error("音频流下载失败");
       }
       case "cover": {
         if (unit.coverUrl === undefined || unit.coverUrl === "") {

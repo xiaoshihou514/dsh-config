@@ -419,34 +419,34 @@ export function apply(ctx: Context): void {
       cells: {},
     });
     const cell = cellOf(record);
-    const projectBucket = (day.byProject[record.project] ??= emptyCell());
-    const modelBucket = (day.byModel[record.model] ??= emptyCell());
     const cellKey = `${record.project}\u0000${record.model}`;
     if (existing >= 0) {
-      // 覆盖：先撤销旧值再累加新值（保持聚合一致）。
+      // 覆盖：按旧记录的 project/model 撤销对应分桶，再累加新值。
+      // 注意：分桶一律直接操作 day 属性，不能缓存引用——覆盖分支里
+      // 重新赋值会让旧引用指向被替换对象，导致分桶累加失效（历史 bug）。
       const old = file.today[existing];
       if (old !== undefined) {
         const oldCell = cellOf(old);
         day.total = subtractCell(day.total, oldCell);
-        day.byProject[record.project] = subtractCell(
-          day.byProject[record.project] ?? emptyCell(),
-          oldCell,
-        );
-        day.byModel[record.model] = subtractCell(
-          day.byModel[record.model] ?? emptyCell(),
-          oldCell,
-        );
-        const oldBucket = day.cells[cellKey];
-        if (oldBucket !== undefined) {
-          day.cells[cellKey] = subtractCell(oldBucket, oldCell);
-        }
+        const oldProjectBucket = day.byProject[old.project];
+        if (oldProjectBucket !== undefined)
+          day.byProject[old.project] = subtractCell(oldProjectBucket, oldCell);
+        const oldModelBucket = day.byModel[old.model];
+        if (oldModelBucket !== undefined)
+          day.byModel[old.model] = subtractCell(oldModelBucket, oldCell);
+        const oldCellKey = `${old.project}\u0000${old.model}`;
+        const oldBucket = day.cells[oldCellKey];
+        if (oldBucket !== undefined)
+          day.cells[oldCellKey] = subtractCell(oldBucket, oldCell);
         file.today[existing] = record;
       }
     } else {
       file.today.push(record);
     }
     addCell(day.total, cell);
+    const projectBucket = (day.byProject[record.project] ??= emptyCell());
     addCell(projectBucket, cell);
+    const modelBucket = (day.byModel[record.model] ??= emptyCell());
     addCell(modelBucket, cell);
     const bucket = (day.cells[cellKey] ??= emptyCell());
     addCell(bucket, cell);

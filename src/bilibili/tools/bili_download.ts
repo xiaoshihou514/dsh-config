@@ -79,7 +79,7 @@ export function biliDownload(
       render: (_args, value) =>
         [{ type: "text", text: renderDownload(value as unknown as DownloadOutput) }] as ContentBlock[],
     },
-    timeoutMs: 15_000,
+    timeoutMs: 30_000,
     // 入队会改动任务管理器，不能与兄弟调用并发
     isConcurrencySafe: () => false,
     async execute(args) {

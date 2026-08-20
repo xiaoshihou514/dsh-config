@@ -189,6 +189,8 @@ export interface SelectedAudio {
   quality: string;
   url: string;
   bandwidth: number;
+  /** 备用镜像（base_url 不可达时依次尝试）。 */
+  backupUrls?: string[];
 }
 
 /** 字幕内容（`{subtitle_url}` 的 json body）。 */

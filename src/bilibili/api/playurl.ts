@@ -41,19 +41,31 @@ function qualityId(quality: AudioQualityName): number {
 function collectAudioCandidates(dash: Dash): Array<{
   id: number;
   baseUrl: string;
+  backupUrls: string[];
   bandwidth: number;
 }> {
-  const candidates: Array<{ id: number; baseUrl: string; bandwidth: number }> = [];
+  const candidates: Array<{ id: number; baseUrl: string; backupUrls: string[]; bandwidth: number }> = [];
   for (const media of dash.audio ?? []) {
-    candidates.push({ id: media.id, baseUrl: media.base_url, bandwidth: media.bandwidth });
+    candidates.push({
+      id: media.id,
+      baseUrl: media.base_url,
+      backupUrls: media.backup_url ?? [],
+      bandwidth: media.bandwidth,
+    });
   }
   for (const media of dash.dolby?.audio ?? []) {
-    candidates.push({ id: media.id, baseUrl: media.base_url, bandwidth: media.bandwidth });
+    candidates.push({
+      id: media.id,
+      baseUrl: media.base_url,
+      backupUrls: media.backup_url ?? [],
+      bandwidth: media.bandwidth,
+    });
   }
   if (dash.flac?.audio !== undefined) {
     candidates.push({
       id: dash.flac.audio.id,
       baseUrl: dash.flac.audio.base_url,
+      backupUrls: dash.flac.audio.backup_url ?? [],
       bandwidth: dash.flac.audio.bandwidth,
     });
   }
@@ -82,14 +94,15 @@ export function selectAudio(
     quality: AUDIO_QUALITY[picked.id as keyof typeof AUDIO_QUALITY] ?? String(picked.id),
     url: picked.baseUrl,
     bandwidth: picked.bandwidth,
+    ...(picked.backupUrls.length > 0 ? { backupUrls: picked.backupUrls } : {}),
   };
 }
 
 /** 按优先级顺序挑选候选（返回第一个出现在优先级列表里的候选）。 */
 function pickByPriority(
-  candidates: Array<{ id: number; baseUrl: string; bandwidth: number }>,
+  candidates: Array<{ id: number; baseUrl: string; backupUrls: string[]; bandwidth: number }>,
   priority: AudioQualityName[],
-): { id: number; baseUrl: string; bandwidth: number } | undefined {
+): { id: number; baseUrl: string; backupUrls: string[]; bandwidth: number } | undefined {
   for (const name of priority) {
     const id = qualityId(name);
     const found = candidates.find((media) => media.id === id);

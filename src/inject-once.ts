@@ -222,10 +222,13 @@ export function apply(ctx: Context, config: Config): void {
       response.writeHead(405).end();
     },
   };
-  ctx.effect(
-    () => ctx.webServer.register(route),
-    "dsh-config: inject-once memo API",
-  );
+  // 备忘录 HTTP 路由只挂在有 webServer 的宿主（web 等）；无该服务（如 headless）时跳过注册，避免启动即崩。
+  if (ctx.get("webServer") !== undefined) {
+    ctx.effect(
+      () => ctx.webServer.register(route),
+      "dsh-config: inject-once memo API",
+    );
+  }
 
   ctx.on(
     "agent/pre-step",
