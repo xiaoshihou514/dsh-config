@@ -35,6 +35,10 @@
       "types": "./lib/overflow-recovery.d.ts",
       "default": "./lib/overflow-recovery.js"
     },
+    "./bilibili": {
+      "types": "./lib/bilibili.d.ts",
+      "default": "./lib/bilibili.js"
+    },
     "./client": {
       "types": "./lib/client.d.ts",
       "default": "./lib/client.js"
@@ -52,6 +56,7 @@
     "build": "tsdown",
     "check": "tsc --noEmit",
     "test": "vitest run",
+    "smoke:bilibili": "node scripts/bilibili-smoke.mjs",
     "prepare": "pnpm run build"
   },
   "dsh": {
@@ -75,6 +80,7 @@
     "@deepseek-ai/dsh-llm-pi-ai": "^0.1.0-rc.5",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-compaction": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
     "react": "^18.2.0"
   },
   "devDependencies": {
@@ -85,6 +91,7 @@
     "@deepseek-ai/dsh-llm-pi-ai": "^0.1.0-rc.5",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-compaction": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
     "@earendil-works/pi-ai": "^0.82.1",
     "@deepseek-ai/dsh-user-approval": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-sandbox-policy": "^0.1.0-rc.6",

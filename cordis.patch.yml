@@ -14,3 +14,5 @@
       name: dsh-config/inject-once
     - id: dsh-config-overflow-recovery
       name: dsh-config/overflow-recovery
+    - id: dsh-config-bilibili
+      name: dsh-config/bilibili

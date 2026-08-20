@@ -20,7 +20,8 @@ export default defineConfig([
       opencode: "src/opencode-provider.ts",
       "codex-provider": "src/codex-provider.ts",
       "inject-once": "src/inject-once.ts",
-      "overflow-recovery": "src/overflow-recovery.ts"
+      "overflow-recovery": "src/overflow-recovery.ts",
+      bilibili: "src/bilibili/index.ts"
     },
     dts: true,
     fixedExtension: false,
