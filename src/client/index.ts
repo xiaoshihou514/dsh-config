@@ -43,8 +43,7 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
     {
       name: "settings.plugin.item",
-      id: "dsh-config-approval",
-      order: 40,
+      key: "dsh-config-approval",
       inject: approvalInjected
     },
     ApprovalReviewCard
@@ -52,8 +51,7 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
     {
       name: "settings.plugin.item",
-      id: "dsh-config-codex-login",
-      order: 45,
+      key: "dsh-config-codex-login",
       inject: () => ({})
     },
     CodexLoginCard
@@ -61,8 +59,7 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
     {
       name: "settings.plugin.item",
-      id: "dsh-config-inject-once",
-      order: 50,
+      key: "dsh-config-inject-once",
       inject: () => ({})
     },
     InjectOnceCard

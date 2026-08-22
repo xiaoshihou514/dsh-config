@@ -1,5 +1,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
+import { settingsNamespace } from "@deepseek-ai/dsh-settings";
+import z from "@deepseek-ai/schemastery";
 import {
   resolveRetryPolicy,
   type RetryPolicyConfig,
@@ -7,6 +9,10 @@ import {
 import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
 import type { ResolvedPiAiProviderProfile } from "@deepseek-ai/dsh-llm-pi-ai";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import {
+  InMemoryCredentialStore,
+  defaultProviderAuthContext,
+} from "@earendil-works/pi-ai";
 import type {
   AuthInteraction,
   OAuthAuth,
@@ -20,12 +26,15 @@ import {
 } from "./codex-auth.ts";
 
 export const name = "dsh-config-codex-provider";
-export const inject = ["llm", "webServer"];
+export const inject = ["llm", "settings", "webServer"];
 
 export const PROVIDER = "openai-codex";
 const LOGIN_ROUTE = "/dsh-config/codex-login";
 const LOGIN_HEADER = "x-dsh-config";
 const LOGIN_HEADER_VALUE = "codex-login";
+
+/** 设置命名空间：仅作为“Codex 订阅登录”卡片在插件配置标签页的派发键，凭据存在 codex auth.json。 */
+const SETTINGS_NAMESPACE = settingsNamespace("dsh-config-codex-login");
 
 /** 与 opencode free 同款的限流/网络错误指数退避：1s 起步 ×2、封顶 30s、20% 抖动、最多 3 次重试。 */
 const CODEX_RETRY_POLICY: RetryPolicyConfig = {
@@ -175,6 +184,9 @@ export function createCodexAdapter(): PiAiAdapter {
     provider: PROVIDER,
     displayName: "Codex 订阅",
     streamIdleTimeoutMs: 300_000,
+    maxRequestImageBytes: 20 * 1024 * 1024,
+    requestImagePixelBudget: 2048 * 2048,
+    requestImageMaxBytes: 1024 * 1024,
     retryPolicy: resolveRetryPolicy(CODEX_RETRY_POLICY, "Codex 订阅重试策略"),
     piProvider,
     configuredMaxTokens: new Map(),
@@ -184,10 +196,15 @@ export function createCodexAdapter(): PiAiAdapter {
   return new PiAiAdapter({
     profiles: () => profiles,
     resolveApiKey: () => codexSubscriptionAccessToken(oauth),
+    auth: {
+      credentials: new InMemoryCredentialStore(),
+      authContext: defaultProviderAuthContext(),
+    },
   });
 }
 
 export function apply(ctx: Context): void {
+  ctx.settings.register(SETTINGS_NAMESPACE, z.object({}));
   const catalogProvider = openaiCodexProvider();
   const oauth = catalogProvider.auth.oauth;
   if (oauth === undefined)

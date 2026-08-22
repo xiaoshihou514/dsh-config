@@ -472,7 +472,9 @@ class OpenCodeAdapter extends LlmAdapter {
     yield {
       type: "finish",
       reason: mapFinishReason(choice?.finish_reason),
-      replayState: { model: options.model },
+      replayState: {
+        response: { kind: "opencode", version: 1, model: options.model },
+      },
     };
   }
 }
