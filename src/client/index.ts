@@ -40,28 +40,29 @@ export function apply(ctx: ClientContext): void {
     },
     AutoApproveToggle
   ));
+  // rc.2 still publishes the old keyed-slot types, while the runtime contract is already a list slot.
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
-    {
+    ({
       name: "settings.plugin.item",
-      key: "dsh-config-approval",
+      id: "dsh-config-approval",
       inject: approvalInjected
-    },
+    } as never),
     ApprovalReviewCard
   ));
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
-    {
+    ({
       name: "settings.plugin.item",
-      key: "dsh-config-codex-login",
+      id: "dsh-config-codex-login",
       inject: () => ({})
-    },
+    } as never),
     CodexLoginCard
   ));
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
-    {
+    ({
       name: "settings.plugin.item",
-      key: "dsh-config-inject-once",
+      id: "dsh-config-inject-once",
       inject: () => ({})
-    },
+    } as never),
     InjectOnceCard
   ));
 }
