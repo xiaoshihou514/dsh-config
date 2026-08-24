@@ -15,7 +15,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
-import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
 
 export const name = "dsh-config-usage-api";
@@ -356,10 +356,7 @@ export function apply(ctx: Context): void {
     serialized = null;
   };
 
-  const account = (
-    session: { id: string; header: { cwd?: string } },
-    event: SessionEvent,
-  ): void => {
+  const account = (session: Session, event: SessionEvent): void => {
     if (event.type === "request/header") {
       headers.set(session, event.data.header.config);
       return;
@@ -387,7 +384,13 @@ export function apply(ctx: Context): void {
       step = event.data.step;
     }
     if (usage === undefined || turn === undefined || step === undefined) return;
-    const header = headers.get(session);
+    // 路由来源优先用 session 持久化的 request/context（跨重启可靠，重启后
+    // headers WeakMap 会因历史事件不重放而缺失，导致漏记）；回退 WeakMap。
+    const context = session.requestContext();
+    const header: { provider: string; model: string } | undefined =
+      context !== undefined && context.provider.length > 0 && context.model.length > 0
+        ? { provider: context.provider, model: context.model }
+        : headers.get(session);
     const model = modelOf(header?.provider ?? "", header?.model ?? "");
     if (model === undefined) return;
     const provider = header?.provider ?? "";
