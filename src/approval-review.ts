@@ -49,7 +49,7 @@ const DEFAULT_MODEL = "glm-4.7-flash";
 const OPENCODE_MODELS_URL = "https://opencode.ai/zen/v1/models";
 /** 免密回退端点（opencode 免费模型，不携带 Authorization 头）。 */
 const FALLBACK_BASE_URL = "https://opencode.ai/zen/v1/chat/completions";
-const FALLBACK_MODEL = "deepseek-v4-flash-free";
+const FALLBACK_MODEL = "nemotron-3.5-lightning-free";
 const FREE_SUFFIX = "-free";
 
 /** Destructive patterns that always skip auto-review and go to the user. */
@@ -331,6 +331,8 @@ interface ReviewEndpoint {
   model: string;
   /** 有 key 才发送 Authorization 头；无 key 按免密端点处理。 */
   key?: string;
+  /** 是否发送 thinking:{type:"disabled"} 关闭思考。仅 opencode 端点（deepseek 透传）支持；智谱 GLM 不认该字段会 400。 */
+  disableThinking?: boolean;
 }
 
 /** 对单个端点带指数退避的审查尝试（429/5xx/网络错误重试）。 */
@@ -449,20 +451,31 @@ async function review(
     });
   }
   if (config.fallback !== false) {
-    endpoints.push({
-      baseUrl: config.fallbackBaseUrl ?? FALLBACK_BASE_URL,
-      model: fallbackModel || FALLBACK_MODEL,
-    });
+    // opencode 兜底不写死模型：动态拉取所有 `*-free` 模型作为候选端点，
+    // 用户/配置里选的排最前，其余按列表顺序去重追加；review 逐个尝试，
+    // 某个模型请求失败（400/429/网络）自动跳过下一个，坏模型不阻塞。
+    const candidates: string[] = [];
+    if (fallbackModel) candidates.push(fallbackModel);
+    for (const model of await openCodeFreeModels()) {
+      if (!candidates.includes(model)) candidates.push(model);
+    }
+    if (candidates.length === 0) candidates.push(FALLBACK_MODEL);
+    for (const model of candidates) {
+      endpoints.push({
+        baseUrl: config.fallbackBaseUrl ?? FALLBACK_BASE_URL,
+        model,
+        disableThinking: true,
+      });
+    }
   }
 
-  const payloadFor = (model: string): string =>
+  const payloadFor = (endpoint: ReviewEndpoint): string =>
     JSON.stringify({
-      model,
+      model: endpoint.model,
       temperature: 0,
       max_tokens: 1024,
-      // 审查只需判定，关闭思考：避免 thinking 模型把预算花在推理上导致
-      // content 为空（智谱/opencode 后端均支持该字段）。
-      thinking: { type: "disabled" },
+      // 仅 opencode 端点关闭思考（deepseek 透传支持）；智谱 GLM 不认该字段会 400。
+      ...(endpoint.disableThinking === true ? { thinking: { type: "disabled" } } : {}),
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         {
@@ -488,7 +501,7 @@ async function review(
     const result = await attemptEndpoint(
       config,
       endpoint,
-      payloadFor(endpoint.model),
+      payloadFor(endpoint),
     );
     // 请求失败（无 2xx）→ 换下一个端点；拿到模型结论（2xx）即采用。
     if (result.status === undefined || result.status >= 400) {
@@ -548,7 +561,7 @@ export function apply(ctx: Context, config: Config): void {
   const scope = ctx.settings.register(SETTINGS_NAMESPACE, SETTINGS_SCHEMA);
   /** 用户选择的回退模型（卡片里选 OpenCode Free 的某个 *-free 模型），留空用配置默认。 */
   const fallbackModel = (): string =>
-    scope.get().fallbackModel || config.fallbackModel || FALLBACK_MODEL;
+    scope.get().fallbackModel || config.fallbackModel || "";
 
   const toggles = new Map<string, boolean>();
   let writes = Promise.resolve();

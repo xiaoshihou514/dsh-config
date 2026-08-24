@@ -40,29 +40,29 @@ export function apply(ctx: ClientContext): void {
     },
     AutoApproveToggle
   ));
-  // rc.2 still publishes the old keyed-slot types, while the runtime contract is already a list slot.
+  // settings.plugin.item 是 keyed slot（键 = settings namespace），注册必须提供 `key`。
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
-    ({
+    {
       name: "settings.plugin.item",
-      id: "dsh-config-approval",
+      key: "dsh-config-approval",
       inject: approvalInjected
-    } as never),
+    },
     ApprovalReviewCard
   ));
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
-    ({
+    {
       name: "settings.plugin.item",
-      id: "dsh-config-codex-login",
+      key: "dsh-config-codex-login",
       inject: () => ({})
-    } as never),
+    },
     CodexLoginCard
   ));
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
-    ({
+    {
       name: "settings.plugin.item",
-      id: "dsh-config-inject-once",
+      key: "dsh-config-inject-once",
       inject: () => ({})
-    } as never),
+    },
     InjectOnceCard
   ));
 }

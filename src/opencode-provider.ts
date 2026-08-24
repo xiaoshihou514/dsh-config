@@ -50,7 +50,7 @@ export const inject = ["llm"];
 const DEFAULT_BASE_URL = "https://opencode.ai/zen/v1/chat/completions";
 const DEFAULT_MODELS_URL = "https://opencode.ai/zen/v1/models";
 const DEFAULT_CONTEXT_WINDOW = 1_000_000;
-const DEFAULT_MODEL = "deepseek-v4-flash-free";
+const DEFAULT_MODEL = "nemotron-3.5-lightning-free";
 const FREE_SUFFIX = "-free";
 const MODELS_FETCH_TIMEOUT_MS = 4_000;
 
