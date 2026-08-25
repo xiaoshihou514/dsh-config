@@ -317,6 +317,12 @@ export function apply(ctx: Context): void {
   const path = dataPath();
   let file: UsageFile = emptyFile();
   let loaded = load(path).then((value) => {
+    // today 只保留当前自然日：跨天启动时旧 today 残留（已进各天聚合）应剔除，
+    // 避免"今天"的明细错乱混入历史天。
+    const tKey = dayKeyOf(Date.now());
+    value.today = Array.isArray(value.today)
+      ? value.today.filter((record) => dayKeyOf(record.at) === tKey)
+      : [];
     file = value;
     refreshCache(value);
   });
