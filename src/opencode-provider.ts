@@ -50,9 +50,10 @@ export const inject = ["llm"];
 const DEFAULT_BASE_URL = "https://opencode.ai/zen/v1/chat/completions";
 const DEFAULT_MODELS_URL = "https://opencode.ai/zen/v1/models";
 const DEFAULT_CONTEXT_WINDOW = 1_000_000;
-const DEFAULT_MODEL = "deepseek-v4-flash-free";
 const FREE_SUFFIX = "-free";
 const MODELS_FETCH_TIMEOUT_MS = 4_000;
+/** 模型列表缓存 TTL：过期后自动重新拉取，上游增删模型无需重启。 */
+const MODELS_CACHE_TTL_MS = 10 * 60 * 1_000;
 
 /** 与 codex/pi-ai 目录一致的标准推理等级（升序），选择器展示与 wire 值都由此派生。 */
 const THINKING_LEVELS: readonly ModelThinkingLevel[] = [
@@ -109,7 +110,7 @@ export const Config = z.object({
   baseUrl: z.string().default(DEFAULT_BASE_URL),
   modelsUrl: z.string().default(DEFAULT_MODELS_URL),
   contextWindow: z.number().default(DEFAULT_CONTEXT_WINDOW),
-  models: z.array(z.string()).default([DEFAULT_MODEL]),
+  models: z.array(z.string()).default([]),
   maxTokens: z.number().default(8192),
   reasoningEffort: z.union([...THINKING_LEVELS]).default("high"),
   retryPolicy: RetryPolicySchema.default(DEFAULT_RETRY_POLICY),
@@ -263,8 +264,9 @@ function resolveThinking(options: GenerateOptions): {
 }
 
 class OpenCodeAdapter extends LlmAdapter {
-  /** 会话生命周期缓存：第一次 listModels 后不再拉取。 */
-  private modelsCache: LlmModelInfo[] | null = null;
+  /** 带 TTL 的模型列表缓存：过期后下次调用自动重新拉取。 */
+  private modelsCache: { list: LlmModelInfo[]; expiresAt: number } | null =
+    null;
 
   constructor(private readonly config: Config) {
     super();
@@ -283,12 +285,15 @@ class OpenCodeAdapter extends LlmAdapter {
   }
 
   /**
-   * 模型列表：成功结果会话生命周期缓存（只拉一次，之后秒回）；拉取带 4s
-   * 超时。失败时返回配置清单（至少含默认模型）且**不缓存**——下次打开
-   * 选择器会重试，网络恢复后列表自动出现。
+   * 模型列表：远程 `*-free` 清单 + 配置清单（显式配置的模型优先展示），带
+   * TTL 缓存（默认 10 分钟，过期自动刷新）。拉取失败时只回配置清单且**不
+   * 缓存**——下次打开选择器会重试，网络恢复后列表自动出现。不再硬编码
+   * 任何默认模型：上游下架后列表自然消失。
    */
   async listModels(provider: string): Promise<LlmModelInfo[]> {
-    if (this.modelsCache !== null) return this.modelsCache;
+    const now = Date.now();
+    if (this.modelsCache !== null && this.modelsCache.expiresAt > now)
+      return this.modelsCache.list;
     const ids = new Set(this.config.models ?? []);
     let succeeded = false;
     try {
@@ -311,7 +316,8 @@ class OpenCodeAdapter extends LlmAdapter {
       // 网络失败：退回配置清单，不缓存，下次重试。
     }
     const list = Array.from(ids).map((id) => ({ provider, id, name: id }));
-    if (succeeded) this.modelsCache = list;
+    if (succeeded)
+      this.modelsCache = { list, expiresAt: now + MODELS_CACHE_TTL_MS };
     return list;
   }
 

@@ -12,7 +12,6 @@ import { IconChevronDownOutline14 } from "./icons.tsx";
 
 const KEY_REF = "ZHIPU_API_KEY";
 const KEY_PAGE = "https://bigmodel.cn/usercenter/proj-mgmt/apikeys";
-const DEFAULT_FALLBACK_MODEL = "deepseek-v4-flash-free";
 const MODELS_HEADER = { "x-dsh-config": "auto-approval" };
 
 export interface ApprovalReviewSettings {
@@ -254,7 +253,11 @@ export function ApprovalReviewCard({ scope, api }: ApprovalReviewCardInjected) {
                 color: "var(--dsw-alias-label-primary)",
               }}
             >
-              <option value="">默认（{DEFAULT_FALLBACK_MODEL}）</option>
+              <option value="">
+                {models.length > 0
+                  ? `默认（${models[0]}，自动跟随列表）`
+                  : "默认（自动跟随免费模型列表）"}
+              </option>
               {models.map((model) => (
                 <option key={model} value={model}>
                   {model}

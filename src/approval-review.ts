@@ -49,8 +49,12 @@ const DEFAULT_MODEL = "glm-4.7-flash";
 const OPENCODE_MODELS_URL = "https://opencode.ai/zen/v1/models";
 /** 免密回退端点（opencode 免费模型，不携带 Authorization 头）。 */
 const FALLBACK_BASE_URL = "https://opencode.ai/zen/v1/chat/completions";
-const FALLBACK_MODEL = "deepseek-v4-flash-free";
 const FREE_SUFFIX = "-free";
+/**
+ * 免密回退默认模型的解析 TTL：不硬编码具体模型 id——上游下架后自动跟随
+ * 远程列表；TTL 内复用第一次解析结果，避免每次审批都打一次 /models。
+ */
+const FALLBACK_MODEL_TTL_MS = 10 * 60 * 1_000;
 
 /** Destructive patterns that always skip auto-review and go to the user. */
 const DENYLIST: readonly RegExp[] = [
@@ -95,6 +99,7 @@ export interface Config {
    * 模型——`fallbackModel` 从 `*-free` 模型里选一个，限流/下架时可换。
    */
   fallbackBaseUrl?: string;
+  /** 显式指定免密回退模型；留空时自动取远程 `*-free` 列表的第一个。 */
   fallbackModel?: string;
   /** 是否启用免密回退端点。 */
   fallback?: boolean;
@@ -107,7 +112,7 @@ export const Config = z.object({
   allowDangerFullAccess: z.boolean().default(true),
   maxArgumentsChars: z.number().default(4_000),
   fallbackBaseUrl: z.string().default(FALLBACK_BASE_URL),
-  fallbackModel: z.string().default(FALLBACK_MODEL),
+  fallbackModel: z.string().default(""),
   fallback: z.boolean().default(true),
 });
 
@@ -433,7 +438,7 @@ async function attemptEndpoint(
 async function review(
   config: Config,
   key: string,
-  fallbackModel: string,
+  fallbackModel: string | undefined,
   toolName: string,
   mode: string,
   justification: string,
@@ -448,10 +453,10 @@ async function review(
       key,
     });
   }
-  if (config.fallback !== false) {
+  if (config.fallback !== false && fallbackModel !== undefined) {
     endpoints.push({
       baseUrl: config.fallbackBaseUrl ?? FALLBACK_BASE_URL,
-      model: fallbackModel || FALLBACK_MODEL,
+      model: fallbackModel,
     });
   }
 
@@ -546,9 +551,8 @@ function respond(
  */
 export function apply(ctx: Context, config: Config): void {
   const scope = ctx.settings.register(SETTINGS_NAMESPACE, SETTINGS_SCHEMA);
-  /** 用户选择的回退模型（卡片里选 OpenCode Free 的某个 *-free 模型），留空用配置默认。 */
-  const fallbackModel = (): string =>
-    scope.get().fallbackModel || config.fallbackModel || FALLBACK_MODEL;
+  /** 用户选择的回退模型（卡片里选 OpenCode Free 的某个 *-free 模型），留空自动跟随远程列表第一个。 */
+  const fallbackModel = (): string => scope.get().fallbackModel || "";
 
   const toggles = new Map<string, boolean>();
   let writes = Promise.resolve();
@@ -695,7 +699,7 @@ export function apply(ctx: Context, config: Config): void {
         const result = await review(
           config,
           key,
-          fallbackModel(),
+          await resolveFallbackModel(config, fallbackModel),
           req.toolName,
           parsed.mode,
           parsed.justification,
@@ -783,11 +787,16 @@ export function apply(ctx: Context, config: Config): void {
   );
 }
 
-/** OpenCode Free 免费模型列表：成功结果会话生命周期缓存；失败不缓存、下次重试。 */
-let freeModelsCache: string[] | null = null;
+/**
+ * OpenCode Free 免费模型列表：成功结果带 TTL 缓存（过期自动刷新，上游增删
+ * 模型无需重启）；失败不缓存、下次重试。
+ */
+let freeModelsCache: { models: string[]; expiresAt: number } | null = null;
 
 async function openCodeFreeModels(): Promise<string[]> {
-  if (freeModelsCache !== null) return freeModelsCache;
+  const now = Date.now();
+  if (freeModelsCache !== null && freeModelsCache.expiresAt > now)
+    return freeModelsCache.models;
   const models: string[] = [];
   let succeeded = false;
   try {
@@ -806,8 +815,23 @@ async function openCodeFreeModels(): Promise<string[]> {
   } catch {
     // 网络失败：返回空列表（卡片有默认项兜底），不缓存、下次重试。
   }
-  if (succeeded) freeModelsCache = models;
+  if (succeeded)
+    freeModelsCache = { models, expiresAt: now + FALLBACK_MODEL_TTL_MS };
   return models;
+}
+
+/**
+ * 免密回退模型：用户显式配置优先；否则取远程 `*-free` 列表的第一个
+ * （上游下架后自动跟随新列表）。列表拉不到时返回 undefined——本次审查
+ * 跳过免密回退端点（智谱端点仍可用），不猜一个可能已死的模型 id。
+ */
+async function resolveFallbackModel(
+  config: Config,
+  fallbackModel: () => string,
+): Promise<string | undefined> {
+  const explicit = fallbackModel() || config.fallbackModel || "";
+  if (explicit !== "") return explicit;
+  return (await openCodeFreeModels())[0];
 }
 
 /** Read a request body up to a small cap. */
