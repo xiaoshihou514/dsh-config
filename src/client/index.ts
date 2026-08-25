@@ -40,6 +40,7 @@ export function apply(ctx: ClientContext): void {
     },
     AutoApproveToggle
   ));
+  // settings.plugin.item 是 keyed slot（键 = settings namespace），注册必须提供 `key`。
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
     {
       name: "settings.plugin.item",
