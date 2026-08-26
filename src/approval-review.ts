@@ -50,6 +50,8 @@ const OPENCODE_MODELS_URL = "https://opencode.ai/zen/v1/models";
 /** 免密回退端点（opencode 免费模型，不携带 Authorization 头）。 */
 const FALLBACK_BASE_URL = "https://opencode.ai/zen/v1/chat/completions";
 const FREE_SUFFIX = "-free";
+/** 兜底模型：free 列表为空（网络失败）时使用（当前 opencode 可用免费模型）。 */
+const FALLBACK_MODEL = "nemotron-3.5-lightning-free";
 /**
  * 免密回退默认模型的解析 TTL：不硬编码具体模型 id——上游下架后自动跟随
  * 远程列表；TTL 内复用第一次解析结果，避免每次审批都打一次 /models。

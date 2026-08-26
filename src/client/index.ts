@@ -12,6 +12,7 @@ import { AutoApproveToggle } from "./AutoApproveToggle.tsx";
 import { ApprovalReviewCard, type ApprovalReviewCardInjected, type ApprovalReviewSettings } from "./ApprovalReviewCard.tsx";
 import { CodexLoginCard } from "./CodexLoginCard.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
+import { UserMessageNav } from "./UserMessageNav.tsx";
 
 export const inject = ["slots", "connection", "settingsScope"];
 
@@ -39,6 +40,16 @@ export function apply(ctx: ClientContext): void {
       inject: () => ({})
     },
     AutoApproveToggle
+  ));
+  // 用户消息导航悬浮面板（session 作用域，useSession 由 harness 注入）。
+  ctx.slots.inject("conversation.input.left", () => ctx.slots.register(
+    {
+      name: "conversation.input.left",
+      id: "dsh-config-user-msg-nav",
+      order: 1,
+      inject: () => ({})
+    },
+    UserMessageNav
   ));
   // settings.plugin.item 是 keyed slot（键 = settings namespace），注册必须提供 `key`。
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
