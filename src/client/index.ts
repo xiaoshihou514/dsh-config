@@ -51,6 +51,7 @@ export function apply(ctx: ClientContext): void {
     },
     UserMessageNav
   ));
+  // 对话显示模式切换（三模式：全显示 / 只看输出+间隔 / 只看一轮+总时长）。
   // settings.plugin.item 是 keyed slot（键 = settings namespace），注册必须提供 `key`。
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
     {

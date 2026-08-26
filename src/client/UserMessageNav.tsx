@@ -79,7 +79,7 @@ export function UserMessageNav({
 }: {
   useSession?: UseConversationSession;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const session = useSession?.((snapshot) => snapshot);
 
   const userItems = useMemo<UserItem[]>(
