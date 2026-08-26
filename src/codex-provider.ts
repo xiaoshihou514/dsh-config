@@ -157,7 +157,7 @@ function writeJson(
   response.end(JSON.stringify(body));
 }
 
-export function createCodexAdapter(): PiAiAdapter {
+export function createCodexAdapter(ctx?: Context): PiAiAdapter {
   const catalogProvider = openaiCodexProvider();
   const oauth = catalogProvider.auth.oauth;
   if (oauth === undefined)
@@ -200,6 +200,10 @@ export function createCodexAdapter(): PiAiAdapter {
       credentials: new InMemoryCredentialStore(),
       authContext: defaultProviderAuthContext(),
     },
+    // Native Codex image input needs the host's durable attachment store to
+    // resolve image references into request bytes. Keep this optional so the
+    // exported adapter remains usable in catalog-only tests/headless hosts.
+    resolveAttachments: () => ctx?.get("attachments"),
   });
 }
 
@@ -210,7 +214,7 @@ export function apply(ctx: Context): void {
   if (oauth === undefined)
     throw new Error("Codex 模型提供方没有提供订阅登录能力");
   const login = new CodexLoginManager(oauth);
-  ctx.llm.registerAdapter([PROVIDER], createCodexAdapter());
+  ctx.llm.registerAdapter([PROVIDER], createCodexAdapter(ctx));
   const route: WebRoute = {
     kind: "exact",
     path: LOGIN_ROUTE,
