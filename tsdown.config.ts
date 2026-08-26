@@ -19,9 +19,10 @@ export default defineConfig([
       "approval-review": "src/approval-review.ts",
       opencode: "src/opencode-provider.ts",
       "codex-provider": "src/codex-provider.ts",
+      "codex-imagegen": "src/codex-imagegen.ts",
       "inject-once": "src/inject-once.ts",
       "overflow-recovery": "src/overflow-recovery.ts",
-      bilibili: "src/bilibili/index.ts"
+      bilibili: "src/bilibili/index.ts",
     },
     dts: true,
     fixedExtension: false,
@@ -29,7 +30,7 @@ export default defineConfig([
     outDir: "lib",
     platform: "node",
     splitting: false,
-    external: nodeExternal
+    external: nodeExternal,
   },
   {
     entry: { client: "src/client/index.ts" },
@@ -40,12 +41,14 @@ export default defineConfig([
     clean: false,
     splitting: false,
     external: clientExternals,
-    noExternal: (id: string) => clientExternals.includes(id) ? undefined : true,
+    noExternal: (id: string) =>
+      clientExternals.includes(id) ? undefined : true,
     outputOptions: {
       entryFileNames: "client.js",
-      banner: "window.__ModuleLoader__.load({ id: 'dsh-config', factory: (require) => {",
+      banner:
+        "window.__ModuleLoader__.load({ id: 'dsh-config', factory: (require) => {",
       footer: "return module.exports; } });",
-      intro: "var module = { exports: {} }; var exports = module.exports;"
-    }
-  }
+      intro: "var module = { exports: {} }; var exports = module.exports;",
+    },
+  },
 ]);

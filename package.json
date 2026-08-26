@@ -27,6 +27,10 @@
       "types": "./lib/codex-provider.d.ts",
       "default": "./lib/codex-provider.js"
     },
+    "./codex-imagegen": {
+      "types": "./lib/codex-imagegen.d.ts",
+      "default": "./lib/codex-imagegen.js"
+    },
     "./inject-once": {
       "types": "./lib/inject-once.d.ts",
       "default": "./lib/inject-once.js"

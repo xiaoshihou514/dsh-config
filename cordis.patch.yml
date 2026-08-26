@@ -10,6 +10,8 @@
       name: dsh-config/opencode
     - id: dsh-config-codex-provider
       name: dsh-config/codex-provider
+    - id: dsh-config-codex-imagegen
+      name: dsh-config/codex-imagegen
     - id: dsh-config-inject-once
       name: dsh-config/inject-once
     - id: dsh-config-overflow-recovery
