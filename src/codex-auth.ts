@@ -131,7 +131,7 @@ async function resolveToken(
   const current = credentials(auth);
   if (current.expires > now() + REFRESH_EARLY_MS) return current.access;
 
-  const refreshed = await oauth.refresh(current);
+  const refreshed = await oauth.refresh(current, AbortSignal.timeout(30_000));
   await saveCodexCredentials(path, refreshed);
   return refreshed.access;
 }

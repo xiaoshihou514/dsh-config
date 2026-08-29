@@ -11,6 +11,7 @@ import { UsageTrigger } from "./UsageTrigger.tsx";
 import { AutoApproveToggle } from "./AutoApproveToggle.tsx";
 import { ApprovalReviewCard, type ApprovalReviewCardInjected, type ApprovalReviewSettings } from "./ApprovalReviewCard.tsx";
 import { CodexLoginCard } from "./CodexLoginCard.tsx";
+import { CopilotLoginCard } from "./CopilotLoginCard.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
 import { UserMessageNav } from "./UserMessageNav.tsx";
 
@@ -68,6 +69,14 @@ export function apply(ctx: ClientContext): void {
       inject: () => ({})
     },
     CodexLoginCard
+  ));
+  ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
+    {
+      name: "settings.plugin.item",
+      key: "dsh-config-copilot-login",
+      inject: () => ({})
+    },
+    CopilotLoginCard
   ));
   ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
     {

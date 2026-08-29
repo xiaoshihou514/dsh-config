@@ -19,6 +19,7 @@ export default defineConfig([
       "approval-review": "src/approval-review.ts",
       opencode: "src/opencode-provider.ts",
       "codex-provider": "src/codex-provider.ts",
+      "copilot-provider": "src/copilot-provider.ts",
       "codex-imagegen": "src/codex-imagegen.ts",
       "inject-once": "src/inject-once.ts",
       "overflow-recovery": "src/overflow-recovery.ts",

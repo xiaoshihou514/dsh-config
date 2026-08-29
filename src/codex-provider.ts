@@ -14,9 +14,9 @@ import {
   defaultProviderAuthContext,
 } from "@earendil-works/pi-ai";
 import type {
-  AuthInteraction,
   OAuthAuth,
   OAuthCredential,
+  ProviderAuthInteraction,
 } from "@earendil-works/pi-ai";
 import {
   codexAuthFile,
@@ -88,7 +88,7 @@ export class CodexLoginManager {
     const revealed = new Promise<void>((resolve) => {
       reveal = resolve;
     });
-    const interaction: AuthInteraction = {
+    const interaction: ProviderAuthInteraction = {
       signal: controller.signal,
       prompt: async (prompt) => {
         if (prompt.type === "select") return "browser";
@@ -180,6 +180,8 @@ export function createCodexAdapter(ctx?: Context): PiAiAdapter {
     },
   };
 
+  // 见 copilot-provider.ts 同名注释：插件与宿主的 pi-ai 版本并存，
+  // refreshModels 类型不兼容但适配器从不调用它。
   const profile: ResolvedPiAiProviderProfile = {
     provider: PROVIDER,
     displayName: "Codex 订阅",
@@ -188,7 +190,8 @@ export function createCodexAdapter(ctx?: Context): PiAiAdapter {
     requestImagePixelBudget: 2048 * 2048,
     requestImageMaxBytes: 1024 * 1024,
     retryPolicy: resolveRetryPolicy(CODEX_RETRY_POLICY, "Codex 订阅重试策略"),
-    piProvider,
+    piProvider:
+      piProvider as unknown as ResolvedPiAiProviderProfile["piProvider"],
     configuredMaxTokens: new Map(),
   };
   const profiles = new Map([[PROVIDER, profile]]);
