@@ -5,7 +5,8 @@ dsh-config 在 DSH Web **侧边栏设置上方的「用量」入口**（`sidebar
 ## 数据
 
 - 用量记录保存在 `$DSH_HOME/dsh-config/usage.json`（`version: 1`）。
-- 只统计 `deepseek-official` 提供商的 `deepseek-v4-flash` / `deepseek-v4-pro`。
+- `deepseek-official` 的 `deepseek-v4-flash` / `deepseek-v4-pro` 按官方峰谷单价计费。
+- 订阅档（`opencode-free`、`openai-codex`、`github-copilot`、`zai-coding-cn` 及同类 coding/token-plan）费用记 0，只统计词元量；筛选标签为 `provider/model`。
 - 缓存写入按缓存未命中输入计费。
 - 记录以 `sessionId:turn:step` 去重；`assistant/chunk`（usage 块）或 `assistant/message`（带 usage）各记一条。
 - 前端每 15 秒轮询 `/dsh-config/usage` 刷新（该接口要求 `x-dsh-config: usage-calendar` 请求头）。

@@ -6,8 +6,8 @@
  * 聚合。读 API 只返回聚合 + 今日明细，响应体比 v1 全量 records 小一两个
  * 数量级；写盘走防抖批量合并，不再每条全量重写。
  *
- * 支持 provider：deepseek-official（官方计费）与 opencode-free（免费，
- * 费用恒为 0，仅统计词元量）。
+ * 支持 provider：deepseek-official（官方计费）；其余订阅档（OpenCode Free、
+ * Codex、GitHub Copilot、Z.AI Coding 等）费用恒为 0，只统计词元量。
  */
 
 import { randomUUID } from "node:crypto";
@@ -26,8 +26,21 @@ const HEADER = "x-dsh-config";
 const HEADER_VALUE = "usage-calendar";
 
 const OFFICIAL_PROVIDER = "deepseek-official";
-const OPENCODE_PROVIDER = "opencode-free";
-const CODEX_PROVIDER = "openai-codex";
+/** 订阅档：不按 token 计费，只记账词元量。 */
+const SUBSCRIPTION_PROVIDERS = new Set([
+  "opencode-free",
+  "openai-codex",
+  "github-copilot",
+  "zai-coding-cn",
+  "kimi-coding",
+  "qwen-token-plan",
+  "qwen-token-plan-cn",
+  "qwen-token-plan-individual",
+  "xiaomi-token-plan-cn",
+  "xiaomi-token-plan-ams",
+  "xiaomi-token-plan-sgp",
+  "opencode-go",
+]);
 
 /** 官方模型单价（元 / 百万 tokens）：高峰 / 闲时。 */
 const PEAK_PRICE = {
@@ -43,14 +56,19 @@ function isPeak(time: number): boolean {
   return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18);
 }
 
-/** 单条记录的费用拆分（元）；opencode free 与 Codex 订阅恒为 0（订阅不按 token 计费）。 */
-function costOf(provider: string, model: string, at: number, record: {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-}): { cost: number; peakCost: number; offCost: number } {
-  if (provider === OPENCODE_PROVIDER || provider === CODEX_PROVIDER)
+/** 单条记录的费用拆分（元）；订阅档恒为 0（不按 token 计费）。 */
+function costOf(
+  provider: string,
+  model: string,
+  at: number,
+  record: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  },
+): { cost: number; peakCost: number; offCost: number } {
+  if (SUBSCRIPTION_PROVIDERS.has(provider))
     return { cost: 0, peakCost: 0, offCost: 0 };
   const price =
     model === "deepseek-v4-pro"
@@ -173,8 +191,8 @@ function modelOf(provider: string, model: string): string | undefined {
       ? model
       : undefined;
   }
-  if (provider === OPENCODE_PROVIDER || provider === CODEX_PROVIDER)
-    return model;
+  if (SUBSCRIPTION_PROVIDERS.has(provider) && model !== "")
+    return `${provider}/${model}`;
   return undefined;
 }
 
@@ -210,12 +228,19 @@ function isCell(value: unknown): value is CellSummary {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     return false;
   const cell = value as Partial<CellSummary>;
-  return ["calls", "input", "output", "cacheRead", "cacheWrite", "cost", "peakCost", "offCost"].every(
-    (key) => {
-      const n = (cell as Record<string, unknown>)[key];
-      return typeof n === "number" && Number.isFinite(n) && n >= 0;
-    },
-  );
+  return [
+    "calls",
+    "input",
+    "output",
+    "cacheRead",
+    "cacheWrite",
+    "cost",
+    "peakCost",
+    "offCost",
+  ].every((key) => {
+    const n = (cell as Record<string, unknown>)[key];
+    return typeof n === "number" && Number.isFinite(n) && n >= 0;
+  });
 }
 
 function emptyFile(): UsageFile {
@@ -223,7 +248,11 @@ function emptyFile(): UsageFile {
 }
 
 /** 把一条记录折叠进聚合（迁移或实时记账共用）。 */
-function foldRecord(file: UsageFile, record: UsageRecord, todayKey: string): void {
+function foldRecord(
+  file: UsageFile,
+  record: UsageRecord,
+  todayKey: string,
+): void {
   const key = dayKeyOf(record.at);
   const day = (file.days[key] ??= {
     total: emptyCell(),
@@ -257,11 +286,7 @@ async function load(path: string): Promise<UsageFile> {
         if (!isRecord(entry)) continue;
         // v1 记录没有费用字段：按 provider 补算。v1 只记 deepseek-official。
         const costs = costOf(OFFICIAL_PROVIDER, entry.model, entry.at, entry);
-        foldRecord(
-          file,
-          { ...entry, ...costs },
-          todayKey,
-        );
+        foldRecord(file, { ...entry, ...costs }, todayKey);
       }
       return file;
     }
@@ -394,7 +419,9 @@ export function apply(ctx: Context): void {
     // headers WeakMap 会因历史事件不重放而缺失，导致漏记）；回退 WeakMap。
     const context = session.requestContext();
     const header: { provider: string; model: string } | undefined =
-      context !== undefined && context.provider.length > 0 && context.model.length > 0
+      context !== undefined &&
+      context.provider.length > 0 &&
+      context.model.length > 0
         ? { provider: context.provider, model: context.model }
         : headers.get(session);
     const model = modelOf(header?.provider ?? "", header?.model ?? "");
