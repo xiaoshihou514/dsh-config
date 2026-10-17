@@ -1,7 +1,7 @@
 /**
- * Browser entry: sidebar usage entry, composer auto-approve toggle + user
- * message nav, and the Plugins-page config tabs (0.2.0 slot contract:
- * `settings.plugins.tab` list entries with self-owned pages).
+ * Browser entry: sidebar usage entry, the composer auto-approve toggle, and
+ * the Plugins-page config tabs (0.2.0 slot contract: `settings.plugins.tab`
+ * list entries with self-owned pages).
  */
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -19,7 +19,6 @@ import { ApprovalReviewCard } from "./ApprovalReviewCard.tsx";
 import { CodexLoginCard } from "./CodexLoginCard.tsx";
 import { CopilotLoginCard } from "./CopilotLoginCard.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
-import { UserMessageNav } from "./UserMessageNav.tsx";
 
 export const inject = ["slots", "remote", "remote.credentials", "configForms"];
 
@@ -33,11 +32,6 @@ export function apply(ctx: Context): void {
   ctx.slots.inject("conversation.input.left", () => ctx.slots.register(
     { name: "conversation.input.left", id: "dsh-config-auto-approve", order: 0 },
     AutoApproveToggle,
-  ));
-  // 用户消息导航悬浮面板（session 作用域：组件收到 useSession 标准注入）。
-  ctx.slots.inject("conversation.input.left", () => ctx.slots.register(
-    { name: "conversation.input.left", id: "dsh-config-user-msg-nav", order: 1 },
-    UserMessageNav,
   ));
   // 设置 → 插件 页的配置页签（0.2.0：插件配置页 = settings.plugins.tab 列表项）。
   ctx.slots.inject("settings.plugins.tab", () => ctx.slots.register(
