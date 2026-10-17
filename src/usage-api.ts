@@ -241,6 +241,20 @@ function projectName(cwd: string | undefined): string {
   return cwd === undefined ? "未指定项目" : basename(cwd) || cwd;
 }
 
+/** 从记录的模型复合名推断供应商（明细不落 provider 字段，按前缀还原）。 */
+function providerOf(model: string): string {
+  const index = model.indexOf("/");
+  return index === -1 ? OFFICIAL_PROVIDER : model.slice(0, index);
+}
+
+/** 按当前价目重算一条明细的费用（价目表更新后，已存明细立即按新价生效）。 */
+function reprice(record: UsageRecord): UsageRecord {
+  return {
+    ...record,
+    ...costOf(providerOf(record.model), record.model, record.at, record),
+  };
+}
+
 function isRecord(value: unknown): value is UsageRecord {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     return false;
@@ -325,9 +339,8 @@ async function load(path: string): Promise<UsageFile> {
       const todayKey = dayKeyOf(Date.now());
       for (const entry of candidate.records) {
         if (!isRecord(entry)) continue;
-        // v1 记录没有费用字段：按 provider 补算。v1 只记 deepseek-official。
-        const costs = costOf(OFFICIAL_PROVIDER, entry.model, entry.at, entry);
-        foldRecord(file, { ...entry, ...costs }, todayKey);
+        // v1 记录没有费用字段：从模型复合名还原 provider 后按当前价目补算。
+        foldRecord(file, reprice(entry), todayKey);
       }
       return file;
     }
@@ -354,13 +367,19 @@ async function load(path: string): Promise<UsageFile> {
           cells: buckets("cells"),
         };
       }
-      return {
-        version: 2,
-        days,
-        today: Array.isArray(candidate.today)
-          ? candidate.today.filter(isRecord)
-          : [],
-      };
+      // 今天的明细按当前价目重算，并用重算结果重建今天的聚合桶——磁盘上
+      // 的桶是入账时的旧价目/旧供应商分类记的，直接沿用会让费用停在旧值
+      // （例如供应商计价策略变更前后）。历史天的聚合无法精确重算（聚合
+      // 无逐条时间戳），保持原样。
+      const todayKey = dayKeyOf(Date.now());
+      const today = (Array.isArray(candidate.today) ? candidate.today : [])
+        .filter(isRecord)
+        .filter((record) => dayKeyOf(record.at) === todayKey)
+        .map(reprice);
+      const rebuilt = emptyFile();
+      for (const record of today) foldRecord(rebuilt, record, todayKey);
+      Object.assign(days, rebuilt.days);
+      return { version: 2, days, today: rebuilt.today };
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

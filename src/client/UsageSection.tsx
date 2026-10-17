@@ -495,10 +495,6 @@ export function UsageSection() {
           : monthBuckets.map((bucket) => bucket.summary);
     return totalsOf(sumCells(shown));
   }, [view, dayWeeks, weekBuckets, monthBuckets]);
-  const allTime = useMemo(
-    () => totalsOf(sumCells(Array.from(filteredDays.values()))),
-    [filteredDays],
-  );
 
   const metrics = useMemo(() => {
     const all = sumCells(Array.from(filteredDays.values()));
@@ -633,7 +629,7 @@ export function UsageSection() {
               fontSize: 12,
             }}
           >
-            DeepSeek 官方 + OpenCode Free + Codex 订阅 · 历史按天聚合缓存 · 自动保存
+            各模型供应商 · 历史按天聚合缓存 · 自动保存
           </p>
         </div>
         <div
@@ -1152,18 +1148,18 @@ export function UsageSection() {
         />
       </div>
 
-      <p
-        style={{
-          margin: "12px 0 0",
-          color: "var(--dsw-alias-label-tertiary)",
-          fontSize: 11,
-          lineHeight: 1.55,
-        }}
-      >
-        {loading
-          ? "正在读取用量…"
-          : `费用按官方牌价估算：DeepSeek V4-Flash / V4-Pro 分峰谷（北京时间 9:00-12:00、14:00-18:00 高峰，其余半价）；智谱 GLM Coding Plan（zai-coding-cn）按国内站 API 统一牌价估算，无峰谷差价，峰/闲拆分按调用发生时段归属；缓存写入按未命中输入计费。OpenCode Free 与 Codex 订阅仅统计词元、不计费。历史数据按天聚合缓存（仅今天保留逐条明细）。全部累计 ${money(allTime.cost)}。`}
-      </p>
+      {loading ? (
+        <p
+          style={{
+            margin: "12px 0 0",
+            color: "var(--dsw-alias-label-tertiary)",
+            fontSize: 11,
+            lineHeight: 1.55,
+          }}
+        >
+          正在读取用量…
+        </p>
+      ) : null}
     </section>
   );
 }

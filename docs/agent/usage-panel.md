@@ -12,6 +12,7 @@ dsh-config 在 DSH Web **侧边栏设置上方的「用量」入口**（`sidebar
 - 其余订阅档（`opencode-free`、`openai-codex`、`github-copilot` 及同类 coding/token-plan）费用记 0，只统计词元量；筛选标签为 `provider/model`。
 - 缓存写入按缓存未命中输入计费。
 - 记录以 `sessionId:turn:step` 去重；0.2.0 起 usage 直接挂在 `assistant/message` 事件数据上，逐条各记一条。
+- **价目重算**：加载 `usage.json` 时，今天的明细按**当前价目**重算费用，并用重算结果重建今天的聚合桶（价目或供应商计费策略变更后，重启即按新价生效，不用等新调用）；历史天的聚合无逐条时间戳，不回填。
 - 前端每 15 秒轮询 `/dsh-config/usage` 刷新（该接口要求 `x-dsh-config: usage-calendar` 请求头）。
 
 ## 计费（2026-08-17 生效）
