@@ -1,13 +1,13 @@
 /**
- * 提权自动审批的配置卡片（设置 → 插件），视觉与交互对齐 dsh-vision 卡片：
- * 官方 PluginCard 外壳（可折叠头部 + 未保存徽标 + 放弃/保存）。
+ * 自动审批配置页（设置 → 插件 → 「自动模式」页签）。
  * 配置项：智谱 API Key（可选，留空=免密）+ OpenCode Free 回退模型选择
  * （自动审批先试智谱，失败自动换到所选的 opencode 免费模型）。
+ * 0.2.0 契约：回退模型经 configForms 写宿主插件的 Config；密钥走
+ * ctx.remote.credentials。
  */
 
 import { useEffect, useState } from "react";
-import type { IApiClient } from "@deepseek-ai/dsh-client-connection/client";
-import type { SettingsScope } from "@deepseek-ai/dsh-client-runtime/client";
+import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import { IconChevronDownOutline14 } from "./icons.tsx";
 
 const KEY_REF = "ZHIPU_API_KEY";
@@ -18,16 +18,23 @@ export interface ApprovalReviewSettings {
   fallbackModel?: string;
 }
 
-export interface ApprovalReviewCardInjected {
-  scope: SettingsScope<ApprovalReviewSettings>;
-  api: Pick<IApiClient, "credentials">;
-}
-
 interface CredentialView {
   configured?: boolean;
 }
 
-export function ApprovalReviewCard({ scope, api }: ApprovalReviewCardInjected) {
+/** 插件页签注入面：宿主配置表单 + 凭据读写（client/index.ts 注入）。 */
+export interface ApprovalReviewCardProps {
+  form: ConfigForm<ApprovalReviewSettings>;
+  credentials: {
+    describe(refs: string[]): Promise<{
+      ok: boolean;
+      value: Record<string, CredentialView>;
+    }>;
+    set(ref: string, value: string): Promise<unknown>;
+  };
+}
+
+export function ApprovalReviewCard({ form, credentials }: ApprovalReviewCardProps) {
   const [open, setOpen] = useState(false);
   const [configured, setConfigured] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
@@ -39,24 +46,20 @@ export function ApprovalReviewCard({ scope, api }: ApprovalReviewCardInjected) {
   const [failed, setFailed] = useState(false);
 
   const refresh = async () => {
-    const snapshot = scope.getSnapshot();
+    const snapshot = form.getSnapshot();
     const current = snapshot.value?.fallbackModel ?? "";
     setModelDraft(current);
     setSavedModel(current);
-    const described = (await api.credentials
-      .describe({ refs: [KEY_REF] })
+    const described = (await credentials
+      .describe([KEY_REF])
       .catch(() => undefined)) as
       | {
-          result: {
-            ok: boolean;
-            value: { credentials: Record<string, CredentialView> };
-          };
+          ok: boolean;
+          value: Record<string, CredentialView>;
         }
       | undefined;
-    if (described?.result.ok === true) {
-      setConfigured(
-        described.result.value.credentials[KEY_REF]?.configured === true,
-      );
+    if (described?.ok === true) {
+      setConfigured(described.value[KEY_REF]?.configured === true);
     }
     const fetched = await fetch("/dsh-config/opencode-models", {
       headers: MODELS_HEADER,
@@ -77,7 +80,7 @@ export function ApprovalReviewCard({ scope, api }: ApprovalReviewCardInjected) {
 
   useEffect(() => {
     void refresh();
-    const unsubscribe = scope.subscribe(() => {
+    const unsubscribe = form.subscribe(() => {
       void refresh();
     });
     return unsubscribe;
@@ -90,9 +93,9 @@ export function ApprovalReviewCard({ scope, api }: ApprovalReviewCardInjected) {
     setSaving(true);
     setFailed(false);
     try {
-      await scope.set("fallbackModel", modelDraft);
+      await form.set("fallbackModel", modelDraft);
       if (keyDraft.trim() !== "") {
-        await api.credentials.set({ ref: KEY_REF, value: keyDraft.trim() });
+        await credentials.set(KEY_REF, keyDraft.trim());
       }
       setKeyDraft("");
       await refresh();
@@ -110,9 +113,8 @@ export function ApprovalReviewCard({ scope, api }: ApprovalReviewCardInjected) {
   };
 
   return (
-    <li
+    <div
       style={{
-        listStyle: "none",
         border: "1px solid var(--dsw-alias-border-l2)",
         borderRadius: 12,
         background: "var(--dsw-alias-bg-layer-3)",
@@ -411,6 +413,6 @@ export function ApprovalReviewCard({ scope, api }: ApprovalReviewCardInjected) {
           </div>
         </div>
       ) : null}
-    </li>
+    </div>
   );
 }

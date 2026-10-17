@@ -19,12 +19,12 @@ import z from "@deepseek-ai/schemastery";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   CONTEXT_WINDOW_EXCEEDED_CODE,
-  CallId,
   LlmAdapter,
   LlmError,
   QUOTA_EXCEEDED_CODE,
   ReasoningEffortId,
   RetryPolicySchema,
+  ToolCallId,
   attributionHeaders,
   isContextWindowExceededError,
   isQuotaExceededError,
@@ -35,13 +35,13 @@ import {
   type LlmModelInfo,
   type LlmReasoningEffortInfo,
   type LlmResolvedModelInfo,
-  type Message,
+  type RequestMessage,
   type ResolvedRetryPolicy,
   type RetryPolicyConfig,
   type StreamChunk,
   type TokenUsage,
   type ToolCallBlock,
-  type ToolResultBlock,
+  type ToolResultMessage,
 } from "@deepseek-ai/dsh-llm";
 
 export const name = "dsh-config-opencode";
@@ -163,24 +163,30 @@ function textOf(blocks: readonly ContentBlock[]): string {
 /**
  * 序列化 harness 会话为 OpenAI chat completions 消息。关键：
  * - assistant 的 tool-call 块 → `tool_calls`（OpenAI 格式，与文本共存）；
- * - harness 里工具结果在 user 消息内（tool-result 块）→ wire 拆成独立
- *   `{role:"tool", tool_call_id}` 消息（OpenAI 要求，与原生 deepseek 适配器一致）；
+ * - 0.2.0 里工具结果是一等 `role:"tool"` 消息（ToolResultMessage）→ wire
+ *   直接映射 `{role:"tool", tool_call_id}`（OpenAI 要求）；
  * - reasoning 块不发送（wire 无对应位置，文本+tool_calls 已足够）。
  */
 function serializeMessages(
   system: string | undefined,
-  messages: readonly Message[],
+  messages: readonly RequestMessage[],
 ): OpenAiMessage[] {
   const out: OpenAiMessage[] = [];
   if (system !== undefined && system.length > 0)
     out.push({ role: "system", content: system });
   for (const message of messages) {
+    if (message.role === "tool") {
+      const result = message as ToolResultMessage;
+      out.push({
+        role: "tool",
+        tool_call_id: result.toolCallId,
+        content: textOf(result.content),
+      });
+      continue;
+    }
     const text = textOf(message.content);
     const toolCalls = message.content.filter(
       (part): part is ToolCallBlock => part.type === "tool-call",
-    );
-    const toolResults = message.content.filter(
-      (part): part is ToolResultBlock => part.type === "tool-result",
     );
     if (message.role === "assistant") {
       if (text.length > 0 || toolCalls.length > 0) {
@@ -198,15 +204,8 @@ function serializeMessages(
             : {}),
         });
       }
-    } else {
-      if (text.length > 0) out.push({ role: "user", content: text });
-      for (const result of toolResults) {
-        out.push({
-          role: "tool",
-          tool_call_id: result.toolCallId,
-          content: textOf(result.content),
-        });
-      }
+    } else if (text.length > 0) {
+      out.push({ role: "user", content: text });
     }
   }
   return out;
@@ -441,7 +440,7 @@ class OpenCodeAdapter extends LlmAdapter {
     }
     for (const call of toolCalls) {
       const index = nextIndex;
-      const callId = CallId(call.id);
+      const callId = ToolCallId(call.id);
       nextIndex += 1;
       yield {
         type: "block-start",

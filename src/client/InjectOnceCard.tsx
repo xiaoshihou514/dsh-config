@@ -56,9 +56,8 @@ export function InjectOnceCard() {
   };
 
   return (
-    <li
+    <div
       style={{
-        listStyle: "none",
         border: "1px solid var(--dsw-alias-border-l2)",
         borderRadius: 12,
         background: "var(--dsw-alias-bg-layer-3)",
@@ -235,6 +234,6 @@ export function InjectOnceCard() {
           </div>
         </div>
       ) : null}
-    </li>
+    </div>
   );
 }

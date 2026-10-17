@@ -1,14 +1,17 @@
 # Token 用量面板
 
+> **2026-10-17 适配 dsh 0.2.0-rc.2**：记账来源由 `assistant/chunk`（usage 块）+ `assistant/message` 双路改为**仅 `assistant/message`**（0.2.0 usage 直接挂在事件数据上，chunk 事件已移除）；会话事件读取改用 `session.snapshotEvents()`。入口槽位（`sidebar.footer.action`）与界面不变。
+
 dsh-config 在 DSH Web **侧边栏设置上方的「用量」入口**（`sidebar.footer.action`）中提供 Token 用量统计，点击打开自绘弹窗。历程：2026-08-17 先挂在「设置 → 插件」卡片，随后改为独立设置分区（`settings.section`），再按用户要求删除分区入口、只保留侧边栏按钮（设置导航图标是壳层硬编码的，外部插件换不了）。
 
 ## 数据
 
 - 用量记录保存在 `$DSH_HOME/dsh-config/usage.json`（`version: 1`）。
 - `deepseek-official` 的 `deepseek-v4-flash` / `deepseek-v4-pro` 按官方峰谷单价计费。
-- 订阅档（`opencode-free`、`openai-codex`、`github-copilot`、`zai-coding-cn` 及同类 coding/token-plan）费用记 0，只统计词元量；筛选标签为 `provider/model`。
+- `zai-coding-cn`（GLM Coding Plan 包月套餐）按**智谱国内站 API 统一牌价估算**费用（2026-10-17 起计价；此前该供应商记 0，历史聚合不回填）：`glm-5.3-flash` 0.23/0.8/2.8、`glm-5.3-flashx` 0.57/2/7、`glm-5.3` 与 `glm-5.2` 2/8/28、`glm-5.1` 1.3/6/24、`glm-5-turbo` 1.2/5/22、`glm-5` 1/4/18（元/百万词元，缓存命中/未命中输入/输出）。**智谱无峰谷差价**（谷时半价是 DeepSeek 的结构；智谱的「错峰」是套餐额度活动，不影响 API 单价），峰/闲拆分按调用发生时段归属；分档模型按低档计；未知 GLM 模型记 0。
+- 其余订阅档（`opencode-free`、`openai-codex`、`github-copilot` 及同类 coding/token-plan）费用记 0，只统计词元量；筛选标签为 `provider/model`。
 - 缓存写入按缓存未命中输入计费。
-- 记录以 `sessionId:turn:step` 去重；`assistant/chunk`（usage 块）或 `assistant/message`（带 usage）各记一条。
+- 记录以 `sessionId:turn:step` 去重；0.2.0 起 usage 直接挂在 `assistant/message` 事件数据上，逐条各记一条。
 - 前端每 15 秒轮询 `/dsh-config/usage` 刷新（该接口要求 `x-dsh-config: usage-calendar` 请求头）。
 
 ## 计费（2026-08-17 生效）

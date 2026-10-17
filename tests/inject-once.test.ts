@@ -73,7 +73,11 @@ describe("单次提醒触发边界", () => {
       content: [{ type: "text", text: "开始" }],
       source: { kind: "user" },
     });
-    const agent = { session: { header: { cwd: nested }, events: [] } };
+    // 0.2.0：session 事件读取面是 snapshotEvents()（原 .events 数组已移除）。
+    const log: unknown[] = [];
+    const agent = {
+      session: { header: { cwd: nested }, snapshotEvents: () => log },
+    };
     const next = () => Promise.resolve({ kind: "enter", messages: [prompt] });
 
     const first = await listener?.(
@@ -89,7 +93,7 @@ describe("单次提醒触发边界", () => {
       cause: "session-start",
     });
 
-    agent.session.events.push({
+    log.push({
       type: "user/message",
       data: first.messages[1],
     } as never);

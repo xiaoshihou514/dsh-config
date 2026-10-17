@@ -6,8 +6,9 @@
  * 聚合。读 API 只返回聚合 + 今日明细，响应体比 v1 全量 records 小一两个
  * 数量级；写盘走防抖批量合并，不再每条全量重写。
  *
- * 支持 provider：deepseek-official（官方计费）；其余订阅档（OpenCode Free、
- * Codex、GitHub Copilot、Z.AI Coding 等）费用恒为 0，只统计词元量。
+ * 支持 provider：deepseek-official（官方峰谷计费）；zai-coding-cn（GLM
+ * Coding Plan 包月套餐，按智谱国内站 API 牌价估算费用，无峰谷差价）；其余
+ * 订阅档（OpenCode Free、Codex、GitHub Copilot 等）费用恒为 0，只统计词元量。
  */
 
 import { randomUUID } from "node:crypto";
@@ -31,7 +32,6 @@ const SUBSCRIPTION_PROVIDERS = new Set([
   "opencode-free",
   "openai-codex",
   "github-copilot",
-  "zai-coding-cn",
   "kimi-coding",
   "qwen-token-plan",
   "qwen-token-plan-cn",
@@ -41,6 +41,27 @@ const SUBSCRIPTION_PROVIDERS = new Set([
   "xiaomi-token-plan-sgp",
   "opencode-go",
 ]);
+
+/**
+ * 计价订阅档：包月套餐，仍只记账词元量，但按供应商 API 牌价**估算**费用
+ * （供「如果按量付费要花多少」参考）。目前仅智谱 GLM Coding Plan（国内站）。
+ */
+const PRICED_PROVIDERS = new Set(["zai-coding-cn"]);
+
+/**
+ * 智谱国内站（bigmodel.cn）API 牌价（元 / 百万 tokens）：缓存命中 / 未命中输入 / 输出。
+ * 来源：docs.bigmodel.cn「API 定价」页。智谱无峰谷差价，统一牌价；分档模型
+ * （按输入长度分两档）按低档计。缓存存储当前限时免费，不计。
+ */
+const ZAI_PRICE = {
+  "glm-5.3-flash": { hit: 0.23, miss: 0.8, output: 2.8 },
+  "glm-5.3-flashx": { hit: 0.57, miss: 2, output: 7 },
+  "glm-5.3": { hit: 2, miss: 8, output: 28 },
+  "glm-5.2": { hit: 2, miss: 8, output: 28 },
+  "glm-5.1": { hit: 1.3, miss: 6, output: 24 },
+  "glm-5-turbo": { hit: 1.2, miss: 5, output: 22 },
+  "glm-5": { hit: 1, miss: 4, output: 18 },
+} as const;
 
 /** 官方模型单价（元 / 百万 tokens）：高峰 / 闲时。 */
 const PEAK_PRICE = {
@@ -70,6 +91,23 @@ function costOf(
 ): { cost: number; peakCost: number; offCost: number } {
   if (SUBSCRIPTION_PROVIDERS.has(provider))
     return { cost: 0, peakCost: 0, offCost: 0 };
+  const cacheRead = record.cacheReadTokens ?? 0;
+  const cacheWrite = record.cacheWriteTokens ?? 0;
+  // 计价订阅档（智谱 GLM Coding Plan）：按 API 牌价估算。智谱无峰谷差价，
+  // 统一牌价下金额即费用，峰/闲两侧按记录发生时段归侧（只影响拆分展示）。
+  if (PRICED_PROVIDERS.has(provider)) {
+    const bare = model.slice(provider.length + 1).toLowerCase();
+    const price = ZAI_PRICE[bare as keyof typeof ZAI_PRICE];
+    if (price === undefined) return { cost: 0, peakCost: 0, offCost: 0 };
+    const cost =
+      (cacheRead * price.hit +
+        (record.inputTokens + cacheWrite) * price.miss +
+        record.outputTokens * price.output) /
+      1_000_000;
+    return isPeak(at)
+      ? { cost, peakCost: cost, offCost: 0 }
+      : { cost, peakCost: 0, offCost: cost };
+  }
   const price =
     model === "deepseek-v4-pro"
       ? PEAK_PRICE.pro
@@ -77,8 +115,6 @@ function costOf(
         ? PEAK_PRICE.flash
         : undefined;
   if (price === undefined) return { cost: 0, peakCost: 0, offCost: 0 };
-  const cacheRead = record.cacheReadTokens ?? 0;
-  const cacheWrite = record.cacheWriteTokens ?? 0;
   const peak =
     (cacheRead * price.hit +
       (record.inputTokens + cacheWrite) * price.miss +
@@ -191,7 +227,12 @@ function modelOf(provider: string, model: string): string | undefined {
       ? model
       : undefined;
   }
-  if (SUBSCRIPTION_PROVIDERS.has(provider) && model !== "")
+  // 计价订阅档与免费订阅档一样以「provider/model」复合名入账（筛选标签、
+  // 聚合桶保持同一形态，历史数据不分裂）。
+  if (
+    (SUBSCRIPTION_PROVIDERS.has(provider) || PRICED_PROVIDERS.has(provider)) &&
+    model !== ""
+  )
     return `${provider}/${model}`;
   return undefined;
 }
@@ -337,6 +378,9 @@ async function save(path: string, value: UsageFile): Promise<void> {
   await rename(temporary, path);
 }
 
+/** 计费拆分（测试出口）：单条记录按供应商价目表算费用。 */
+export const pricing = { costOf };
+
 export function apply(ctx: Context): void {
   const headers = new WeakMap<object, Header>();
   const path = dataPath();
@@ -402,14 +446,9 @@ export function apply(ctx: Context): void {
       | undefined;
     let turn: number | undefined;
     let step: number | undefined;
-    if (event.type === "assistant/chunk" && event.data.chunk.type === "usage") {
-      usage = event.data.chunk.usage;
-      turn = event.data.turn;
-      step = event.data.step;
-    } else if (
-      event.type === "assistant/message" &&
-      event.data.usage !== undefined
-    ) {
+    // 0.2.0：usage 直接挂在 assistant/message 事件数据上（旧的
+    // assistant/chunk 事件已移除，attempt 事件不携带 usage）。
+    if (event.type === "assistant/message" && event.data.usage !== undefined) {
       usage = event.data.usage;
       turn = event.data.turn;
       step = event.data.step;

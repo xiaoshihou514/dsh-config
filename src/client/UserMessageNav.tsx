@@ -1,5 +1,9 @@
 import { useMemo, useState } from "react";
-import type { UseConversationSession } from "@deepseek-ai/dsh-client-runtime/client";
+
+/** 会话快照选择钩子（0.2.0 由 ui-session 以标准注入面提供）。 */
+type UseSessionHook = (
+  selector: (snapshot: unknown) => unknown,
+) => unknown;
 
 /** 从 ContentBlock[] 提取纯文本（导航标签用）。 */
 function textOf(content: unknown): string {
@@ -77,7 +81,7 @@ function collectUserItems(session: {
 export function UserMessageNav({
   useSession,
 }: {
-  useSession?: UseConversationSession;
+  useSession?: UseSessionHook;
 }) {
   const [open, setOpen] = useState(false);
   const session = useSession?.((snapshot) => snapshot);

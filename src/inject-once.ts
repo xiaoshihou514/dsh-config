@@ -10,18 +10,15 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import z from "@deepseek-ai/schemastery";
-import { settingsNamespace } from "@deepseek-ai/dsh-settings";
 
 export const name = "dsh-config-inject-once";
-export const inject = ["agents", "settings", "webServer"];
+export const inject = ["agents", "webServer"];
 
 const INJECT_ROUTE = "/dsh-config/inject-once";
 const HEADER = "x-dsh-config";
 const HEADER_VALUE = "inject-once";
 const MAX_AGENTS_BYTES = 64 * 1024;
 
-/** 设置命名空间：仅作为“备忘录”卡片在插件配置标签页的派发键，数据存在本地文件。 */
-const SETTINGS_NAMESPACE = settingsNamespace("dsh-config-inject-once");
 
 /** 备忘录持久化到 ~/.dsh/dsh-config/inject-once.json（不依赖 settings 服务，重启不丢）。 */
 function injectOncePath(): string {
@@ -164,7 +161,6 @@ function appendInjection(
 }
 
 export function apply(ctx: Context, config: Config): void {
-  ctx.settings.register(SETTINGS_NAMESPACE, z.object({}));
   /** 内存态即权威：启动时从 ~/.dsh 加载，保存后即时更新（写队列落后毫秒级）。 */
   let savedPrompt = "";
   let writes = Promise.resolve();
@@ -245,7 +241,7 @@ export function apply(ctx: Context, config: Config): void {
         signal.aborted
       )
         return decision;
-      const cause = injectionCause(agent.session.events);
+      const cause = injectionCause(agent.session.snapshotEvents());
       if (cause === undefined) return decision;
       const text = renderInjectOnce(
         globalPrompt(),

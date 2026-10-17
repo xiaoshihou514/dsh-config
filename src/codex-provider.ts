@@ -1,6 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
-import { settingsNamespace } from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
 import {
   resolveRetryPolicy,
@@ -26,15 +25,13 @@ import {
 } from "./codex-auth.ts";
 
 export const name = "dsh-config-codex-provider";
-export const inject = ["llm", "settings", "webServer"];
+export const inject = ["llm", "webServer"];
 
 export const PROVIDER = "openai-codex";
 const LOGIN_ROUTE = "/dsh-config/codex-login";
 const LOGIN_HEADER = "x-dsh-config";
 const LOGIN_HEADER_VALUE = "codex-login";
 
-/** 设置命名空间：仅作为“Codex 订阅登录”卡片在插件配置标签页的派发键，凭据存在 codex auth.json。 */
-const SETTINGS_NAMESPACE = settingsNamespace("dsh-config-codex-login");
 
 /** 与 opencode free 同款的限流/网络错误指数退避：1s 起步 ×2、封顶 30s、20% 抖动、最多 3 次重试。 */
 const CODEX_RETRY_POLICY: RetryPolicyConfig = {
@@ -191,8 +188,9 @@ export function createCodexAdapter(ctx?: Context): PiAiAdapter {
     requestImageMaxBytes: 1024 * 1024,
     retryPolicy: resolveRetryPolicy(CODEX_RETRY_POLICY, "Codex 订阅重试策略"),
     piProvider:
-      piProvider as unknown as ResolvedPiAiProviderProfile["piProvider"],
+      piProvider as NonNullable<ResolvedPiAiProviderProfile["piProvider"]>,
     configuredMaxTokens: new Map(),
+    modelErrors: new Map(),
   };
   const profiles = new Map([[PROVIDER, profile]]);
 
@@ -211,7 +209,6 @@ export function createCodexAdapter(ctx?: Context): PiAiAdapter {
 }
 
 export function apply(ctx: Context): void {
-  ctx.settings.register(SETTINGS_NAMESPACE, z.object({}));
   const catalogProvider = openaiCodexProvider();
   const oauth = catalogProvider.auth.oauth;
   if (oauth === undefined)

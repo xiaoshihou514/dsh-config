@@ -20,7 +20,6 @@ import { dirname, join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 import { attributionHeaders, createUserMessage } from "@deepseek-ai/dsh-llm";
-import { settingsNamespace } from "@deepseek-ai/dsh-settings";
 // Type-only: pulls the ctx.approval / approval/request merge.
 import type {
   ApprovalOutcome,
@@ -30,17 +29,13 @@ import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
 
 export const name = "dsh-config-approval-review";
-export const inject = ["approval", "webServer", "settings"];
+export const inject = ["approval", "webServer"];
 
 const ROUTE = "/dsh-config/auto-approval";
 const MODELS_ROUTE = "/dsh-config/opencode-models";
 const HEADER = "x-dsh-config";
 const HEADER_VALUE = "auto-approval";
 const SESSION_PATTERN = /^[a-zA-Z0-9-]{1,100}$/;
-
-/** 设置命名空间：用户可在卡片里选择回退用的 opencode 免费模型。 */
-const SETTINGS_NAMESPACE = settingsNamespace("dsh-config-approval");
-const SETTINGS_SCHEMA = z.object({ fallbackModel: z.string().default("") });
 
 const KEY_REF = "ZHIPU_API_KEY";
 const DEFAULT_BASE_URL =
@@ -226,7 +221,7 @@ function messageText(message: unknown): string | undefined {
 }
 
 function findToolContext(req: ApprovalRequest): ToolContext | undefined {
-  const events = req.agent.session.events;
+  const events = req.agent.session.snapshotEvents();
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index] as SessionEvent;
     if (event.type === "tool/call" && event.data.callId === req.callId) {
@@ -565,9 +560,8 @@ function respond(
  * @param config - reviewer configuration.
  */
 export function apply(ctx: Context, config: Config): void {
-  const scope = ctx.settings.register(SETTINGS_NAMESPACE, SETTINGS_SCHEMA);
-  /** 用户选择的回退模型（卡片里选 OpenCode Free 的某个 *-free 模型），留空自动跟随远程列表第一个。 */
-  const fallbackModel = (): string => scope.get().fallbackModel || "";
+  /** 用户选择的回退模型（配置里选 OpenCode Free 的某个 *-free 模型），留空自动跟随远程列表第一个。 */
+  const fallbackModel = (): string => config.fallbackModel || "";
 
   const toggles = new Map<string, boolean>();
   let writes = Promise.resolve();
@@ -658,7 +652,7 @@ export function apply(ctx: Context, config: Config): void {
       req.agent.inject(
         createUserMessage({
           content: [{ type: "text", text }],
-          source: { kind: "plugin", plugin: "dsh-config" },
+          source: { kind: "user-approval" },
         }),
       );
     } catch (error) {

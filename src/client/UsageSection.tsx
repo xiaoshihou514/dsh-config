@@ -1162,7 +1162,7 @@ export function UsageSection() {
       >
         {loading
           ? "正在读取用量…"
-          : `费用按 DeepSeek 官方 V4-Flash / V4-Pro 峰谷单价估算：高峰（北京时间 9:00-12:00、14:00-18:00）按高峰价，其余时段半价；缓存写入按未命中输入计费。OpenCode Free 与 Codex 订阅仅统计词元、不计费。历史数据按天聚合缓存（仅今天保留逐条明细）。全部累计 ${money(allTime.cost)}。`}
+          : `费用按官方牌价估算：DeepSeek V4-Flash / V4-Pro 分峰谷（北京时间 9:00-12:00、14:00-18:00 高峰，其余半价）；智谱 GLM Coding Plan（zai-coding-cn）按国内站 API 统一牌价估算，无峰谷差价，峰/闲拆分按调用发生时段归属；缓存写入按未命中输入计费。OpenCode Free 与 Codex 订阅仅统计词元、不计费。历史数据按天聚合缓存（仅今天保留逐条明细）。全部累计 ${money(allTime.cost)}。`}
       </p>
     </section>
   );
