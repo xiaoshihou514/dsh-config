@@ -1,32 +1,22 @@
 /**
- * Browser entry: sidebar usage entry, the composer auto-approve toggle, and
- * the plugin-manager row configuration pages (0.2.0 slot contract:
- * `plugins.row.config`, keyed by `<package name>#<row id>`).
+ * Browser entry: sidebar usage entry, and the plugin-manager row
+ * configuration pages (0.2.0 slot contract: `plugins.row.config`, keyed by
+ * `<package name>#<row id>`).
  */
 
 import type { Context } from "@deepseek-ai/cordis";
-// Type-only: pull the SlotMap / standard-props declaration merges each slot
-// contract owner publishes, so register() type-checks against them.
+// Type-only: pull the SlotMap declaration merges each slot contract owner
+// publishes, so register() type-checks against them.
 import type {} from "@deepseek-ai/dsh-client-ui-slots";
 import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
-import type {} from "@deepseek-ai/dsh-client-ui-session/client";
-import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {} from "@deepseek-ai/dsh-client-ui-sidebar/client";
-import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-plugin-manager/client";
-// Type-only: the ctx.remote namespace map (credentials/settings) merges here.
-import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { UsageTrigger } from "./UsageTrigger.tsx";
-import { AutoApproveToggle } from "./AutoApproveToggle.tsx";
-import {
-  ApprovalReviewCard,
-  type ApprovalReviewSettings,
-} from "./ApprovalReviewCard.tsx";
 import { CodexLoginCard } from "./CodexLoginCard.tsx";
 import { CopilotLoginCard } from "./CopilotLoginCard.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
 
-export const inject = ["slots", "remote", "remote.credentials", "configForms"];
+export const inject = ["slots"];
 
 /** 行配置条目的 key = `<包名>#<行 id>`（行 id 即 cordis.patch.yml 声明的行）。 */
 const ROW_KEY = (rowId: string): `dsh-config#${string}` => `dsh-config#${rowId}`;
@@ -37,25 +27,7 @@ export function apply(ctx: Context): void {
     { name: "sidebar.footer.action", id: "usage", order: 0 },
     UsageTrigger,
   ));
-  // 输入栏自动审批开关（session 作用域：组件收到 sessionId 标准注入）。
-  ctx.slots.inject("conversation.input.left", () => ctx.slots.register(
-    { name: "conversation.input.left", id: "dsh-config-auto-approve", order: 0 },
-    AutoApproveToggle,
-  ));
   // 插件管理器（侧边栏插件按钮 → dsh-config → 行「配置」）的行配置页。
-  ctx.slots.inject("plugins.row.config", () => ctx.slots.register(
-    {
-      name: "plugins.row.config",
-      key: ROW_KEY("dsh-config-approval-review"),
-      inject: () => ({
-        credentials: ctx.remote.credentials,
-        form: ctx.configForms.get<ApprovalReviewSettings>(
-          "dsh-config-approval-review",
-        ),
-      }),
-    },
-    ApprovalReviewCard,
-  ));
   ctx.slots.inject("plugins.row.config", () => ctx.slots.register(
     { name: "plugins.row.config", key: ROW_KEY("dsh-config-codex-provider") },
     CodexLoginCard,

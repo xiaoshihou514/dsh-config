@@ -16,7 +16,6 @@ export default defineConfig([
     entry: {
       index: "src/index.ts",
       "usage-api": "src/usage-api.ts",
-      "approval-review": "src/approval-review.ts",
       opencode: "src/opencode-provider.ts",
       "codex-provider": "src/codex-provider.ts",
       "copilot-provider": "src/copilot-provider.ts",
