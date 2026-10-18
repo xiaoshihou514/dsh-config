@@ -22,8 +22,10 @@ interface CredentialView {
   configured?: boolean;
 }
 
-/** 插件页签注入面：宿主配置表单 + 凭据读写（client/index.ts 注入）。 */
+/** 插件行配置注入面：宿主配置表单 + 凭据读写（client/index.ts 注入）。 */
 export interface ApprovalReviewCardProps {
+  /** 插件管理器行配置页的视图：summary 渲染行摘要，page 渲染完整配置。 */
+  view?: "summary" | "page";
   form: ConfigForm<ApprovalReviewSettings>;
   credentials: {
     describe(refs: string[]): Promise<{
@@ -34,7 +36,19 @@ export interface ApprovalReviewCardProps {
   };
 }
 
-export function ApprovalReviewCard({ form, credentials }: ApprovalReviewCardProps) {
+export function ApprovalReviewCard({
+  view,
+  form,
+  credentials,
+}: ApprovalReviewCardProps) {
+  if (view === "summary") return <span>提权回先经大模型尝试自动审核</span>;
+  return <ApprovalReviewCardPage form={form} credentials={credentials} />;
+}
+
+function ApprovalReviewCardPage({
+  form,
+  credentials,
+}: ApprovalReviewCardProps) {
   const [open, setOpen] = useState(false);
   const [configured, setConfigured] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");

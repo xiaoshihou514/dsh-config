@@ -22,7 +22,17 @@ async function request(
   return body;
 }
 
-export function CodexLoginCard() {
+/** 行摘要（插件管理器行详情页的描述兜底）。 */
+export function CodexLoginCardSummary() {
+  return <span>ChatGPT 订阅（Codex）OAuth 登录与登出</span>;
+}
+
+export function CodexLoginCard({ view }: { view: "summary" | "page" }) {
+  if (view === "summary") return <CodexLoginCardSummary />;
+  return <CodexLoginCardPage />;
+}
+
+function CodexLoginCardPage() {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<LoginStatus>({ state: "idle" });
   const [busy, setBusy] = useState(false);

@@ -22,7 +22,17 @@ async function request(
   return body;
 }
 
-export function CopilotLoginCard() {
+/** 行摘要（插件管理器行详情页的描述兜底）。 */
+export function CopilotLoginCardSummary() {
+  return <span>GitHub Copilot 订阅 OAuth 登录与登出</span>;
+}
+
+export function CopilotLoginCard({ view }: { view: "summary" | "page" }) {
+  if (view === "summary") return <CopilotLoginCardSummary />;
+  return <CopilotLoginCardPage />;
+}
+
+function CopilotLoginCardPage() {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<LoginStatus>({ state: "idle" });
   const [busy, setBusy] = useState(false);

@@ -23,7 +23,17 @@ async function savePrompt(prompt: string): Promise<void> {
   if (!response.ok || body.ok !== true) throw new Error("保存备忘录失败");
 }
 
-export function InjectOnceCard() {
+/** 行摘要（插件管理器行详情页的描述兜底）。 */
+export function InjectOnceCardSummary() {
+  return <span>每个会话注入一次的全局提醒文案</span>;
+}
+
+export function InjectOnceCard({ view }: { view: "summary" | "page" }) {
+  if (view === "summary") return <InjectOnceCardSummary />;
+  return <InjectOnceCardPage />;
+}
+
+function InjectOnceCardPage() {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [saved, setSaved] = useState("");

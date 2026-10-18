@@ -1,7 +1,7 @@
 /**
  * Browser entry: sidebar usage entry, the composer auto-approve toggle, and
- * the Plugins-page config tabs (0.2.0 slot contract: `settings.plugins.tab`
- * list entries with self-owned pages).
+ * the plugin-manager row configuration pages (0.2.0 slot contract:
+ * `plugins.row.config`, keyed by `<package name>#<row id>`).
  */
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -13,14 +13,23 @@ import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {} from "@deepseek-ai/dsh-client-ui-sidebar/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
+import type {} from "@deepseek-ai/dsh-client-ui-plugin-manager/client";
+// Type-only: the ctx.remote namespace map (credentials/settings) merges here.
+import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { UsageTrigger } from "./UsageTrigger.tsx";
 import { AutoApproveToggle } from "./AutoApproveToggle.tsx";
-import { ApprovalReviewCard } from "./ApprovalReviewCard.tsx";
+import {
+  ApprovalReviewCard,
+  type ApprovalReviewSettings,
+} from "./ApprovalReviewCard.tsx";
 import { CodexLoginCard } from "./CodexLoginCard.tsx";
 import { CopilotLoginCard } from "./CopilotLoginCard.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
 
 export const inject = ["slots", "remote", "remote.credentials", "configForms"];
+
+/** 行配置条目的 key = `<包名>#<行 id>`（行 id 即 cordis.patch.yml 声明的行）。 */
+const ROW_KEY = (rowId: string): `dsh-config#${string}` => `dsh-config#${rowId}`;
 
 export function apply(ctx: Context): void {
   // 侧边栏「用量」入口（设置上方）：root 列表槽位，owner 传 wide。
@@ -33,41 +42,30 @@ export function apply(ctx: Context): void {
     { name: "conversation.input.left", id: "dsh-config-auto-approve", order: 0 },
     AutoApproveToggle,
   ));
-  // 设置 → 插件 页的配置页签（0.2.0：插件配置页 = settings.plugins.tab 列表项）。
-  ctx.slots.inject("settings.plugins.tab", () => ctx.slots.register(
+  // 插件管理器（侧边栏插件按钮 → dsh-config → 行「配置」）的行配置页。
+  ctx.slots.inject("plugins.row.config", () => ctx.slots.register(
     {
-      name: "settings.plugins.tab",
-      id: "dsh-config-approval",
-      order: 20,
-      label: "自动模式",
+      name: "plugins.row.config",
+      key: ROW_KEY("dsh-config-approval-review"),
+      inject: () => ({
+        credentials: ctx.remote.credentials,
+        form: ctx.configForms.get<ApprovalReviewSettings>(
+          "dsh-config-approval-review",
+        ),
+      }),
     },
     ApprovalReviewCard,
   ));
-  ctx.slots.inject("settings.plugins.tab", () => ctx.slots.register(
-    {
-      name: "settings.plugins.tab",
-      id: "dsh-config-codex-login",
-      order: 21,
-      label: "Codex 登录",
-    },
+  ctx.slots.inject("plugins.row.config", () => ctx.slots.register(
+    { name: "plugins.row.config", key: ROW_KEY("dsh-config-codex-provider") },
     CodexLoginCard,
   ));
-  ctx.slots.inject("settings.plugins.tab", () => ctx.slots.register(
-    {
-      name: "settings.plugins.tab",
-      id: "dsh-config-copilot-login",
-      order: 22,
-      label: "Copilot 登录",
-    },
+  ctx.slots.inject("plugins.row.config", () => ctx.slots.register(
+    { name: "plugins.row.config", key: ROW_KEY("dsh-config-copilot-provider") },
     CopilotLoginCard,
   ));
-  ctx.slots.inject("settings.plugins.tab", () => ctx.slots.register(
-    {
-      name: "settings.plugins.tab",
-      id: "dsh-config-inject-once",
-      order: 23,
-      label: "备忘录",
-    },
+  ctx.slots.inject("plugins.row.config", () => ctx.slots.register(
+    { name: "plugins.row.config", key: ROW_KEY("dsh-config-inject-once") },
     InjectOnceCard,
   ));
 }
