@@ -177,8 +177,9 @@ function number(value: number): string {
   }).format(value);
 }
 
-/** 中文四位分组（万进制习惯）：8887 → 8,887；123456 → 12,3456。 */
+/** 中文数字格式：≥1 万显示「x.yz万」，其余四位分组（8887 → 8,887）。 */
 function cnDigits(value: number): string {
+  if (value >= 10_000) return `${(value / 10_000).toFixed(2)}万`;
   return String(Math.round(value)).replace(/\B(?=(\d{4})+(?!\d))/g, ",");
 }
 
