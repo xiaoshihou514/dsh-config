@@ -247,9 +247,10 @@ function textOf(blocks: readonly ContentBlock[]): string {
 /**
  * 序列化 harness 会话为 OpenAI chat completions 消息。关键：
  * - assistant 的 tool-call 块 → `tool_calls`（OpenAI 格式，与文本共存）；
- * - 0.2.0 里工具结果是一等 `role:"tool"` 消息（ToolResultMessage）→ wire
- *   直接映射 `{role:"tool", tool_call_id}`（OpenAI 要求）；
- * - reasoning 块不发送（wire 无对应位置，文本+tool_calls 已足够）。
+ * - 工具结果是一等 `role:"tool"` 消息（ToolResultMessage）→ wire 直接映射；
+ * - assistant 的 reasoning 块 → `reasoning_content` 回传：zen 网关对思考
+ *   模型强校验「thinking 模式下 reasoning_content 必须回传」，多轮工具
+ *   调用缺它直接 invalid_request_error。
  */
 function serializeMessages(
   system: string | undefined,
@@ -272,11 +273,16 @@ function serializeMessages(
     const toolCalls = message.content.filter(
       (part): part is ToolCallBlock => part.type === "tool-call",
     );
+    const reasoning = message.content
+      .filter((part): part is ContentBlock & { type: "reasoning"; text: string } => part.type === "reasoning")
+      .map((part) => part.text)
+      .join("\n");
     if (message.role === "assistant") {
-      if (text.length > 0 || toolCalls.length > 0) {
+      if (text.length > 0 || toolCalls.length > 0 || reasoning.length > 0) {
         out.push({
           role: "assistant",
           content: text.length > 0 ? text : null,
+          ...(reasoning.length > 0 ? { reasoning_content: reasoning } : {}),
           ...(toolCalls.length > 0
             ? {
                 tool_calls: toolCalls.map((call) => ({
