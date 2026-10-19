@@ -1361,23 +1361,47 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
       {windows.length === 0 ? (
         <Muted>暂无配额窗口</Muted>
       ) : (
-        windows.map((w) => (
-          <div key={w.label} style={{ whiteSpace: "nowrap" }}>
-            <span
-              style={{ color: "var(--dsw-alias-label-secondary)" }}
-            >{`${w.label} 窗口`}</span>{" "}
-            <span
-              style={{
-                color:
-                  w.pct >= 80 ? "var(--dsw-alias-label-error)" : undefined,
-              }}
+        windows.map((w) => {
+          const color =
+            w.pct >= 80
+              ? "var(--dsw-alias-state-error-primary)"
+              : w.pct >= 50
+                ? "var(--dsw-alias-state-warn-primary)"
+                : "var(--dsw-alias-state-success-primary)";
+          return (
+            <div
+              key={w.label}
+              style={{ marginBottom: w !== windows.at(-1) ? 8 : 0 }}
             >
-              {w.pct}%
-            </span>{" "}
-            {number(w.used)} / {number(w.total)}
-            <Muted>{` · 重置 ${countdown(w.resetAt - Date.now())}`}</Muted>
-          </div>
-        ))
+              <div style={{ whiteSpace: "nowrap" }}>
+                <span
+                  style={{ color: "var(--dsw-alias-label-secondary)" }}
+                >{`${w.label} 窗口`}</span>{" "}
+                <span style={{ color }}>{w.pct}%</span>{" "}
+                {number(w.used)} / {number(w.total)}
+                <Muted>{` · 重置 ${countdown(w.resetAt - Date.now())}`}</Muted>
+              </div>
+              <div
+                style={{
+                  height: 5,
+                  borderRadius: 3,
+                  marginTop: 3,
+                  background: "var(--dsw-alias-interactive-bg-hover)",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${Math.max(0, Math.min(100, w.pct))}%`,
+                    height: "100%",
+                    borderRadius: 3,
+                    background: color,
+                  }}
+                />
+              </div>
+            </div>
+          );
+        })
       )}
     </CardFrame>
   );
