@@ -23,6 +23,7 @@ export const name = "dsh-config-usage-api";
 export const inject = ["sessions", "webServer"];
 
 const ROUTE = "/dsh-config/usage";
+const PROVIDER_ROUTE = "/dsh-config/provider-status";
 const HEADER = "x-dsh-config";
 const HEADER_VALUE = "usage-calendar";
 
@@ -419,6 +420,171 @@ export const pricing = { costOf };
 /** 裸名模型桶归一（测试出口）。 */
 export const migration = { normalizeModelBuckets };
 
+// ===== 供应商状态代理（DeepSeek 余额 / 智谱套餐配额）=====
+
+/** 单条余额：币种与金额。 */
+interface BalanceItem {
+  currency: string;
+  total: number;
+  granted: number;
+  toppedUp: number;
+}
+
+interface DeepseekBalance {
+  ok: boolean;
+  /** unconfigured（未配置密钥）/ HTTP n / network */
+  reason?: string;
+  isAvailable?: boolean;
+  balances?: BalanceItem[];
+}
+
+interface QuotaWindow {
+  /** 窗口标签：5h / 168h(周) 等。 */
+  label: string;
+  used: number;
+  total: number;
+  remaining: number;
+  pct: number;
+  /** 重置时刻（epoch ms）。 */
+  resetAt: number;
+}
+
+interface ZaiQuota {
+  ok: boolean;
+  reason?: string;
+  /** 套餐档位（如 Lite / Pro / Max）。 */
+  level?: string;
+  windows?: QuotaWindow[];
+}
+
+/** 从宿主凭据存储解析一个引用的值。 */
+async function resolveCredential(
+  ctx: Context,
+  ref: string,
+): Promise<string | undefined> {
+  const credentials = ctx.get("credentials") as
+    | { resolve(ref: string): Promise<{ value: string } | undefined> }
+    | undefined;
+  const resolved = await credentials?.resolve(ref);
+  return resolved?.value;
+}
+
+/** 60 秒缓存包装：余额/配额变化慢，前端轮询不必每次打上游。 */
+function cached<T>(fetcher: () => Promise<T>): () => Promise<T> {
+  let entry: { at: number; value: T } | null = null;
+  return async () => {
+    if (entry !== null && Date.now() - entry.at < 60_000) return entry.value;
+    const value = await fetcher();
+    entry = { at: Date.now(), value };
+    return value;
+  };
+}
+
+async function fetchDeepseekBalance(ctx: Context): Promise<DeepseekBalance> {
+  const key = await resolveCredential(ctx, "DEEPSEEK_API_KEY");
+  if (key === undefined || key.length === 0)
+    return { ok: false, reason: "unconfigured" };
+  try {
+    const response = await fetch("https://api.deepseek.com/user/balance", {
+      headers: { authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
+    const parsed = (await response.json()) as {
+      is_available?: boolean;
+      balance_infos?: {
+        currency?: string;
+        total_balance?: string;
+        granted_balance?: string;
+        topped_up_balance?: string;
+      }[];
+    };
+    return {
+      ok: true,
+      isAvailable: parsed.is_available === true,
+      balances: (parsed.balance_infos ?? []).map((info) => ({
+        currency: info.currency ?? "",
+        total: Number(info.total_balance ?? 0),
+        granted: Number(info.granted_balance ?? 0),
+        toppedUp: Number(info.topped_up_balance ?? 0),
+      })),
+    };
+  } catch {
+    return { ok: false, reason: "network" };
+  }
+}
+
+async function fetchZaiQuota(ctx: Context): Promise<ZaiQuota> {
+  const key = await resolveCredential(ctx, "ZAI_CODING_CN_API_KEY");
+  if (key === undefined || key.length === 0)
+    return { ok: false, reason: "unconfigured" };
+  try {
+    const response = await fetch(
+      "https://bigmodel.cn/api/monitor/usage/quota/limit",
+      { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8_000) },
+    );
+    if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
+    const parsed = (await response.json()) as {
+      code?: number;
+      data?: {
+        level?: string;
+        limits?: {
+          type?: string;
+          unit?: number;
+          number?: number;
+          usage?: number;
+          currentValue?: number;
+          remaining?: number;
+          percentage?: number;
+          nextResetTime?: number;
+        }[];
+      };
+    };
+    if (parsed.code !== 200) return { ok: false, reason: `code ${parsed.code}` };
+    const windows = (parsed.data?.limits ?? [])
+      .filter((limit) => limit.type === "CREDIT_LIMIT")
+      .map((limit) => ({
+        label:
+          limit.unit === 3
+            ? `${limit.number ?? 1}h`
+            : limit.unit === 6
+              ? (limit.number ?? 1) === 1
+                ? "周"
+                : `${limit.number}w`
+              : `u${limit.unit}x${limit.number}`,
+        used: limit.currentValue ?? 0,
+        total: limit.usage ?? 0,
+        remaining: limit.remaining ?? 0,
+        pct: Math.max(0, Math.min(100, Math.round(limit.percentage ?? 0))),
+        resetAt: limit.nextResetTime ?? 0,
+      }))
+      .sort((a, b) => a.resetAt - b.resetAt);
+    return {
+      ok: true,
+      ...(parsed.data?.level !== undefined ? { level: parsed.data.level } : {}),
+      windows,
+    };
+  } catch {
+    return { ok: false, reason: "network" };
+  }
+}
+
+/** 带标准头的 JSON 响应。 */
+function respondJson(
+  response: {
+    writeHead(code: number, headers?: Record<string, string>): unknown;
+    end(body?: string): unknown;
+  },
+  body: unknown,
+): void {
+  response.writeHead(200, {
+    "cache-control": "no-store",
+    "content-type": "application/json; charset=utf-8",
+    "x-content-type-options": "nosniff",
+  });
+  response.end(JSON.stringify(body));
+}
+
 export function apply(ctx: Context): void {
   const headers = new WeakMap<object, Header>();
   const path = dataPath();
@@ -570,6 +736,35 @@ export function apply(ctx: Context): void {
   };
 
   ctx.on("session/event", account);
+
+  // 供应商状态代理：DeepSeek 余额 + 智谱套餐配额（宿主持凭据代取，60 秒缓存）。
+  const deepseekBalance = cached(() => fetchDeepseekBalance(ctx));
+  const zaiQuota = cached(() => fetchZaiQuota(ctx));
+  const providerRoute: WebRoute = {
+    kind: "exact",
+    path: PROVIDER_ROUTE,
+    handler: async (request, response) => {
+      if (request.headers[HEADER] !== HEADER_VALUE) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (request.method !== "GET") {
+        response.writeHead(405).end();
+        return;
+      }
+      const kind = new URL(request.url ?? "/", "http://x").searchParams.get(
+        "kind",
+      );
+      const payload =
+        kind === "zai" ? await zaiQuota() : await deepseekBalance();
+      respondJson(response, payload);
+    },
+  };
+  ctx.effect(
+    () => ctx.webServer.register(providerRoute),
+    "dsh-config: provider status API",
+  );
+
   const route: WebRoute = {
     kind: "exact",
     path: ROUTE,

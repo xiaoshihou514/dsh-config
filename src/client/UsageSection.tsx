@@ -1157,6 +1157,8 @@ export function UsageSection() {
         />
       </div>
 
+      <ProviderCards />
+
       {loading ? (
         <p
           style={{
@@ -1170,5 +1172,207 @@ export function UsageSection() {
         </p>
       ) : null}
     </section>
+  );
+}
+
+// ===== 供应商状态卡（DeepSeek 余额 + 峰谷；智谱套餐配额）=====
+
+const PROVIDER_HEADER = { "x-dsh-config": "usage-calendar" };
+
+interface BalanceItem {
+  currency: string;
+  total: number;
+  granted: number;
+  toppedUp: number;
+}
+
+interface DeepseekBalance {
+  ok: boolean;
+  reason?: string;
+  isAvailable?: boolean;
+  balances?: BalanceItem[];
+}
+
+interface QuotaWindow {
+  label: string;
+  used: number;
+  total: number;
+  remaining: number;
+  pct: number;
+  resetAt: number;
+}
+
+interface ZaiQuota {
+  ok: boolean;
+  reason?: string;
+  level?: string;
+  windows?: QuotaWindow[];
+}
+
+/** 峰谷时段（北京时间 UTC+8：9:00-12:00、14:00-18:00 高峰）与下一边界倒计时。 */
+function peakPhase(now = Date.now()): { peak: boolean; nextInMs: number } {
+  const beijing = new Date(now + 8 * 3_600_000);
+  const minutes = beijing.getUTCHours() * 60 + beijing.getUTCMinutes();
+  const peak =
+    (minutes >= 540 && minutes < 720) || (minutes >= 840 && minutes < 1080);
+  const boundaries = [540, 720, 840, 1080];
+  const next = boundaries.find((b) => b > minutes) ?? 540 + 1440;
+  return {
+    peak,
+    nextInMs: (next - minutes) * 60_000 - beijing.getUTCSeconds() * 1000,
+  };
+}
+
+function countdown(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 60_000));
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  if (hours > 0) return `${hours}h${String(minutes).padStart(2, "0")}m`;
+  return `${minutes}m`;
+}
+
+function ProviderCards() {
+  const [deepseek, setDeepseek] = useState<DeepseekBalance | null>(null);
+  const [zai, setZai] = useState<ZaiQuota | null>(null);
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    let stale = false;
+    const pull = async () => {
+      const json = (url: string) =>
+        fetch(url, { headers: PROVIDER_HEADER })
+          .then((r) => r.json() as Promise<unknown>)
+          .catch(() => null);
+      const [d, z] = await Promise.all([
+        json("/dsh-config/provider-status?kind=deepseek"),
+        json("/dsh-config/provider-status?kind=zai"),
+      ]);
+      if (stale) return;
+      setDeepseek(d as DeepseekBalance | null);
+      setZai(z as ZaiQuota | null);
+    };
+    void pull();
+    const pullTimer = setInterval(() => void pull(), 60_000);
+    // 倒计时/峰谷切换每 30 秒重算一次（不重新拉数据）。
+    const tickTimer = setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => {
+      stale = true;
+      clearInterval(pullTimer);
+      clearInterval(tickTimer);
+    };
+  }, []);
+
+  return (
+    <div style={{ display: "flex", gap: 32, flexWrap: "wrap", marginTop: 16 }}>
+      <DeepseekBalanceCard data={deepseek} />
+      <ZaiQuotaCard data={zai} />
+    </div>
+  );
+}
+
+function CardFrame({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div style={{ minWidth: 200 }}>
+      <div style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 12 }}>
+        {label}
+      </div>
+      <div style={{ marginTop: 5, fontSize: 12, lineHeight: 1.7 }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Muted({ children }: { children: ReactNode }) {
+  return (
+    <span style={{ color: "var(--dsw-alias-label-tertiary)" }}>{children}</span>
+  );
+}
+
+function DeepseekBalanceCard({ data }: { data: DeepseekBalance | null }) {
+  if (data === null)
+    return (
+      <CardFrame label="DeepSeek 余额">
+        <Muted>读取中…</Muted>
+      </CardFrame>
+    );
+  if (!data.ok)
+    return (
+      <CardFrame label="DeepSeek 余额">
+        <Muted>
+          {data.reason === "unconfigured"
+            ? "未配置 API 密钥"
+            : `读取失败（${data.reason}）`}
+        </Muted>
+      </CardFrame>
+    );
+  const cny = data.balances?.find((b) => b.currency === "CNY");
+  const usd = data.balances?.find((b) => b.currency === "USD");
+  const phase = peakPhase();
+  return (
+    <CardFrame label="DeepSeek 余额">
+      <strong
+        style={{ fontSize: 18, letterSpacing: "-0.02em", display: "block" }}
+      >
+        {cny ? `¥${cny.total.toFixed(2)}` : "—"}
+      </strong>
+      <div style={{ color: "var(--dsw-alias-label-tertiary)", marginTop: 2 }}>
+        {phase.peak ? "高峰时段" : "闲时时段"} · 距{phase.peak ? "闲时" : "高峰"}{" "}
+        {countdown(phase.nextInMs)}
+        {usd && usd.total > 0 ? ` · $${usd.total.toFixed(2)}` : ""}
+        {cny && cny.granted > 0 ? ` · 赠金 ¥${cny.granted.toFixed(2)}` : ""}
+      </div>
+    </CardFrame>
+  );
+}
+
+function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
+  if (data === null)
+    return (
+      <CardFrame label="智谱 GLM">
+        <Muted>读取中…</Muted>
+      </CardFrame>
+    );
+  if (!data.ok)
+    return (
+      <CardFrame label="智谱 GLM">
+        <Muted>
+          {data.reason === "unconfigured"
+            ? "未配置 API 密钥"
+            : `读取失败（${data.reason}）`}
+        </Muted>
+      </CardFrame>
+    );
+  const windows = data.windows ?? [];
+  return (
+    <CardFrame label={`智谱 GLM${data.level ? ` · ${data.level}` : ""}`}>
+      {windows.length === 0 ? (
+        <Muted>暂无配额窗口</Muted>
+      ) : (
+        windows.map((w) => (
+          <div key={w.label} style={{ whiteSpace: "nowrap" }}>
+            <span
+              style={{ color: "var(--dsw-alias-label-secondary)" }}
+            >{`${w.label} 窗口`}</span>{" "}
+            <span
+              style={{
+                color:
+                  w.pct >= 80 ? "var(--dsw-alias-label-error)" : undefined,
+              }}
+            >
+              {w.pct}%
+            </span>{" "}
+            {number(w.used)} / {number(w.total)}
+            <Muted>{` · 重置 ${countdown(w.resetAt - Date.now())}`}</Muted>
+          </div>
+        ))
+      )}
+    </CardFrame>
   );
 }
