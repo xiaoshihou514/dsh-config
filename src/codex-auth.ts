@@ -90,14 +90,21 @@ export async function hasCodexSubscription(
   }
 }
 
-/** 订阅绑定的 ChatGPT 账户 id（codex 网关请求头需要），未登录时 undefined。 */
-export async function codexAccountId(
+/** 账户档位（access_token 的 auth claim：free / plus / pro …），未知时 undefined。 */
+export async function codexPlan(
   path = codexAuthFile(),
 ): Promise<string | undefined> {
   try {
     const auth = await readAuth(path);
-    const id = auth.tokens?.account_id;
-    return typeof id === "string" && id.length > 0 ? id : undefined;
+    const access = auth.tokens?.access_token;
+    if (typeof access !== "string") return undefined;
+    const encoded = access.split(".")[1];
+    if (encoded === undefined) return undefined;
+    const payload = JSON.parse(
+      Buffer.from(encoded, "base64url").toString("utf8"),
+    ) as { "https://api.openai.com/auth"?: { chatgpt_plan_type?: unknown } };
+    const plan = payload["https://api.openai.com/auth"]?.chatgpt_plan_type;
+    return typeof plan === "string" && plan.length > 0 ? plan : undefined;
   } catch {
     return undefined;
   }
