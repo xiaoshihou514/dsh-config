@@ -475,9 +475,10 @@ class OpenCodeAdapter extends LlmAdapter {
           "content-type": "application/json",
           accept: "*/*",
           authorization: "Bearer public",
-          // 免费档网关校验的来源头族（仿官方 CLI）。
+          // 免费档网关校验的来源头族（仿官方 CLI）。注意：不能并入
+          // attributionHeaders()——它的 user-agent 是 DSH 身份，会覆盖
+          // opencode UA，网关立即 403 FreeTierError（前端显示「API 密钥无效」）。
           ...opencodeRequestHeaders(),
-          ...attributionHeaders(),
         },
         body: JSON.stringify(body),
         signal: options.signal ?? null,
