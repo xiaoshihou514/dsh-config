@@ -1239,10 +1239,16 @@ function ProviderCards() {
   useEffect(() => {
     let stale = false;
     const pull = async () => {
-      const json = (url: string) =>
-        fetch(url, { headers: PROVIDER_HEADER })
-          .then((r) => r.json() as Promise<unknown>)
-          .catch(() => null);
+      // 非 200（如宿主未重启时路由 404）也落失败态，不挂「读取中」。
+      const json = async (url: string): Promise<unknown> => {
+        try {
+          const r = await fetch(url, { headers: PROVIDER_HEADER });
+          if (!r.ok) return { ok: false, reason: `HTTP ${r.status}` };
+          return await r.json();
+        } catch {
+          return { ok: false, reason: "network" };
+        }
+      };
       const [d, z] = await Promise.all([
         json("/dsh-config/provider-status?kind=deepseek"),
         json("/dsh-config/provider-status?kind=zai"),
