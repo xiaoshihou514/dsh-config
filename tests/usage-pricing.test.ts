@@ -86,6 +86,18 @@ describe("原有计费回归", () => {
     expect(off.cost).toBeCloseTo(6, 10);
   });
 
+  it("deepseek-flash（0.2.0 新名）按同一 flash 档峰谷价计", () => {
+    const usage = record({
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadTokens: 0,
+    });
+    const peak = pricing.costOf("deepseek-official", "deepseek-flash", peakTime, usage);
+    const off = pricing.costOf("deepseek-official", "deepseek-flash", offTime, usage);
+    expect(peak.cost).toBeCloseTo(12, 10);
+    expect(off.cost).toBeCloseTo(6, 10);
+  });
+
   it("其余订阅档恒为 0", () => {
     const costs = pricing.costOf(
       "opencode-free",

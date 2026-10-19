@@ -108,10 +108,12 @@ function costOf(
       ? { cost, peakCost: cost, offCost: 0 }
       : { cost, peakCost: 0, offCost: cost };
   }
+  // 0.2.0 起官方 flash 模型更名为 deepseek-flash（原 deepseek-v4-flash），
+  // 两者按同一 flash 档峰谷价计。
   const price =
     model === "deepseek-v4-pro"
       ? PEAK_PRICE.pro
-      : model === "deepseek-v4-flash"
+      : model === "deepseek-v4-flash" || model === "deepseek-flash"
         ? PEAK_PRICE.flash
         : undefined;
   if (price === undefined) return { cost: 0, peakCost: 0, offCost: 0 };
@@ -223,7 +225,10 @@ function dataPath(): string {
 
 function modelOf(provider: string, model: string): string | undefined {
   if (provider === OFFICIAL_PROVIDER) {
-    return model === "deepseek-v4-pro" || model === "deepseek-v4-flash"
+    // 0.2.0 起官方 flash 模型更名为 deepseek-flash；旧名兼容历史。
+    return model === "deepseek-v4-pro" ||
+      model === "deepseek-v4-flash" ||
+      model === "deepseek-flash"
       ? model
       : undefined;
   }
