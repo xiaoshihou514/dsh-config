@@ -1377,8 +1377,8 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
                 <span
                   style={{ color: "var(--dsw-alias-label-secondary)" }}
                 >{`${w.label} 窗口`}</span>{" "}
-                <span style={{ color }}>{w.pct}%</span>{" "}
-                {number(w.used)} / {number(w.total)}
+                剩余 {number(w.remaining)} / {number(w.total)}
+                <span style={{ color }}>{` · 已用 ${w.pct}%`}</span>
                 <Muted>{` · 重置 ${countdown(w.resetAt - Date.now())}`}</Muted>
               </div>
               <div
