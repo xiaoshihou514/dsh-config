@@ -99,6 +99,12 @@ function sumCells(items: readonly CellSummary[]): CellSummary {
   );
 }
 
+/** 显示层剥掉「provider/」前缀只留模型名；数据层保持复合名（历史桶不分裂）。 */
+function modelLabel(model: string): string {
+  const index = model.indexOf("/");
+  return index === -1 ? model : model.slice(index + 1);
+}
+
 /** 某天在项目/模型筛选下应使用的聚合桶。 */
 function summaryFor(
   day: DaySummary | undefined,
@@ -682,7 +688,7 @@ export function UsageSection() {
               }}
             >
               {models.map((item) => (
-                <option key={item}>{item}</option>
+                <option key={item}>{modelLabel(item)}</option>
               ))}
             </select>
           </label>
