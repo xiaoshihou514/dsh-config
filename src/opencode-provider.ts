@@ -206,11 +206,6 @@ const GATEWAY_TOOLS = [
   },
 ] as const;
 
-/** 注入占位工具的名字集合：它们的调用不上送 DSH。 */
-const GATEWAY_TOOL_NAMES = new Set<string>(
-  GATEWAY_TOOLS.map((tool) => tool.function.name),
-);
-
 /**
  * 官方 Identifier.create 算法的会话 id：value = Date.now()*0x1000+counter，
  * 前 6 字节大端 = 12 hex（编码真实时间，网关会解析回时间戳），后 14 位 base62。
@@ -455,10 +450,15 @@ class OpenCodeAdapter extends LlmAdapter {
       },
     }));
     const declared = new Set(tools.map((tool) => tool.function.name));
-    body.tools = [
-      ...tools,
-      ...GATEWAY_TOOLS.filter((tool) => !declared.has(tool.function.name)),
-    ];
+    // 只注入 DSH 未声明的占位工具：DSH 已声明 read/bash 时（绝大多数场景）
+    // 不注入，模型对它们的调用原样透传，由 DSH 的真实工具执行。
+    const injectedNames = new Set<string>();
+    for (const tool of GATEWAY_TOOLS) {
+      if (declared.has(tool.function.name)) continue;
+      injectedNames.add(tool.function.name);
+      tools.push(tool);
+    }
+    body.tools = tools;
     body.tool_choice = "auto";
 
     const thinking = resolveThinking(options);
@@ -616,12 +616,11 @@ class OpenCodeAdapter extends LlmAdapter {
     }
     yield* closeOpen();
 
-    // 注入的 read/bash 只是为了过网关校验的占位工具：模型若真的调用它们，
-    // 在此拦截不上送（DSH 没有这两个工具的执行器）；此时以一条说明文本
-    // 兜底，避免空回复。
+    // 响应侧：只拦截「本请求注入的占位工具」的调用（DSH 未声明同名工具、
+    // 无法执行），以说明文本兜底；DSH 已声明的同名工具调用原样透传执行。
     let emitted = emittedAny;
     for (const [, call] of toolAcc) {
-      if (GATEWAY_TOOL_NAMES.has(call.name)) continue;
+      if (injectedNames.has(call.name)) continue;
       emitted = true;
       const callId = ToolCallId(call.id || randomUUID());
       yield { type: "block-start", index, blockType: "tool-call" };
