@@ -177,6 +177,11 @@ function number(value: number): string {
   }).format(value);
 }
 
+/** 中文四位分组（万进制习惯）：8887 → 8,887；123456 → 12,3456。 */
+function cnDigits(value: number): string {
+  return String(Math.round(value)).replace(/\B(?=(\d{4})+(?!\d))/g, ",");
+}
+
 function money(value: number): string {
   return `¥${value < 0.01 && value > 0 ? value.toFixed(4) : value.toFixed(2)}`;
 }
@@ -1349,10 +1354,12 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
         <Muted>暂无配额窗口</Muted>
       ) : (
         windows.map((w) => {
+          const remainPct = 100 - w.pct;
+          // 剩余条长 + 剩余量分档：剩余越少越红。
           const color =
-            w.pct >= 80
+            remainPct <= 20
               ? "var(--dsw-alias-state-error-primary)"
-              : w.pct >= 50
+              : remainPct <= 50
                 ? "var(--dsw-alias-state-warn-primary)"
                 : "var(--dsw-alias-state-success-primary)";
           return (
@@ -1364,7 +1371,7 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
                 <span
                   style={{ color: "var(--dsw-alias-label-secondary)" }}
                 >{`${w.label} 窗口`}</span>{" "}
-                剩余 {number(w.remaining)} / {number(w.total)}
+                剩余 {cnDigits(w.remaining)} / {cnDigits(w.total)}
                 <span style={{ color }}>{` · 已用 ${w.pct}%`}</span>
                 <Muted>{` · 重置 ${countdown(w.resetAt - Date.now())}`}</Muted>
               </div>
@@ -1379,7 +1386,7 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
               >
                 <div
                   style={{
-                    width: `${Math.max(0, Math.min(100, w.pct))}%`,
+                    width: `${remainPct}%`,
                     height: "100%",
                     borderRadius: 3,
                     background: color,
