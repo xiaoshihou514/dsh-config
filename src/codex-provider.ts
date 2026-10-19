@@ -18,6 +18,7 @@ import type {
   ProviderAuthInteraction,
 } from "@earendil-works/pi-ai";
 import {
+  codexAccountId,
   codexAuthFile,
   codexSubscriptionAccessToken,
   hasCodexSubscription,
@@ -28,6 +29,91 @@ export const name = "dsh-config-codex-provider";
 export const inject = ["llm", "webServer"];
 
 export const PROVIDER = "openai-codex";
+/** Codex 订阅网关的推理端点（与 codex-imagegen 同源）。 */
+const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
+/** 已停产的目录模型：网关一律拒绝（400 not supported），不再暴露。 */
+const DEAD_MODELS = new Set(["gpt-5.3-codex-spark"]);
+/** 账户模型可用性的探测间隔。 */
+const PROBE_TTL_MS = 60 * 60_000;
+/** 探测结果缓存：ids = 当前账户可用的目录模型 id；null = 尚未探测。 */
+let availability: { at: number; ids: Set<string> } | null = null;
+let probing: Promise<void> | undefined;
+
+/**
+ * 逐模型探测当前 Codex 账户的可用性：ChatGPT 免费档只能使用部分模型
+ * （gpt-5.6-luna / gpt-6-luna / gpt-5.6-terra 等），付费档目录更大；
+ * 账户不支持时网关返回 400「model is not supported」。
+ * 以 1 个词元的极小请求探测，结果缓存 PROBE_TTL_MS。
+ */
+/** pi-ai Provider 类型的目录字段未在类型上暴露；运行时由 createProvider 写入。 */
+function catalogModels(provider: unknown): { id: string }[] {
+  return (provider as { models?: { id: string }[] }).models ?? [];
+}
+
+async function probeAvailability(
+  ctx: Context | undefined,
+  oauth: OAuthAuth,
+): Promise<void> {
+  const access = await codexSubscriptionAccessToken(oauth);
+  const accountId = await codexAccountId();
+  const catalog = catalogModels(openaiCodexProvider()).filter(
+    (model) => !DEAD_MODELS.has(model.id),
+  );
+  const logger = ctx?.logger("dsh-config-codex");
+  const ids = new Set<string>();
+  await Promise.all(
+    catalog.map(async (model) => {
+      try {
+        const res = await fetch(CODEX_RESPONSES_URL, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${access}`,
+            ...(accountId !== undefined
+              ? { "chatgpt-account-id": accountId }
+              : {}),
+            originator: "codex_cli_rp",
+            "user-agent": "codex_cli_rs/0.55.0",
+            "content-type": "application/json",
+            accept: "text/event-stream",
+          },
+          body: JSON.stringify({
+            model: model.id,
+            instructions: "You are a helpful assistant.",
+            input: [
+              {
+                type: "message",
+                role: "user",
+                content: [{ type: "input_text", text: "hi" }],
+              },
+            ],
+            max_output_tokens: 16,
+            stream: true,
+            store: false,
+            tools: [],
+          }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        // 200 可用；429 限流但模型已被网关接受。
+        if (res.status === 200 || res.status === 429) {
+          ids.add(model.id);
+          res.body?.cancel();
+          return;
+        }
+        if (res.status === 401) {
+          // 凭据失效：探测结果无意义，保持空集待凭据刷新后重探。
+          res.body?.cancel();
+          logger?.warn("探测时令牌被拒（401），模型目录暂保持全集");
+          return;
+        }
+        res.body?.cancel();
+      } catch {
+        // 网络错误：该模型不标记，也不中断其余探测。
+      }
+    }),
+  );
+  availability = { at: Date.now(), ids };
+}
+
 const LOGIN_ROUTE = "/dsh-config/codex-login";
 const LOGIN_HEADER = "x-dsh-config";
 const LOGIN_HEADER_VALUE = "codex-login";
@@ -113,6 +199,7 @@ export class CodexLoginManager {
       .then(async (credential: OAuthCredential) => {
         if (this.controller !== controller) return;
         await saveCodexCredentials(this.authFile, credential);
+        availability = null; // 新账户：模型可用性待重新探测。
         this.value = { state: "success" };
         reveal?.();
       })
@@ -165,6 +252,34 @@ export function createCodexAdapter(ctx?: Context): PiAiAdapter {
   // for refreshes. No token is discovered from the environment.
   const piProvider: typeof catalogProvider = {
     ...catalogProvider,
+    // 目录按账户实际可用性动态收窄（ChatGPT 免费档只能用部分模型）：
+    // 有宿主上下文时后台探测（TTL 1 小时），结果未就绪前先给全集；
+    // headless（无 ctx）不发探测，保持全集。
+    get models() {
+      const all = catalogModels(catalogProvider).filter(
+        (model) => !DEAD_MODELS.has(model.id),
+      );
+      if (ctx === undefined) return all;
+      const stale =
+        availability === null || Date.now() - availability.at > PROBE_TTL_MS;
+      if (stale && probing === undefined) {
+        probing = probeAvailability(ctx, oauth)
+          .catch((error: unknown) => {
+            ctx
+              .logger("dsh-config-codex")
+              .warn(
+                "模型可用性探测失败：%s",
+                error instanceof Error ? error.message : String(error),
+              );
+          })
+          .finally(() => {
+            probing = undefined;
+          });
+      }
+      if (availability === null || Date.now() - availability.at > PROBE_TTL_MS)
+        return all;
+      return all.filter((model) => availability!.ids.has(model.id));
+    },
     auth: {
       ...catalogProvider.auth,
       apiKey: {

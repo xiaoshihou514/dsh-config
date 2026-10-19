@@ -10,6 +10,7 @@ interface CodexAuthFile {
   tokens?: {
     access_token?: unknown;
     refresh_token?: unknown;
+    account_id?: unknown;
     [key: string]: unknown;
   };
   [key: string]: unknown;
@@ -86,6 +87,19 @@ export async function hasCodexSubscription(
     return true;
   } catch {
     return false;
+  }
+}
+
+/** 订阅绑定的 ChatGPT 账户 id（codex 网关请求头需要），未登录时 undefined。 */
+export async function codexAccountId(
+  path = codexAuthFile(),
+): Promise<string | undefined> {
+  try {
+    const auth = await readAuth(path);
+    const id = auth.tokens?.account_id;
+    return typeof id === "string" && id.length > 0 ? id : undefined;
+  } catch {
+    return undefined;
   }
 }
 
