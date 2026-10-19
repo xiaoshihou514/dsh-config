@@ -688,7 +688,10 @@ export function UsageSection() {
               }}
             >
               {models.map((item) => (
-                <option key={item}>{modelLabel(item)}</option>
+                // value 保持完整复合名（筛选键）；显示文本剥前缀。
+                <option key={item} value={item}>
+                  {modelLabel(item)}
+                </option>
               ))}
             </select>
           </label>
