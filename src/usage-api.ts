@@ -318,6 +318,35 @@ function foldRecord(
   if (key === todayKey) file.today.push(record);
 }
 
+/** 历史裸名模型桶 → 现行复合名键（早期订阅模型未加 provider 前缀时代入账的）。 */
+const LEGACY_MODEL_KEYS: Record<string, string> = {
+  "mimo-v2.5-free": "opencode-free/mimo-v2.5-free",
+  "x-preview-f-free": "opencode-free/x-preview-f-free",
+  "gpt-5.6-luna": "openai-codex/gpt-5.6-luna",
+  "gpt-5.3-codex-spark": "openai-codex/gpt-5.3-codex-spark",
+};
+
+/** 把一天的裸名模型桶并入复合名桶（幂等：无裸名时什么都不做）。 */
+function normalizeModelBuckets(day: DaySummary): void {
+  for (const [bare, full] of Object.entries(LEGACY_MODEL_KEYS)) {
+    const cell = day.byModel[bare];
+    if (cell === undefined) continue;
+    const target = (day.byModel[full] ??= emptyCell());
+    addCell(target, cell);
+    delete day.byModel[bare];
+    for (const key of Object.keys(day.cells)) {
+      const index = key.indexOf("\u0000");
+      if (index === -1 || key.slice(index + 1) !== bare) continue;
+      const source = day.cells[key];
+      if (source === undefined) continue;
+      const newKey = `${key.slice(0, index)}\u0000${full}`;
+      const targetCell = (day.cells[newKey] ??= emptyCell());
+      addCell(targetCell, source);
+      delete day.cells[key];
+    }
+  }
+}
+
 async function load(path: string): Promise<UsageFile> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
@@ -358,6 +387,7 @@ async function load(path: string): Promise<UsageFile> {
           byModel: buckets("byModel"),
           cells: buckets("cells"),
         };
+        normalizeModelBuckets(days[key]);
       }
       return {
         version: 2,
@@ -385,6 +415,9 @@ async function save(path: string, value: UsageFile): Promise<void> {
 
 /** 计费拆分（测试出口）：单条记录按供应商价目表算费用。 */
 export const pricing = { costOf };
+
+/** 裸名模型桶归一（测试出口）。 */
+export const migration = { normalizeModelBuckets };
 
 export function apply(ctx: Context): void {
   const headers = new WeakMap<object, Header>();

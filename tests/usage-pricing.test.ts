@@ -1,7 +1,7 @@
-/** usage-api 计费拆分：智谱 GLM Coding Plan 按牌价估算 + DeepSeek 峰谷回归。 */
+/** usage-api 计费拆分：智谱 GLM Coding Plan 按牌价估算 + DeepSeek 峰谷回归 + 裸名桶归一。 */
 
 import { describe, expect, it } from "vitest";
-import { pricing } from "../src/usage-api.ts";
+import { migration, pricing } from "../src/usage-api.ts";
 
 const record = (over: {
   inputTokens?: number;
@@ -106,5 +106,53 @@ describe("原有计费回归", () => {
       record({ inputTokens: 1_000_000, outputTokens: 1_000_000 }),
     );
     expect(costs).toEqual({ cost: 0, peakCost: 0, offCost: 0 });
+  });
+});
+
+describe("历史裸名桶归一", () => {
+  const emptyCell = () => ({
+    calls: 0,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    peakCost: 0,
+    offCost: 0,
+  });
+  const cell = (calls: number) => ({ ...emptyCell(), calls });
+
+  it("裸名并入复合名桶，cells 键同步归一", () => {
+    const day = {
+      total: emptyCell(),
+      byProject: {},
+      byModel: {
+        "mimo-v2.5-free": cell(14),
+        "opencode-free/mimo-v2.5-free": cell(17),
+      },
+      cells: {
+        "a\u0000mimo-v2.5-free": cell(10),
+        "b\u0000mimo-v2.5-free": cell(4),
+        "a\u0000opencode-free/mimo-v2.5-free": cell(17),
+      },
+    };
+    migration.normalizeModelBuckets(day);
+    expect(Object.keys(day.byModel)).toEqual(["opencode-free/mimo-v2.5-free"]);
+    expect(day.byModel["opencode-free/mimo-v2.5-free"].calls).toBe(31);
+    expect(day.cells["a\u0000opencode-free/mimo-v2.5-free"].calls).toBe(27);
+    expect(day.cells["b\u0000opencode-free/mimo-v2.5-free"].calls).toBe(4);
+    expect(Object.keys(day.cells)).toHaveLength(2);
+  });
+
+  it("幂等：无裸名时归一不做任何事", () => {
+    const day = {
+      total: emptyCell(),
+      byProject: {},
+      byModel: { "zai-coding-cn/glm-5.3": cell(5) },
+      cells: { "a\u0000zai-coding-cn/glm-5.3": cell(5) },
+    };
+    migration.normalizeModelBuckets(day);
+    expect(Object.keys(day.byModel)).toEqual(["zai-coding-cn/glm-5.3"]);
+    expect(day.byModel["zai-coding-cn/glm-5.3"].calls).toBe(5);
   });
 });
