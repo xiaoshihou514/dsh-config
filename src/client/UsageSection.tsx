@@ -1080,19 +1080,6 @@ export function UsageSection() {
           </span>
         </div>
 
-        {selected === null ? (
-          <p
-            style={{
-              margin: "14px 0 0",
-              fontSize: 11,
-              color: "var(--dsw-alias-label-tertiary)",
-            }}
-          >
-            点击色块查看该
-            {view === "day" ? "日" : view === "week" ? "周" : "月"}
-            用量，下方汇总会同步切换。
-          </p>
-        ) : null}
       </div>
 
       {selected !== null ? (
