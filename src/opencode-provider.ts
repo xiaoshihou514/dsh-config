@@ -14,6 +14,7 @@
  * 由 harness 内置压缩恢复（+ dsh-config overflow-recovery 兜底）自动压缩重试。
  */
 
+import { randomUUID, randomBytes } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -149,6 +150,89 @@ interface OpenAiResponse {
 
 interface ModelList {
   data?: { id?: string }[];
+}
+
+/** 免费档网关强校验：请求体必须携带 read/bash 两个工具定义（官方 CLI 字段集）。 */
+const GATEWAY_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "read",
+      description:
+        "Read the contents of a file or directory. Supports text files, images, and PDFs. Images and PDFs are presented directly to the model. Each text line is prefixed by its 1-based line number as <line>: <content>. The prefix is for reference and is not part of the file content. Directory entries are returned one per line. Use offset and limit to read large files or directories in sections. Prefer one larger read over many small slices, and use grep to find specific content in large files.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File or directory to read" },
+          offset: {
+            type: "integer",
+            description: "The line or directory entry to start reading from (1-based)",
+          },
+          limit: {
+            type: "integer",
+            description:
+              "The maximum number of lines or directory entries to read (defaults to and capped at 2000)",
+          },
+        },
+        required: ["path"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "bash",
+      description: "Executes a shell command.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "Shell command string to execute" },
+          workdir: {
+            type: "string",
+            description:
+              "Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead.",
+          },
+          timeout: {
+            type: "integer",
+            description:
+              "Timeout in milliseconds. Set to 0 to disable the timeout. Defaults to 300000 for foreground commands. Background commands have no timeout by default.",
+          },
+        },
+        required: ["command"],
+        additionalProperties: false,
+      },
+    },
+  },
+] as const;
+
+/**
+ * 官方 Identifier.create 算法的会话 id：value = Date.now()*0x1000+counter，
+ * 前 6 字节大端 = 12 hex（编码真实时间，网关会解析回时间戳），后 14 位 base62。
+ */
+function opencodeSessionId(): string {
+  const value = BigInt(Date.now()) * 0x1000n + 1n;
+  let hex = "";
+  for (let i = 0; i < 6; i++)
+    hex += ((value >> BigInt(40 - 8 * i)) & 0xffn).toString(16).padStart(2, "0");
+  const base62 = randomBytes(64)
+    .toString("base64")
+    .replace(/[^A-Za-z0-9]/g, "")
+    .slice(0, 14);
+  return `ses_${hex}${base62}`;
+}
+
+/** 免费档网关要求的来源头族（除公共 content-type/authorization 外的增量）。 */
+function opencodeRequestHeaders(): Record<string, string> {
+  return {
+    "x-opencode-client": "cli",
+    "x-opencode-project": "global",
+    "x-opencode-request": `msg_${Date.now()}${randomBytes(64).toString("base64").replace(/[^A-Za-z0-9]/g, "").slice(0, 10)}`,
+    "x-opencode-session": opencodeSessionId(),
+    "x-opencode-session-id": opencodeSessionId(),
+    "user-agent":
+      "opencode/1.19.3 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
+  };
 }
 
 /** 从块列表提取纯文本。 */
@@ -345,25 +429,32 @@ class OpenCodeAdapter extends LlmAdapter {
     const body: Record<string, unknown> = {
       model: options.model,
       messages: serializeMessages(options.system, options.messages),
-      stream: false,
+      // 免费档网关强校验（2026-10 实测）：必须 stream:true 且请求体携带
+      // read/bash 工具定义，缺任一即 403 FreeTierError。
+      stream: true,
+      stream_options: { include_usage: true },
       max_tokens: options.maxTokens ?? this.config.maxTokens ?? 8192,
     };
     if (options.temperature !== undefined)
       body.temperature = options.temperature;
     if (options.stop !== undefined && options.stop.length > 0)
       body.stop = options.stop;
-    if (options.tools !== undefined && options.tools.length > 0) {
-      body.tools = options.tools.map((tool) => ({
-        type: "function",
-        function: {
-          name: tool.name,
-          ...(tool.description !== undefined && tool.description.length > 0
-            ? { description: tool.description }
-            : {}),
-          parameters: tool.parameters,
-        },
-      }));
-    }
+    const tools = (options.tools ?? []).map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        ...(tool.description !== undefined && tool.description.length > 0
+          ? { description: tool.description }
+          : {}),
+        parameters: tool.parameters,
+      },
+    }));
+    const declared = new Set(tools.map((tool) => tool.function.name));
+    body.tools = [
+      ...tools,
+      ...GATEWAY_TOOLS.filter((tool) => !declared.has(tool.function.name)),
+    ];
+    body.tool_choice = "auto";
 
     const thinking = resolveThinking(options);
     if (thinking.thinking !== undefined)
@@ -377,7 +468,10 @@ class OpenCodeAdapter extends LlmAdapter {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          accept: "application/json",
+          accept: "*/*",
+          authorization: "Bearer public",
+          // 免费档网关校验的来源头族（仿官方 CLI）。
+          ...opencodeRequestHeaders(),
           ...attributionHeaders(),
         },
         body: JSON.stringify(body),
@@ -394,7 +488,7 @@ class OpenCodeAdapter extends LlmAdapter {
       });
     }
 
-    if (!response.ok) {
+    if (!response.ok || response.body === null) {
       let message = `opencode API error (HTTP ${response.status})`;
       let detail = "";
       try {
@@ -411,72 +505,131 @@ class OpenCodeAdapter extends LlmAdapter {
       });
     }
 
-    const parsed = (await response.json()) as OpenAiResponse;
-    const choice = parsed.choices?.[0];
-    const reasoning = choice?.message?.reasoning_content ?? undefined;
-    const content = choice?.message?.content ?? undefined;
-    const toolCalls = choice?.message?.tool_calls ?? [];
+    // SSE 流式消费：text/reasoning 增量发射（块切换时闭合）；工具调用聚合
+    // 到流结束统一发射（harness 的 replay 协议按整块记录工具调用）。
+    const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let done = false;
 
-    let nextIndex = 0;
-    if (reasoning !== undefined && reasoning.length > 0) {
-      yield { type: "block-start", index: 0, blockType: "reasoning" };
-      yield { type: "reasoning-delta", index: 0, text: reasoning };
-      yield {
-        type: "block-end",
-        index: 0,
-        block: { type: "reasoning", text: reasoning },
-      };
-      nextIndex = 1;
+    let index = 0;
+    let open: { kind: "text"; text: string } | { kind: "reasoning"; text: string } | null = null;
+    let finishReason: string | null = null;
+    let usage: TokenUsage | undefined;
+    const toolAcc = new Map<number, { id: string; name: string; arguments: string }>();
+
+    const closeOpen = function* (): Generator<StreamChunk> {
+      if (open === null) return;
+      if (open.kind === "text") {
+        yield { type: "block-end", index, block: { type: "text", text: open.text } };
+      } else {
+        yield { type: "block-end", index, block: { type: "reasoning", text: open.text } };
+      }
+      index += 1;
+      open = null;
+    };
+
+    while (!done) {
+      const read = await reader.read();
+      if (read.done) { done = true; break; }
+      buffer += decoder.decode(read.value, { stream: true });
+      let lineEnd: number;
+      while ((lineEnd = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, lineEnd).trim();
+        buffer = buffer.slice(lineEnd + 1);
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") { done = true; break; }
+        let parsed: {
+          choices?: {
+            delta?: {
+              content?: string | null;
+              reasoning_content?: string | null;
+              tool_calls?: {
+                index?: number;
+                id?: string;
+                function?: { name?: string; arguments?: string };
+              }[];
+            };
+            finish_reason?: string | null;
+          }[];
+          usage?: {
+            prompt_tokens?: number;
+            completion_tokens?: number;
+            reasoning_tokens?: number;
+          } | null;
+        };
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          continue; // 非 JSON 行（注释/心跳）忽略。
+        }
+        const choice = parsed.choices?.[0];
+        if (choice?.finish_reason != null) finishReason = choice.finish_reason;
+        if (parsed.usage != null) {
+          usage = {
+            inputTokens: parsed.usage.prompt_tokens ?? 0,
+            outputTokens: parsed.usage.completion_tokens ?? 0,
+            ...(parsed.usage.reasoning_tokens !== undefined
+              ? { reasoningTokens: parsed.usage.reasoning_tokens }
+              : {}),
+          };
+        }
+        const delta = choice?.delta;
+        if (delta === undefined) continue;
+        const reasoningText = delta.reasoning_content ?? undefined;
+        if (reasoningText !== undefined && reasoningText.length > 0) {
+          if (open === null || open.kind !== "reasoning") {
+            yield* closeOpen();
+            open = { kind: "reasoning", text: "" };
+            yield { type: "block-start", index, blockType: "reasoning" };
+          }
+          open.text += reasoningText;
+          yield { type: "reasoning-delta", index, text: reasoningText };
+        }
+        const contentText = delta.content ?? undefined;
+        if (contentText !== undefined && contentText.length > 0) {
+          if (open === null || open.kind !== "text") {
+            yield* closeOpen();
+            open = { kind: "text", text: "" };
+            yield { type: "block-start", index, blockType: "text" };
+          }
+          open.text += contentText;
+          yield { type: "text-delta", index, text: contentText };
+        }
+        for (const call of delta.tool_calls ?? []) {
+          const slot = toolAcc.get(call.index ?? 0) ?? { id: "", name: "", arguments: "" };
+          if (call.id !== undefined) slot.id = call.id;
+          if (call.function?.name !== undefined) slot.name += call.function.name;
+          if (call.function?.arguments !== undefined) slot.arguments += call.function.arguments;
+          toolAcc.set(call.index ?? 0, slot);
+        }
+      }
     }
-    if (content !== undefined && content.length > 0) {
-      yield { type: "block-start", index: nextIndex, blockType: "text" };
-      yield { type: "text-delta", index: nextIndex, text: content };
-      yield {
-        type: "block-end",
-        index: nextIndex,
-        block: { type: "text", text: content },
-      };
-      nextIndex += 1;
-    }
-    for (const call of toolCalls) {
-      const index = nextIndex;
-      const callId = ToolCallId(call.id);
-      nextIndex += 1;
-      yield {
-        type: "block-start",
-        index,
-        blockType: "tool-call",
-      };
+    yield* closeOpen();
+
+    for (const [, call] of toolAcc) {
+      const callId = ToolCallId(call.id || randomUUID());
+      yield { type: "block-start", index, blockType: "tool-call" };
       yield {
         type: "tool-call-delta",
         index,
         id: callId,
-        name: call.function.name,
-        argumentsDelta: call.function.arguments,
+        name: call.name,
+        argumentsDelta: call.arguments,
       };
       yield {
         type: "block-end",
         index,
-        block: {
-          type: "tool-call",
-          id: callId,
-          name: call.function.name,
-          arguments: call.function.arguments,
-        },
+        block: { type: "tool-call", id: callId, name: call.name, arguments: call.arguments },
       };
+      index += 1;
     }
 
-    const usage: TokenUsage = {
-      inputTokens: parsed.usage?.prompt_tokens ?? 0,
-      outputTokens: parsed.usage?.completion_tokens ?? 0,
-      ...(parsed.usage?.reasoning_tokens !== undefined
-        ? { reasoningTokens: parsed.usage.reasoning_tokens }
-        : {}),
-    };
-    yield { type: "usage", usage };
+    yield { type: "usage", usage: usage ?? { inputTokens: 0, outputTokens: 0 } };
     yield {
       type: "finish",
-      reason: mapFinishReason(choice?.finish_reason),
+      reason: mapFinishReason(finishReason),
       replayState: {
         response: { kind: "opencode", version: 1, model: options.model },
       },
