@@ -1,12 +1,12 @@
-个人dsh配置。
+# dsh-config
 
-功能：
+个人dsh配置
 
-- 词元用量统计和热力图
-- 提权自动审批
-- OpenCode Free免费模型供应商
-- Codex订阅 + 图片生成
-- 客制化提示词注入
-- 哔哩哔哩下载、搜索
-- 对话快速导航
-- Copilot订阅
+- 词元用量统计
+- DeepSeek、智谱用量
+- opencode免费模型接入
+- Codex OAuth接入
+- Copilot OAuth接入
+- 提示词备忘录
+- 上下文溢出自动压缩
+- 哔哩哔哩技能
