@@ -445,7 +445,8 @@ class OpenCodeAdapter extends LlmAdapter {
       // read/bash 工具定义，缺任一即 403 FreeTierError。
       stream: true,
       stream_options: { include_usage: true },
-      max_tokens: options.maxTokens ?? this.config.maxTokens ?? 8192,
+      // 与官方 CLI 对齐（32000）：8192 会截断长回复。
+      max_tokens: options.maxTokens ?? this.config.maxTokens ?? 32_000,
     };
     if (options.temperature !== undefined)
       body.temperature = options.temperature;
