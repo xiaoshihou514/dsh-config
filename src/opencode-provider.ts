@@ -52,6 +52,21 @@ const DEFAULT_BASE_URL = "https://opencode.ai/zen/v1/chat/completions";
 const DEFAULT_MODELS_URL = "https://opencode.ai/zen/v1/models";
 const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 const FREE_SUFFIX = "-free";
+/** 聚合模型 id：所有 *-free 模型经它自动路由（故障转移）。 */
+const AGGREGATE_MODEL_ID = "free";
+const AGGREGATE_MODEL_NAME = "OpenCode Free";
+/** 模型列表拉取失败时的兜底候选（按历史可用性排序）。 */
+const FALLBACK_FREE_MODELS = [
+  "glm-5.3-flash-free",
+  "deepseek-v4.1-flash-free",
+  "mimo-v2.6-flash-free",
+  "nemotron-3.5-lightning-free",
+  "nemotron-3.5-super-vl-free",
+  "minimax-m3.1-flash-free",
+  "longcat-2.5-preview-free",
+  "jev-1.13-free",
+  "beam-free",
+];
 const MODELS_FETCH_TIMEOUT_MS = 4_000;
 /** 模型列表缓存 TTL：过期后自动重新拉取，上游增删模型无需重启。 */
 const MODELS_CACHE_TTL_MS = 10 * 60 * 1_000;
@@ -380,40 +395,48 @@ class OpenCodeAdapter extends LlmAdapter {
   }
 
   /**
-   * 模型列表：远程 `*-free` 清单 + 配置清单（显式配置的模型优先展示），带
-   * TTL 缓存（默认 10 分钟，过期自动刷新）。拉取失败时只回配置清单且**不
-   * 缓存**——下次打开选择器会重试，网络恢复后列表自动出现。不再硬编码
-   * 任何默认模型：上游下架后列表自然消失。
+   * 模型列表：单个聚合模型「OpenCode Free」。所有 `*-free` 模型在
+   * stream 阶段自动路由（按候选池顺序故障转移，上游下架/报错自动换下一个）。
    */
   async listModels(provider: string): Promise<LlmModelInfo[]> {
-    const now = Date.now();
-    if (this.modelsCache !== null && this.modelsCache.expiresAt > now)
-      return this.modelsCache.list;
-    const ids = new Set(this.config.models ?? []);
-    let succeeded = false;
+    const aggregate = { provider, id: AGGREGATE_MODEL_ID, name: AGGREGATE_MODEL_NAME };
+    return [
+      aggregate,
+      ...(this.config.models ?? []).map((id) => ({ provider, id, name: id })),
+    ];
+  }
+
+  /** 免费模型候选池（按优先级）：/models 实时清单优先，失败退回内置清单。 */
+  private async freeCandidates(): Promise<string[]> {
     try {
-      const response = await fetch(
-        this.config.modelsUrl ?? DEFAULT_MODELS_URL,
-        {
-          headers: attributionHeaders(),
-          signal: AbortSignal.timeout(MODELS_FETCH_TIMEOUT_MS),
-        },
-      );
+      const list = await this.listModels("opencode-free");
+      void list;
+    } catch {
+      // 忽略：候选池回退到内置清单。
+    }
+    if (this.modelsCache !== null && this.modelsCache.expiresAt > Date.now()) {
+      const ids = this.modelsCache.list.map((model) => model.id);
+      if (ids.length > 0) return ids;
+    }
+    try {
+      const response = await fetch(this.config.modelsUrl ?? DEFAULT_MODELS_URL, {
+        headers: attributionHeaders(),
+        signal: AbortSignal.timeout(MODELS_FETCH_TIMEOUT_MS),
+      });
       if (response.ok) {
         const parsed = (await response.json()) as ModelList;
-        for (const item of parsed.data ?? []) {
-          if (item.id !== undefined && item.id.endsWith(FREE_SUFFIX))
-            ids.add(item.id);
+        const ids = (parsed.data ?? [])
+          .map((item) => item.id)
+          .filter((id): id is string => id !== undefined && id.endsWith(FREE_SUFFIX));
+        if (ids.length > 0) {
+          this.modelsCache = { list: ids.map((id) => ({ provider: "opencode-free", id, name: id })), expiresAt: Date.now() + MODELS_CACHE_TTL_MS };
+          return ids;
         }
-        succeeded = true;
       }
     } catch {
-      // 网络失败：退回配置清单，不缓存，下次重试。
+      // 网络失败：退回内置清单。
     }
-    const list = Array.from(ids).map((id) => ({ provider, id, name: id }));
-    if (succeeded)
-      this.modelsCache = { list, expiresAt: now + MODELS_CACHE_TTL_MS };
-    return list;
+    return FALLBACK_FREE_MODELS;
   }
 
   async resolveModel(
@@ -423,7 +446,7 @@ class OpenCodeAdapter extends LlmAdapter {
     return {
       provider,
       id: model,
-      name: model,
+      name: model === AGGREGATE_MODEL_ID ? AGGREGATE_MODEL_NAME : model,
       context: {
         contextWindow: this.config.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
       },
@@ -437,9 +460,38 @@ class OpenCodeAdapter extends LlmAdapter {
     };
   }
 
+  /**
+   * 免费模型入口：聚合 id（free）按候选池顺序尝试，单个模型 400/404/5xx
+   * （下架/服务错误）自动故障转移到下一个；403（IP 封禁/免费档拒绝）与
+   * 429（限流）换模型无意义，直接抛出。具体模型 id 原样直连。
+   */
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    if (options.model !== AGGREGATE_MODEL_ID) {
+      yield* this.streamOne(options.model, options);
+      return;
+    }
+    const candidates = await this.freeCandidates();
+    let lastError: unknown;
+    for (const candidate of candidates) {
+      try {
+        yield* this.streamOne(candidate, options);
+        return;
+      } catch (error: unknown) {
+        lastError = error;
+        if (options.signal?.aborted) throw error;
+        const status = (error as { status?: number }).status;
+        if (status === 403 || status === 429) throw error;
+      }
+    }
+    throw lastError ?? new LlmError("OpenCode 无可用免费模型", "UNKNOWN_MODEL");
+  }
+
+  private async *streamOne(
+    candidate: string,
+    options: GenerateOptions,
+  ): AsyncIterable<StreamChunk> {
     const body: Record<string, unknown> = {
-      model: options.model,
+      model: candidate,
       messages: serializeMessages(options.system, options.messages),
       // 免费档网关强校验（2026-10 实测）：必须 stream:true 且请求体携带
       // read/bash 工具定义，缺任一即 403 FreeTierError。
@@ -671,7 +723,7 @@ class OpenCodeAdapter extends LlmAdapter {
       type: "finish",
       reason: mapFinishReason(finishReason),
       replayState: {
-        response: { kind: "opencode", version: 1, model: options.model },
+        response: { kind: "opencode", version: 1, model: candidate },
       },
     };
   }
