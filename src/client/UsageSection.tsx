@@ -1240,10 +1240,12 @@ function peakPhase(now = Date.now()): { peak: boolean; nextInMs: number } {
 
 function countdown(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 60_000));
-  const hours = Math.floor(total / 60);
+  const days = Math.floor(total / 1440);
+  const hours = Math.floor((total % 1440) / 60);
   const minutes = total % 60;
-  if (hours > 0) return `${hours}h${String(minutes).padStart(2, "0")}m`;
-  return `${minutes}m`;
+  if (days > 0) return `${days}天${hours}时${minutes}分`;
+  if (hours > 0) return `${hours}时${minutes}分`;
+  return `${minutes}分`;
 }
 
 function ProviderCards() {
