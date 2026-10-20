@@ -512,6 +512,13 @@ class OpenCodeAdapter extends LlmAdapter {
       } catch {
         // 错误体解析失败时保留状态码信息。
       }
+      // IP 封禁/免费档拒绝：原文透出（harness 对 AUTH 等已知 code 显示
+      // 本地化文案「API 密钥无效」，会掩盖真实原因——IP 滥用检测是临时的，
+      // 与账户和密钥都无关）。
+      if (response.status === 403)
+        throw new LlmError(message || "OpenCode 免费档拒绝访问", "OPENCODE_REJECTED", {
+          status: response.status,
+        });
       throw new LlmError(message, httpErrorCode(response.status, detail), {
         status: response.status,
       });
