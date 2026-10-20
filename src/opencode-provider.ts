@@ -210,8 +210,12 @@ const GATEWAY_TOOLS = [
  * 官方 Identifier.create 算法的会话 id：value = Date.now()*0x1000+counter，
  * 前 6 字节大端 = 12 hex（编码真实时间，网关会解析回时间戳），后 14 位 base62。
  */
+/** 进程内稳定的会话 id：与真实客户端一致（跨轮次复用，吃上游 KV 缓存）；
+ *  每请求新 id 是典型的自动化特征，会助长 IP 滥用记分。 */
+let cachedSessionId: string | undefined;
 function opencodeSessionId(): string {
-  const value = BigInt(Date.now()) * 0x1000n + 1n;
+  cachedSessionId ??= (() => {
+    const value = BigInt(Date.now()) * 0x1000n + 1n;
   let hex = "";
   for (let i = 0; i < 6; i++)
     hex += ((value >> BigInt(40 - 8 * i)) & 0xffn).toString(16).padStart(2, "0");
@@ -219,7 +223,9 @@ function opencodeSessionId(): string {
     .toString("base64")
     .replace(/[^A-Za-z0-9]/g, "")
     .slice(0, 14);
-  return `ses_${hex}${base62}`;
+    return `ses_${hex}${base62}`;
+  })();
+  return cachedSessionId;
 }
 
 /** 免费档网关要求的来源头族（除公共 content-type/authorization 外的增量）。 */
