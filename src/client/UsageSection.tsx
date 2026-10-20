@@ -99,13 +99,10 @@ function sumCells(items: readonly CellSummary[]): CellSummary {
   );
 }
 
-/** 显示层剥掉「provider/」前缀只留模型名；数据层保持复合名（历史桶不分裂）。 */
-function modelLabel(model: string): string {
-  const index = model.indexOf("/");
-  return index === -1 ? model : model.slice(index + 1);
-}
-
-/** 某天在项目/模型筛选下应使用的聚合桶。 */
+/**
+ * 某天在项目/模型筛选下应使用的聚合桶。模型筛选值可以是厂商组
+ * （`opencode-free` 代表其下所有模型）或单个裸名模型（官方 deepseek）。
+ */
 function summaryFor(
   day: DaySummary | undefined,
   project: string,
@@ -113,10 +110,21 @@ function summaryFor(
 ): CellSummary {
   if (day === undefined) return emptySummary();
   if (project === "全部项目" && model === "全部模型") return day.total;
-  if (project !== "全部项目" && model !== "全部模型")
-    return day.cells[`${project}\u0000${model}`] ?? emptySummary();
+  const matches = (key: string) => key === model || key.startsWith(`${model}/`);
+  if (project !== "全部项目" && model !== "全部模型") {
+    let sum = emptySummary();
+    const prefix = `${project}\u0000${model}`;
+    for (const [key, cell] of Object.entries(day.cells)) {
+      if (key === prefix || key.startsWith(`${prefix}/`)) addCell(sum, cell);
+    }
+    return sum;
+  }
   if (project !== "全部项目") return day.byProject[project] ?? emptySummary();
-  return day.byModel[model] ?? emptySummary();
+  let sum = emptySummary();
+  for (const [key, cell] of Object.entries(day.byModel)) {
+    if (matches(key)) addCell(sum, cell);
+  }
+  return sum;
 }
 
 const DAY = 86_400_000;
@@ -414,12 +422,19 @@ export function UsageSection() {
     }
     return ["全部项目", ...Array.from(set).sort()];
   }, [days, today]);
+  // 模型筛选条目：复合名（provider/model）聚合到厂商一层，裸名（官方
+  // 模型）自成条目。筛选值 = 条目键，汇总时按组求和（见 summaryFor）。
   const models = useMemo(() => {
-    const set = new Set(today.map((record) => record.model));
+    const groups = new Set<string>();
+    const add = (model: string) => {
+      const index = model.indexOf("/");
+      groups.add(index === -1 ? model : model.slice(0, index));
+    };
+    for (const record of today) add(record.model);
     for (const day of Object.values(days)) {
-      for (const name of Object.keys(day.byModel)) set.add(name);
+      for (const name of Object.keys(day.byModel)) add(name);
     }
-    return ["全部模型", ...Array.from(set).sort()];
+    return ["全部模型", ...Array.from(groups).sort()];
   }, [days, today]);
 
   // 筛选后的按天聚合索引：key = 自然日字符串。
@@ -694,10 +709,7 @@ export function UsageSection() {
               }}
             >
               {models.map((item) => (
-                // value 保持完整复合名（筛选键）；显示文本剥前缀。
-                <option key={item} value={item}>
-                  {modelLabel(item)}
-                </option>
+                <option key={item}>{item}</option>
               ))}
             </select>
           </label>
