@@ -99,6 +99,14 @@ function sumCells(items: readonly CellSummary[]): CellSummary {
   );
 }
 
+/** 模型家族分组键：剥掉「provider/」前缀后取第一个「-」前的名字。 */
+function modelGroupKey(model: string): string {
+  const index = model.indexOf("/");
+  const bare = index === -1 ? model : model.slice(index + 1);
+  const dash = bare.indexOf("-");
+  return dash === -1 ? bare : bare.slice(0, dash);
+}
+
 /**
  * 某天在项目/模型筛选下应使用的聚合桶。模型筛选值可以是厂商组
  * （`opencode-free` 代表其下所有模型）或单个裸名模型（官方 deepseek）。
@@ -110,19 +118,22 @@ function summaryFor(
 ): CellSummary {
   if (day === undefined) return emptySummary();
   if (project === "全部项目" && model === "全部模型") return day.total;
-  const matches = (key: string) => key === model || key.startsWith(`${model}/`);
+
   if (project !== "全部项目" && model !== "全部模型") {
     let sum = emptySummary();
-    const prefix = `${project}\u0000${model}`;
     for (const [key, cell] of Object.entries(day.cells)) {
-      if (key === prefix || key.startsWith(`${prefix}/`)) addCell(sum, cell);
+      const index = key.indexOf("\u0000");
+      if (index === -1) continue;
+      if (key.slice(0, index) !== project) continue;
+      if (modelGroupKey(key.slice(index + 1)) !== model) continue;
+      addCell(sum, cell);
     }
     return sum;
   }
   if (project !== "全部项目") return day.byProject[project] ?? emptySummary();
   let sum = emptySummary();
   for (const [key, cell] of Object.entries(day.byModel)) {
-    if (matches(key)) addCell(sum, cell);
+    if (modelGroupKey(key) === model) addCell(sum, cell);
   }
   return sum;
 }
@@ -427,8 +438,7 @@ export function UsageSection() {
   const models = useMemo(() => {
     const groups = new Set<string>();
     const add = (model: string) => {
-      const index = model.indexOf("/");
-      groups.add(index === -1 ? model : model.slice(0, index));
+      groups.add(modelGroupKey(model));
     };
     for (const record of today) add(record.model);
     for (const day of Object.values(days)) {
