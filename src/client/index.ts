@@ -10,11 +10,13 @@ import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-client-ui-slots";
 import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
 import type {} from "@deepseek-ai/dsh-client-ui-sidebar/client";
+import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-plugin-manager/client";
 import { UsageTrigger } from "./UsageTrigger.tsx";
 import { CodexLoginCard } from "./CodexLoginCard.tsx";
 import { CopilotLoginCard } from "./CopilotLoginCard.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
+import { TurnNotify } from "./TurnNotify.tsx";
 
 export const inject = ["slots"];
 
@@ -26,6 +28,11 @@ export function apply(ctx: Context): void {
   ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register(
     { name: "sidebar.footer.action", id: "usage", order: 0 },
     UsageTrigger,
+  ));
+  // 回合完成系统通知（隐形槽位组件：监听 session 快照，自身不渲染）。
+  ctx.slots.inject("conversation.input.left", () => ctx.slots.register(
+    { name: "conversation.input.left", id: "dsh-config-turn-notify", order: 2 },
+    TurnNotify,
   ));
   // 插件管理器（侧边栏插件按钮 → dsh-config → 行「配置」）的行配置页。
   ctx.slots.inject("plugins.row.config", () => ctx.slots.register(
