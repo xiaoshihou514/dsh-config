@@ -7,7 +7,7 @@ import {
   IconSparkle16,
 } from "./icons.tsx";
 
-type View = "day" | "week" | "month";
+type View = "day" | "week" | "month" | "model" | "project";
 
 /** host 已算好的单条明细（仅今天存在）。 */
 interface RecordItem {
@@ -549,15 +549,6 @@ export function UsageSection() {
   }, [filteredDays, todayStart]);
 
   // 当前视图展示区间的汇总（与筛选联动）。
-  const totals = useMemo(() => {
-    const shown =
-      view === "day"
-        ? dayWeeks.flatMap((week) => week.days).map((day) => day.summary)
-        : view === "week"
-          ? weekBuckets.map((bucket) => bucket.summary)
-          : monthBuckets.map((bucket) => bucket.summary);
-    return totalsOf(sumCells(shown));
-  }, [view, dayWeeks, weekBuckets, monthBuckets]);
 
   const metrics = useMemo(() => {
     const all = sumCells(Array.from(filteredDays.values()));
@@ -589,6 +580,91 @@ export function UsageSection() {
     () => Math.max(...monthBuckets.map((bucket) => tokensOf(bucket.summary)), 0),
     [monthBuckets],
   );
+
+  // 按模型 / 按项目视图：最近 30 天的每日分段分布（堆叠柱数据）。
+  const dailyBreakdown = useMemo(() => {
+    if (view !== "model" && view !== "project") return null;
+    const byFamily = view === "model";
+    const daysOut: {
+      key: string;
+      at: number;
+      total: CellSummary;
+      segments: { name: string; cell: CellSummary }[];
+    }[] = [];
+    let segmentNames: string[] | null = null;
+    for (let offset = 29; offset >= 0; offset -= 1) {
+      const at = todayStart - offset * DAY;
+      const key = dayKeyOf(at);
+      const day = days[key];
+      if (day === undefined) {
+        daysOut.push({ key, at, total: emptySummary(), segments: [] });
+        continue;
+      }
+      const totals = new Map<string, CellSummary>();
+      if (byFamily) {
+        if (project !== "全部项目") {
+          for (const [cellKey, cell] of Object.entries(day.cells)) {
+            const index = cellKey.indexOf("\u0000");
+            if (index === -1 || cellKey.slice(0, index) !== project) continue;
+            const family = modelGroupKey(cellKey.slice(index + 1));
+            if (model !== "全部模型" && family !== model) continue;
+            const bucket = bucketOf(totals, family);
+            addCell(bucket, cell);
+          }
+        } else {
+          for (const [name, cell] of Object.entries(day.byModel)) {
+            const family = modelGroupKey(name);
+            if (model !== "全部模型" && family !== model) continue;
+            const bucket = bucketOf(totals, family);
+            addCell(bucket, cell);
+          }
+        }
+      } else {
+        if (model !== "全部模型") {
+          for (const [cellKey, cell] of Object.entries(day.cells)) {
+            const index = cellKey.indexOf("\u0000");
+            if (index === -1 || cellKey.slice(index + 1) !== model) continue;
+            const name = cellKey.slice(0, index);
+            const bucket = bucketOf(totals, name);
+            addCell(bucket, cell);
+          }
+        } else {
+          for (const [name, cell] of Object.entries(day.byProject)) {
+            const bucket = bucketOf(totals, name);
+            addCell(bucket, cell);
+          }
+        }
+      }
+      const segments = Array.from(totals, ([name, cell]) => ({ name, cell })).sort(
+        (a, b) => tokensOf(b.cell) - tokensOf(a.cell),
+      );
+      for (const segment of segments) if (segment.cell.calls > 0 || segment.cell.input > 0) {}
+      daysOut.push({ key, at, total: sumCells(segments.map((s) => s.cell)), segments });
+      const names = segments.map((s) => s.name);
+      segmentNames = segmentNames === null ? names : segmentNames;
+      void segmentNames;
+    }
+    const names = new Set<string>();
+    for (const dayItem of daysOut) for (const segment of dayItem.segments) names.add(segment.name);
+    return { days: daysOut, names: Array.from(names) };
+  }, [view, days, project, model, todayStart]);
+
+  const totals = useMemo(() => {
+    const shown =
+      view === "model" || view === "project"
+        ? (dailyBreakdown?.days ?? []).map((day) => day.total)
+        : view === "day"
+          ? dayWeeks.flatMap((week) => week.days).map((day) => day.summary)
+          : view === "week"
+            ? weekBuckets.map((bucket) => bucket.summary)
+            : monthBuckets.map((bucket) => bucket.summary);
+    return totalsOf(sumCells(shown));
+  }, [view, dailyBreakdown, dayWeeks, weekBuckets, monthBuckets]);
+
+  const breakdownMaximum = useMemo(() => {
+    if (dailyBreakdown === null) return 0;
+    return Math.max(...dailyBreakdown.days.map((d) => tokensOf(d.total)), 0);
+  }, [dailyBreakdown]);
 
   const dayMonthLabels = useMemo(() => {
     const labels: { left: number; text: string; index: number }[] = [];
@@ -844,6 +920,8 @@ export function UsageSection() {
                 ["day", "每日"],
                 ["week", "每周"],
                 ["month", "每月"],
+                ["model", "按模型"],
+                ["project", "按项目"],
               ] as const
             ).map(([id, text]) => (
               <button
@@ -1092,6 +1170,23 @@ export function UsageSection() {
             })}
           </div>
         )}
+        {(view === "model" || view === "project") && dailyBreakdown !== null ? (
+          <div
+            style={{
+              marginTop: 18,
+              border: "1px solid var(--dsw-alias-border-l2)",
+              borderRadius: 12,
+              background: "var(--dsw-alias-bg-layer-3)",
+              padding: "16px 16px 12px",
+            }}
+          >
+            <DailyBars
+              breakdown={dailyBreakdown}
+              selected={selected}
+              onSelect={setSelected}
+            />
+          </div>
+        ) : null}
 
         <div
           style={{
@@ -1464,5 +1559,154 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
         })
       )}
     </CardFrame>
+  );
+}
+
+// ===== 按模型 / 按项目视图：每日堆叠柱状图 =====
+
+function bucketOf(map: Map<string, CellSummary>, name: string): CellSummary {
+  const existing = map.get(name);
+  if (existing !== undefined) return existing;
+  const fresh = emptySummary();
+  map.set(name, fresh);
+  return fresh;
+}
+
+const BAR_PALETTE = [
+  "var(--dsw-alias-state-success-primary)",
+  "var(--dsw-alias-state-business-primary)",
+  "var(--dsw-alias-state-warn-primary)",
+  "var(--dsw-alias-state-error-primary)",
+  "var(--dsw-alias-state-idle-primary)",
+  "var(--dsw-alias-label-primary-bluish)",
+  "var(--dsw-alias-label-secondary)",
+  "var(--dsw-alias-label-tertiary)",
+];
+
+function segmentColor(name: string, names: string[]): string {
+  const sorted = [...names].sort();
+  const index = Math.max(0, sorted.indexOf(name)) % BAR_PALETTE.length;
+  return BAR_PALETTE[index] ?? BAR_PALETTE[0]!;
+}
+
+function DailyBars({
+  breakdown,
+  onSelect,
+  selected,
+}: {
+  breakdown: {
+    days: { key: string; at: number; total: CellSummary; segments: { name: string; cell: CellSummary }[] }[];
+    names: string[];
+  };
+  onSelect: (entry: { start: number; summary: CellSummary }) => void;
+  selected: { start: number; summary: CellSummary } | null;
+}) {
+  const maximum = Math.max(
+    ...breakdown.days.map((day) => tokensOf(day.total)),
+    0,
+  );
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
+        {breakdown.names.map((name) => (
+          <span
+            key={name}
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--dsw-alias-label-secondary)" }}
+          >
+            <span
+              style={{
+                width: 9,
+                height: 9,
+                borderRadius: 2,
+                background: segmentColor(name, breakdown.names),
+                display: "inline-block",
+              }}
+            />
+            {name}
+          </span>
+        ))}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          gap: 3,
+          height: 140,
+          padding: "6px 2px 0",
+        }}
+      >
+        {breakdown.days.map((day) => {
+          const tokens = tokensOf(day.total);
+          const height = maximum > 0 ? Math.round((tokens / maximum) * 100) : 0;
+          const isSelected = selected !== null && selected.start === day.at;
+          const title = [
+            fullLabel(day.at, "day"),
+            `${number(tokens)} 词元 · ${number(day.total.calls)} 次`,
+            ...day.segments.map((s) => `${s.name}: ${number(tokensOf(s.cell))}`),
+          ].join("\n");
+          return (
+            <div
+              key={day.key}
+              title={title}
+              onClick={() =>
+                onSelect({ start: day.at, summary: day.total })
+              }
+              style={{
+                flex: 1,
+                height: "100%",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "flex-end",
+                cursor: "pointer",
+                minWidth: 0,
+              }}
+            >
+              <div
+                style={{
+                  height: `${height}%`,
+                  minHeight: tokens > 0 ? 2 : 0,
+                  borderRadius: 3,
+                  display: "flex",
+                  flexDirection: "column",
+                  overflow: "hidden",
+                  outline: isSelected ? "2px solid var(--dsw-alias-label-primary-bluish)" : undefined,
+                  outlineOffset: 1,
+                }}
+              >
+                {day.segments.map((segment) => {
+                  const share = tokens > 0 ? tokensOf(segment.cell) / tokens : 0;
+                  return (
+                    <div
+                      key={segment.name}
+                      style={{
+                        flex: `${share * 100}%`,
+                        background: segmentColor(segment.name, breakdown.names),
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          gap: 3,
+          marginTop: 4,
+          fontSize: 10,
+          color: "var(--dsw-alias-label-tertiary)",
+        }}
+      >
+        {breakdown.days.map((day, index) => (
+          <div key={day.key} style={{ flex: 1, textAlign: "center", minWidth: 0 }}>
+            {index % 5 === 0 || index === breakdown.days.length - 1
+              ? new Date(day.at).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })
+              : ""}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
