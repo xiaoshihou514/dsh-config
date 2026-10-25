@@ -1184,7 +1184,7 @@ export function UsageSection() {
         <Summary
           label="词元总数"
           value={number(shown.tokens)}
-          hint={`${number(shown.calls)} 次模型调用`}
+          hint={`${number(shown.calls)}次模型调用`}
         />
         <Summary
           label="输入 / 输出"

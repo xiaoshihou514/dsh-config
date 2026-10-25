@@ -22,6 +22,7 @@ export default defineConfig([
       "codex-imagegen": "src/codex-imagegen.ts",
       "inject-once": "src/inject-once.ts",
       "overflow-recovery": "src/overflow-recovery.ts",
+      "session-activity": "src/session-activity.ts",
       bilibili: "src/bilibili/index.ts",
     },
     dts: true,

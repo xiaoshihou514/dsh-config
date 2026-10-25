@@ -48,7 +48,11 @@
       "default": "./lib/client.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./session-activity": {
+      "types": "./lib/session-activity.d.ts",
+      "default": "./lib/session-activity.js"
+    }
   },
   "files": [
     "lib",
@@ -113,7 +117,8 @@
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9",
-    "@deepseek-ai/dsh-client-ui-conversation": "^0.2.0-rc.2"
+    "@deepseek-ai/dsh-client-ui-conversation": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-api-session-controller": "^0.2.0-rc.2"
   },
   "engines": {
     "node": "^22.19.0 || >=24"
