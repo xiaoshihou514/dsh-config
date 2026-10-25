@@ -15,16 +15,19 @@ const record = (over: {
   cacheWriteTokens: over.cacheWriteTokens,
 });
 
-/** 北京时间当天高峰段（10:00）与闲时段（20:00）的时间戳。 */
-const peakTime = Date.UTC(2026, 9, 17) + (10 - 8) * 3_600_000;
-const offTime = Date.UTC(2026, 9, 17) + (20 - 8) * 3_600_000;
+/** 北京时间时间戳助手：周五 2026-10-16（工作日）。 */
+const friday = (hour: number) => Date.UTC(2026, 9, 16) + (hour - 8) * 3_600_000;
+const saturday = (hour: number) => Date.UTC(2026, 9, 17) + (hour - 8) * 3_600_000;
+/** DeepSeek 峰谷（每天 9-12、14-18）：周五 10:00 高峰 / 20:00 闲时。 */
+const peakTime = friday(10);
+const offTime = friday(20);
 
 describe("zai-coding-cn 按智谱牌价估算", () => {
   it("glm-5.3-flash 按统一牌价计费（0.23/0.8/2.8 元每百万）", () => {
     const costs = pricing.costOf(
       "zai-coding-cn",
       "zai-coding-cn/glm-5.3-flash",
-      peakTime,
+      friday(15),
       record({
         inputTokens: 1_000_000,
         outputTokens: 1_000_000,
@@ -35,7 +38,7 @@ describe("zai-coding-cn 按智谱牌价估算", () => {
     expect(costs.cost).toBeCloseTo(3.83, 10);
   });
 
-  it("无峰谷差价：高峰与闲时同价，峰/闲拆分按发生时段归侧", () => {
+  it("工作日 14-18 为高峰（积分全额），其余闲时（积分 5 折）", () => {
     const usage = record({
       inputTokens: 500_000,
       outputTokens: 100_000,
@@ -44,22 +47,35 @@ describe("zai-coding-cn 按智谱牌价估算", () => {
     const peak = pricing.costOf(
       "zai-coding-cn",
       "zai-coding-cn/glm-5.3-flash",
-      peakTime,
+      friday(15),
       usage,
     );
     const off = pricing.costOf(
       "zai-coding-cn",
       "zai-coding-cn/glm-5.3-flash",
-      offTime,
+      friday(20),
       usage,
     );
     // 0.25*0.23 + 0.5*0.8 + 0.1*2.8 = 0.0575 + 0.4 + 0.28
     expect(peak.cost).toBeCloseTo(0.7375, 10);
-    expect(off.cost).toBeCloseTo(0.7375, 10);
     expect(peak.peakCost).toBeCloseTo(0.7375, 10);
     expect(peak.offCost).toBe(0);
+    expect(off.cost).toBeCloseTo(0.7375 / 2, 10);
     expect(off.peakCost).toBe(0);
-    expect(off.offCost).toBeCloseTo(0.7375, 10);
+    expect(off.offCost).toBeCloseTo(0.7375 / 2, 10);
+  });
+
+  it("周末全天为非高峰（5 折）", () => {
+    const usage = record({ inputTokens: 1_000_000 });
+    const saturdayNoon = saturday(12);
+    const off = pricing.costOf(
+      "zai-coding-cn",
+      "zai-coding-cn/glm-5.3-flash",
+      saturdayNoon,
+      usage,
+    );
+    expect(off.cost).toBeCloseTo(0.4, 10);
+    expect(off.offCost).toBeCloseTo(0.4, 10);
   });
 
   it("未知 GLM 模型记 0（不猜价）", () => {

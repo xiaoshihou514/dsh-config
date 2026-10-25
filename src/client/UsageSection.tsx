@@ -107,6 +107,32 @@ function modelGroupKey(model: string): string {
   return dash === -1 ? bare : bare.slice(0, dash);
 }
 
+/** 智谱峰谷相位：周一至周五 14:00-18:00（UTC+8）高峰，其余闲时（积分 5 折）。 */
+function zaiPhase(now = Date.now()): { peak: boolean; nextInMs: number } {
+  const beijing = new Date(now + 8 * 3_600_000);
+  const day = beijing.getUTCDay() === 0 ? 7 : beijing.getUTCDay();
+  const minutes = beijing.getUTCHours() * 60 + beijing.getUTCMinutes();
+  const dayStartUtc = Date.UTC(
+    beijing.getUTCFullYear(),
+    beijing.getUTCMonth(),
+    beijing.getUTCDate(),
+  );
+  const DAY_MS = 86_400_000;
+  const peakStartOf = (offset: number) => dayStartUtc + offset * DAY_MS + 840 * 60_000 - 8 * 3_600_000;
+  const peakEndOf = (offset: number) => dayStartUtc + offset * DAY_MS + 1080 * 60_000 - 8 * 3_600_000;
+  const weekday = (offset: number) => {
+    const d = ((day - 1 + offset) % 7) + 1;
+    return d <= 5;
+  };
+  if (weekday(0) && minutes >= 840 && minutes < 1080)
+    return { peak: true, nextInMs: peakEndOf(0) - now };
+  if (weekday(0) && minutes < 840) return { peak: false, nextInMs: peakStartOf(0) - now };
+  for (let offset = 1; offset <= 7; offset++) {
+    if (weekday(offset)) return { peak: false, nextInMs: peakStartOf(offset) - now };
+  }
+  return { peak: false, nextInMs: 0 };
+}
+
 /**
  * 某天在项目/模型筛选下应使用的聚合桶。模型筛选值可以是厂商组
  * （`opencode-free` 代表其下所有模型）或单个裸名模型（官方 deepseek）。
@@ -1373,8 +1399,23 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
       </CardFrame>
     );
   const windows = data.windows ?? [];
+  const phase = zaiPhase();
   return (
-    <CardFrame label={`智谱 GLM${data.level ? ` · ${data.level}` : ""}`}>
+    <CardFrame
+      label={`智谱 GLM${data.level ? ` · ${data.level}` : ""}`}
+    >
+      <div style={{ marginBottom: 6 }}>
+        <strong
+          style={{ fontSize: 15, letterSpacing: "-0.02em", display: "block" }}
+        >
+          {phase.peak ? "高峰时段" : "非高峰时段"}
+        </strong>
+        <div style={{ color: "var(--dsw-alias-label-tertiary)", marginTop: 2 }}>
+          {phase.peak
+            ? `积分全额抵扣 · 距闲时 ${countdown(phase.nextInMs)}`
+            : `积分 5 折抵扣 · 距高峰 ${countdown(phase.nextInMs)}`}
+        </div>
+      </div>
       {windows.length === 0 ? (
         <Muted>暂无配额窗口</Muted>
       ) : (

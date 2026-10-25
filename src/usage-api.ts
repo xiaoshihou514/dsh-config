@@ -7,7 +7,7 @@
  * 数量级；写盘走防抖批量合并，不再每条全量重写。
  *
  * 支持 provider：deepseek-official（官方峰谷计费）；zai-coding-cn（GLM
- * Coding Plan 包月套餐，按智谱国内站 API 牌价估算费用，无峰谷差价）；其余
+ * Coding Plan 包月套餐，按智谱国内站 API 牌价估算费用（非高峰 5 折积分）；其余
  * 订阅档（OpenCode Free、Codex、GitHub Copilot 等）费用恒为 0，只统计词元量。
  */
 
@@ -51,7 +51,8 @@ const PRICED_PROVIDERS = new Set(["zai-coding-cn"]);
 
 /**
  * 智谱国内站（bigmodel.cn）API 牌价（元 / 百万 tokens）：缓存命中 / 未命中输入 / 输出。
- * 来源：docs.bigmodel.cn「API 定价」页。智谱无峰谷差价，统一牌价；分档模型
+ * 来源：docs.bigmodel.cn「API 定价」页与 Coding Plan 用量说明（非高峰积分
+ *  5 折抵扣）。分档模型
  * （按输入长度分两档）按低档计。缓存存储当前限时免费，不计。
  */
 const ZAI_PRICE = {
@@ -63,6 +64,16 @@ const ZAI_PRICE = {
   "glm-5-turbo": { hit: 1.2, miss: 5, output: 22 },
   "glm-5": { hit: 1, miss: 4, output: 18 },
 } as const;
+
+/** 智谱峰谷：周一至周五 14:00-18:00（UTC+8）高峰，其余（含周末）闲时。
+ *  非高峰时段套餐积分按 50% 抵扣（docs.bigmodel.cn Coding Plan 用量说明）。 */
+function isZaiPeak(time: number): boolean {
+  const beijing = new Date(time + 8 * 3_600_000);
+  const day = beijing.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const hour = beijing.getUTCHours();
+  return hour >= 14 && hour < 18;
+}
 
 /** 官方模型单价（元 / 百万 tokens）：高峰 / 闲时。 */
 const PEAK_PRICE = {
@@ -94,20 +105,21 @@ function costOf(
     return { cost: 0, peakCost: 0, offCost: 0 };
   const cacheRead = record.cacheReadTokens ?? 0;
   const cacheWrite = record.cacheWriteTokens ?? 0;
-  // 计价订阅档（智谱 GLM Coding Plan）：按 API 牌价估算。智谱无峰谷差价，
-  // 统一牌价下金额即费用，峰/闲两侧按记录发生时段归侧（只影响拆分展示）。
+  // 计价订阅档（智谱 GLM Coding Plan）：按 API 牌价估算。非高峰时段积分
+  // 5 折抵扣（费用随之减半），峰/闲拆分反映真实消耗差。
   if (PRICED_PROVIDERS.has(provider)) {
     const bare = model.slice(provider.length + 1).toLowerCase();
     const price = ZAI_PRICE[bare as keyof typeof ZAI_PRICE];
     if (price === undefined) return { cost: 0, peakCost: 0, offCost: 0 };
-    const cost =
+    // 基础积分折算；非高峰时段积分按 50% 抵扣（费用随之减半）。
+    const base =
       (cacheRead * price.hit +
         (record.inputTokens + cacheWrite) * price.miss +
         record.outputTokens * price.output) /
       1_000_000;
-    return isPeak(at)
-      ? { cost, peakCost: cost, offCost: 0 }
-      : { cost, peakCost: 0, offCost: cost };
+    return isZaiPeak(at)
+      ? { cost: base, peakCost: base, offCost: 0 }
+      : { cost: base * 0.5, peakCost: 0, offCost: base * 0.5 };
   }
   // 0.2.0 起官方 flash 模型更名为 deepseek-flash（原 deepseek-v4-flash），
   // 两者按同一 flash 档峰谷价计。
