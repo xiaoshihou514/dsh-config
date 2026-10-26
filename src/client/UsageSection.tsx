@@ -280,10 +280,28 @@ function monthLabelFor(weekStart: number): string | undefined {
     : undefined;
 }
 
-function levelOf(value: number, maximum: number): number {
-  if (value <= 0 || maximum <= 0) return 0;
-  const ratio = value / maximum;
-  return Math.min(4, Math.max(1, Math.ceil(ratio * 4)));
+/**
+ * 热力图色阶阈值：非零用量按四分位切 4 档——避免量级悬殊时小用量日子
+ * 全部被压到最浅档（视觉上像没有数据）。
+ */
+function quantileThresholds(values: readonly number[]): [number, number, number] {
+  const sorted = values.filter((v) => v > 0).sort((a, b) => a - b);
+  const pick = (p: number): number =>
+    sorted.length === 0
+      ? 0
+      : sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))]!;
+  return [pick(0.25), pick(0.5), pick(0.75)];
+}
+
+function levelFromQuantile(
+  value: number,
+  thresholds: [number, number, number],
+): number {
+  if (value <= 0) return 0;
+  if (value <= thresholds[0]) return 1;
+  if (value <= thresholds[1]) return 2;
+  if (value <= thresholds[2]) return 3;
+  return 4;
 }
 
 function cellColor(level: number): string {
@@ -564,21 +582,17 @@ export function UsageSection() {
     };
   }, [filteredDays]);
 
-  const dayMaximum = useMemo(
-    () =>
-      Math.max(
-        ...dayWeeks.flatMap((week) => week.days).map((day) => tokensOf(day.summary)),
-        0,
-      ),
-    [dayWeeks],
+  // 三个视图的色阶阈值：非零用量按四分位切档。
+  const dayLevels = quantileThresholds(
+    dayCells.size > 0
+      ? Array.from(dayCells.values(), (cell) => tokensOf(cell.summary))
+      : [],
   );
-  const weekMaximum = useMemo(
-    () => Math.max(...weekBuckets.map((bucket) => tokensOf(bucket.summary)), 0),
-    [weekBuckets],
+  const weekLevels = quantileThresholds(
+    weekBuckets.map((bucket) => tokensOf(bucket.summary)),
   );
-  const monthMaximum = useMemo(
-    () => Math.max(...monthBuckets.map((bucket) => tokensOf(bucket.summary)), 0),
-    [monthBuckets],
+  const monthLevels = quantileThresholds(
+    monthBuckets.map((bucket) => tokensOf(bucket.summary)),
   );
 
   // 按模型 / 按项目视图：最近 30 天的每日分段分布（堆叠柱数据）。
@@ -989,7 +1003,7 @@ export function UsageSection() {
                 >
                   {week.days.map((day) => {
                     const tokens = tokensOf(day.summary);
-                    const level = levelOf(tokens, dayMaximum);
+                    const level = levelFromQuantile(tokens, dayLevels);
                     const interactive = !day.future;
                     return (
                       <button
@@ -1065,7 +1079,7 @@ export function UsageSection() {
                     .slice(column * 4, column * 4 + 4)
                     .map((bucket) => {
                       const tokens = tokensOf(bucket.summary);
-                      const level = levelOf(tokens, weekMaximum);
+                      const level = levelFromQuantile(tokens, weekLevels);
                       return (
                         <button
                           key={bucket.start}
@@ -1125,7 +1139,7 @@ export function UsageSection() {
           >
             {monthBuckets.map((bucket) => {
               const tokens = tokensOf(bucket.summary);
-              const level = levelOf(tokens, monthMaximum);
+              const level = levelFromQuantile(tokens, monthLevels);
               return (
                 <div
                   key={bucket.start}
