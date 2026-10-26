@@ -152,14 +152,14 @@ function summaryFor(
       if (index === -1) continue;
       if (key.slice(0, index) !== project) continue;
       if (modelGroupKey(key.slice(index + 1)) !== model) continue;
-      addCell(sum, cell);
+      sum = addCell(sum, cell);
     }
     return sum;
   }
   if (project !== "全部项目") return day.byProject[project] ?? emptySummary();
   let sum = emptySummary();
   for (const [key, cell] of Object.entries(day.byModel)) {
-    if (modelGroupKey(key) === model) addCell(sum, cell);
+    if (modelGroupKey(key) === model) sum = addCell(sum, cell);
   }
   return sum;
 }
@@ -644,8 +644,7 @@ export function UsageSection() {
           for (const [name, cell] of Object.entries(day.byModel)) {
             const family = modelGroupKey(name);
             if (model !== "全部模型" && family !== model) continue;
-            const bucket = bucketOf(totals, family);
-            addCell(bucket, cell);
+            totals.set(family, addCell(bucketOf(totals, family), cell));
           }
         }
       } else {
@@ -658,8 +657,7 @@ export function UsageSection() {
           }
         } else {
           for (const [name, cell] of Object.entries(day.byProject)) {
-            const bucket = bucketOf(totals, name);
-            addCell(bucket, cell);
+            totals.set(name, addCell(bucketOf(totals, name), cell));
           }
         }
       }
