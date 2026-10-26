@@ -448,6 +448,17 @@ export function UsageSection() {
         const nextEtag = response.headers.get("etag");
         if (!stale) {
           if (nextEtag !== null) etagRef.current = nextEtag;
+          try {
+            const lastKey = Object.keys(payload.days ?? {}).at(-1)!;
+            console.log(
+              "[调试] API days 键数:", Object.keys(payload.days ?? {}).length,
+              "| 最后一天:", lastKey,
+              "| byModel:", JSON.stringify(payload.days?.[lastKey]?.byModel ?? {}).slice(0, 400),
+            );
+            console.log(
+              "[调试] API 最后一天 total:", JSON.stringify(payload.days?.[lastKey]?.total ?? {}).slice(0, 200),
+            );
+          } catch {}
           setDays(payload.days);
           setToday(payload.today);
           setError(null);
@@ -627,8 +638,7 @@ export function UsageSection() {
             if (index === -1 || cellKey.slice(0, index) !== project) continue;
             const family = modelGroupKey(cellKey.slice(index + 1));
             if (model !== "全部模型" && family !== model) continue;
-            const bucket = bucketOf(totals, family);
-            addCell(bucket, cell);
+            totals.set(family, addCell(bucketOf(totals, family), cell));
           }
         } else {
           for (const [name, cell] of Object.entries(day.byModel)) {
@@ -644,8 +654,7 @@ export function UsageSection() {
             const index = cellKey.indexOf("\u0000");
             if (index === -1 || cellKey.slice(index + 1) !== model) continue;
             const name = cellKey.slice(0, index);
-            const bucket = bucketOf(totals, name);
-            addCell(bucket, cell);
+            totals.set(name, addCell(bucketOf(totals, name), cell));
           }
         } else {
           for (const [name, cell] of Object.entries(day.byProject)) {
@@ -1619,6 +1628,20 @@ function DailyBars({
   const maximum = Math.max(
     ...breakdown.days.map((day) => tokensOf(day.total)),
     0,
+  );
+  const nonEmpties = breakdown.days.filter((d) => d.total.calls > 0);
+  console.log(
+    "[调试] 非空天 JSON:",
+    nonEmpties.length === 0
+      ? "(无非空天)"
+      : JSON.stringify(nonEmpties.slice(0, 2)).slice(0, 900),
+  );
+  console.log(
+    "[调试] DailyBars:",
+    "天数=" + breakdown.days.length,
+    "names=" + breakdown.names.join("/"),
+    "maximum=" + maximum,
+    "样本=" + breakdown.days.slice(-3).map((d) => d.key + "=" + tokensOf(d.total)).join(","),
   );
   return (
     <div>
