@@ -599,15 +599,20 @@ export function UsageSection() {
   const dailyBreakdown = useMemo(() => {
     if (view !== "model" && view !== "project") return null;
     const byFamily = view === "model";
+    // 覆盖从最早记录到今天的全部天数（而不是只有最近 30 天）。
+    const firstAt = Object.keys(days)
+      .map((key) => dayKeyToStart(key))
+      .reduce((a, b) => Math.min(a, b), Number.POSITIVE_INFINITY);
+    const startAt = Number.isFinite(firstAt) ? Math.min(firstAt, todayStart) : todayStart;
+    const span = Math.max(1, Math.round((todayStart - startAt) / DAY) + 1);
     const daysOut: {
       key: string;
       at: number;
       total: CellSummary;
       segments: { name: string; cell: CellSummary }[];
     }[] = [];
-    let segmentNames: string[] | null = null;
-    for (let offset = 29; offset >= 0; offset -= 1) {
-      const at = todayStart - offset * DAY;
+    for (let offset = span - 1; offset >= 0; offset -= 1) {
+      const at = startAt + offset * DAY;
       const key = dayKeyOf(at);
       const day = days[key];
       if (day === undefined) {
@@ -652,11 +657,7 @@ export function UsageSection() {
       const segments = Array.from(totals, ([name, cell]) => ({ name, cell })).sort(
         (a, b) => tokensOf(b.cell) - tokensOf(a.cell),
       );
-      for (const segment of segments) if (segment.cell.calls > 0 || segment.cell.input > 0) {}
       daysOut.push({ key, at, total: sumCells(segments.map((s) => s.cell)), segments });
-      const names = segments.map((s) => s.name);
-      segmentNames = segmentNames === null ? names : segmentNames;
-      void segmentNames;
     }
     const names = new Set<string>();
     for (const dayItem of daysOut) for (const segment of dayItem.segments) names.add(segment.name);
