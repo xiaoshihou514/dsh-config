@@ -884,24 +884,19 @@ export function UsageSection() {
           icon={<IconDataOutline16 size={16} />}
           value={number(shown.tokens)}
           label="词元总数"
-          hint={
-            <>
-              <div>
-                {number(shown.calls)} 次调用 · 输入{" "}
-                {number(shown.input + shown.cacheWrite)} / 输出{" "}
-                {number(shown.output)}
-              </div>
-              <div>
-                缓存命中 {number(shown.cacheRead)} · 写入{" "}
-                {number(shown.cacheWrite)}
-              </div>
-            </>
-          }
+          hint={`${number(shown.calls)} 次模型调用`}
         />
         <Metric
           icon={<IconRightUpOutline16 size={16} />}
-          value={number(metrics.peakDay)}
-          label="单日峰值词元"
+          value={`${number(shown.input + shown.cacheWrite)} / ${number(shown.output)}`}
+          label="输入 / 输出"
+          hint="未命中输入（含缓存写入）/ 输出"
+        />
+        <Metric
+          icon={<IconGoalOutline16 size={16} />}
+          value={number(shown.cacheRead)}
+          label="缓存命中"
+          hint={`缓存写入 ${number(shown.cacheWrite)}`}
         />
         <Metric
           icon={<IconListPenOutline16 size={16} />}
@@ -953,6 +948,18 @@ export function UsageSection() {
               }}
             >
               <IconGoalOutline16 size={14} /> {metrics.longest} 天
+            </span>
+            <span
+              title="单日峰值词元"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                color: "var(--dsw-alias-label-tertiary)",
+                fontSize: 12,
+              }}
+            >
+              <IconRightUpOutline16 size={14} /> {number(metrics.peakDay)}
             </span>
           </div>
           <div
@@ -1622,6 +1629,14 @@ function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
             ? "未登录"
             : `读取失败（${data.reason}）`}
         </Muted>
+      </CardFrame>
+    );
+  // 旧版宿主没有 kind=copilot 分支，会落 DeepSeek 余额（balances 字段）：
+  // 此时不是「无配额」，而是宿主还没加载新代码。
+  if ((data as { balances?: unknown }).balances !== undefined)
+    return (
+      <CardFrame label="Copilot 订阅">
+        <Muted>宿主需重启加载新版后显示</Muted>
       </CardFrame>
     );
   const windows = data.quotas ?? [];

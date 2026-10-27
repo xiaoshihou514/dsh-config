@@ -209,8 +209,9 @@ export function createCopilotAdapter(ctx?: Context): PiAiAdapter {
     ...catalogProvider,
     // 模型分级过滤：pi-ai 自带的 filterModels 从凭据仓取 OAuth 记录，而
     // 本适配器走每请求令牌注入（凭据仓恒空），那条路径永远拿不到凭据；
-    // 改在这里按凭据文件回写的 availableModelIds 过滤（每次读取都取最新，
-    // 登录/令牌刷新回写后下一次目录读取即生效），无清单时保底全集。
+    // 改在这里按凭据文件回写的 availableModelIds 过滤。注意 PiAiAdapter
+    // 的快照按 profiles 身份记忆——目录只在适配器创建（宿主启动/重建）时
+    // 读取一次，之后凭据清单变化要等下次重建才反映；无清单时保底全集。
     getModels() {
       return filterCopilotModels(
         catalogModels(catalogProvider),
