@@ -1370,6 +1370,26 @@ interface ZaiQuota {
   windows?: QuotaWindow[];
 }
 
+/** Copilot 一个配额窗口（与 host 侧 CopilotQuotaWindow 对应）。 */
+interface CopilotQuotaWindow {
+  id: string;
+  entitlement: number;
+  remaining: number;
+  used: number;
+  percentRemaining: number;
+  unlimited: boolean;
+  overagePermitted: boolean;
+}
+
+interface CopilotUsage {
+  ok: boolean;
+  reason?: string;
+  plan?: string;
+  sku?: string;
+  resetDate?: string;
+  quotas?: CopilotQuotaWindow[];
+}
+
 /** 峰谷时段（北京时间 UTC+8：9:00-12:00、14:00-18:00 高峰）与下一边界倒计时。 */
 function peakPhase(now = Date.now()): { peak: boolean; nextInMs: number } {
   const beijing = new Date(now + 8 * 3_600_000);
@@ -1397,6 +1417,7 @@ function countdown(ms: number): string {
 function ProviderCards() {
   const [deepseek, setDeepseek] = useState<DeepseekBalance | null>(null);
   const [zai, setZai] = useState<ZaiQuota | null>(null);
+  const [copilot, setCopilot] = useState<CopilotUsage | null>(null);
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -1412,13 +1433,15 @@ function ProviderCards() {
           return { ok: false, reason: "network" };
         }
       };
-      const [d, z] = await Promise.all([
+      const [d, z, c] = await Promise.all([
         json("/dsh-config/provider-status?kind=deepseek"),
         json("/dsh-config/provider-status?kind=zai"),
+        json("/dsh-config/provider-status?kind=copilot"),
       ]);
       if (stale) return;
       setDeepseek(d as DeepseekBalance | null);
       setZai(z as ZaiQuota | null);
+      setCopilot(c as CopilotUsage | null);
     };
     void pull();
     const pullTimer = setInterval(() => void pull(), 60_000);
@@ -1435,6 +1458,7 @@ function ProviderCards() {
     <div style={{ display: "flex", gap: 32, flexWrap: "wrap", marginTop: 16 }}>
       <DeepseekBalanceCard data={deepseek} />
       <ZaiQuotaCard data={zai} />
+      <CopilotUsageCard data={copilot} />
     </div>
   );
 }
@@ -1579,6 +1603,133 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
                   }}
                 />
               </div>
+            </div>
+          );
+        })
+      )}
+    </CardFrame>
+  );
+}
+
+/** Copilot 配额窗口的中文标签。 */
+function copilotWindowLabel(id: string): string {
+  if (id === "premium_interactions") return "高级积分";
+  if (id === "chat") return "对话";
+  if (id === "completions") return "补全";
+  return id;
+}
+
+/** Copilot 套餐档中文名（未知档显示原值）。 */
+function copilotPlanLabel(plan: string): string {
+  const known: Record<string, string> = {
+    individual: "个人版",
+    business: "商业版",
+    enterprise: "企业版",
+    free: "免费版",
+  };
+  return known[plan] ?? plan;
+}
+
+/** 配额重置日（ISO 日期）到本地「N月N日」与剩余天数。 */
+function copilotReset(resetDate: string | undefined): string | undefined {
+  if (resetDate === undefined) return undefined;
+  const start = new Date(`${resetDate}T00:00:00`).getTime();
+  if (Number.isNaN(start)) return undefined;
+  const days = Math.max(
+    0,
+    Math.ceil((start - new Date().setHours(0, 0, 0, 0)) / DAY),
+  );
+  const date = new Date(start);
+  const text = `${date.getMonth() + 1}月${date.getDate()}日`;
+  return days > 0 ? `${text}（${days} 天后）` : text;
+}
+
+function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
+  if (data === null)
+    return (
+      <CardFrame label="Copilot 订阅">
+        <Muted>读取中…</Muted>
+      </CardFrame>
+    );
+  if (!data.ok)
+    return (
+      <CardFrame label="Copilot 订阅">
+        <Muted>
+          {data.reason === "unconfigured"
+            ? "未登录"
+            : `读取失败（${data.reason}）`}
+        </Muted>
+      </CardFrame>
+    );
+  const windows = data.quotas ?? [];
+  const reset = copilotReset(data.resetDate);
+  return (
+    <CardFrame
+      label={`Copilot 订阅${data.plan ? ` · ${copilotPlanLabel(data.plan)}` : ""}`}
+    >
+      {windows.length === 0 ? (
+        <Muted>暂无配额数据</Muted>
+      ) : (
+        windows.map((w, index) => {
+          // 无限额度不画条；有限额度按剩余比例着色（越少越红）。
+          const remainPct = w.unlimited ? 100 : w.percentRemaining;
+          const color =
+            remainPct <= 20
+              ? "var(--dsw-alias-state-error-primary)"
+              : remainPct <= 50
+                ? "var(--dsw-alias-state-warn-primary)"
+                : "var(--dsw-alias-state-success-primary)";
+          const tail = [
+            w.unlimited
+              ? "无限"
+              : `已用 ${cnDigits(w.used)} / ${cnDigits(w.entitlement)}`,
+            index === 0 && reset !== undefined ? `重置 ${reset}` : undefined,
+          ]
+            .filter((part) => part !== undefined)
+            .join(" · ");
+          return (
+            <div
+              key={w.id}
+              style={{ marginBottom: index !== windows.length - 1 ? 8 : 0 }}
+            >
+              <div style={{ whiteSpace: "nowrap" }}>
+                <span style={{ color: "var(--dsw-alias-label-secondary)" }}>
+                  {copilotWindowLabel(w.id)}
+                </span>
+                {w.unlimited ? null : (
+                  <span style={{ color }}>{` · 剩余 ${w.percentRemaining}%`}</span>
+                )}
+                <Muted>{w.overagePermitted ? " · 可超额" : ""}</Muted>
+              </div>
+              <div
+                style={{
+                  whiteSpace: "nowrap",
+                  color: "var(--dsw-alias-label-tertiary)",
+                  fontSize: 11,
+                }}
+              >
+                {tail}
+              </div>
+              {w.unlimited ? null : (
+                <div
+                  style={{
+                    height: 5,
+                    borderRadius: 3,
+                    marginTop: 3,
+                    background: "var(--dsw-alias-interactive-bg-hover)",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${remainPct}%`,
+                      height: "100%",
+                      borderRadius: 3,
+                      background: color,
+                    }}
+                  />
+                </div>
+              )}
             </div>
           );
         })

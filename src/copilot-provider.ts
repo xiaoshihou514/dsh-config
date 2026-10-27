@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { Context } from "@deepseek-ai/cordis";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
 import z from "@deepseek-ai/schemastery";
@@ -32,6 +33,16 @@ const LOGIN_ROUTE = "/dsh-config/copilot-login";
 const LOGIN_HEADER = "x-dsh-config";
 const LOGIN_HEADER_VALUE = "copilot-login";
 
+/** pi-ai Provider 类型的目录字段未在类型上暴露；运行时由 createProvider 写入。 */
+function catalogModels(provider: unknown): { id: string }[] {
+  const source = provider as {
+    getModels?: () => { id: string }[];
+    models?: { id: string }[];
+  };
+  if (typeof source.getModels === "function") return source.getModels();
+  return source.models ?? [];
+}
+
 
 /** 与 codex/opencode free 同款的限流/网络错误指数退避：1s 起步 ×2、封顶 30s、20% 抖动、最多 3 次重试。 */
 const COPILOT_RETRY_POLICY: RetryPolicyConfig = {
@@ -46,6 +57,38 @@ const COPILOT_RETRY_POLICY: RetryPolicyConfig = {
   ],
   backoff: { initialDelayMs: 1_000, maxDelayMs: 30_000, jitterRatio: 0.2 },
 };
+
+/**
+ * 凭据文件里 pi-ai 回写的当前账户可用模型清单：Copilot 按套餐分级开放
+ * 模型（免费档没有 opus 等），登录/令牌刷新时 pi-ai 从 `/models` 拉
+ * 「模型选择器可见且策略未禁用」的清单回写 `availableModelIds`。
+ * 读不到文件或字段时返回 undefined（保底全集，不猜测套餐）。
+ */
+export function copilotAvailableModelIds(
+  authFile = copilotAuthFile(),
+): Set<string> | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(authFile, "utf8")) as {
+      availableModelIds?: unknown;
+    };
+    if (!Array.isArray(parsed.availableModelIds)) return undefined;
+    const ids = parsed.availableModelIds.filter(
+      (id): id is string => typeof id === "string" && id.length > 0,
+    );
+    return ids.length > 0 ? new Set(ids) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 目录 ∩ 账户可用清单；无清单时原样返回全集。 */
+export function filterCopilotModels<T extends { id: string }>(
+  catalog: readonly T[],
+  available: Set<string> | undefined,
+): T[] {
+  if (available === undefined) return [...catalog];
+  return catalog.filter((model) => available.has(model.id));
+}
 
 export type CopilotLoginStatus =
   | { state: "idle" }
@@ -164,17 +207,36 @@ export function createCopilotAdapter(ctx?: Context): PiAiAdapter {
   // 一致，因此 apiKey 覆盖路径对 Copilot Pro 个人版无损。
   const piProvider: typeof catalogProvider = {
     ...catalogProvider,
+    // 模型分级过滤：pi-ai 自带的 filterModels 从凭据仓取 OAuth 记录，而
+    // 本适配器走每请求令牌注入（凭据仓恒空），那条路径永远拿不到凭据；
+    // 改在这里按凭据文件回写的 availableModelIds 过滤（每次读取都取最新，
+    // 登录/令牌刷新回写后下一次目录读取即生效），无清单时保底全集。
+    getModels() {
+      return filterCopilotModels(
+        catalogModels(catalogProvider),
+        copilotAvailableModelIds(),
+      );
+    },
+    get models() {
+      return filterCopilotModels(
+        catalogModels(catalogProvider),
+        copilotAvailableModelIds(),
+      );
+    },
     auth: {
       ...catalogProvider.auth,
       apiKey: {
         name: "Copilot 订阅令牌",
-        resolve: async ({ credential }) =>
-          credential?.key === undefined
+        resolve: async (input: { credential?: { key?: string } }) =>
+          input.credential?.key === undefined
             ? undefined
-            : { auth: { apiKey: credential.key }, source: "Copilot 订阅登录" },
+            : {
+                auth: { apiKey: input.credential.key },
+                source: "Copilot 订阅登录",
+              },
       },
     },
-  };
+  } as unknown as typeof catalogProvider;
 
   // 本插件自带 pi-ai（0.84.x，模型目录更新）与宿主 dsh-llm-pi-ai 内置的
   // pi-ai（0.82.x）并存；两侧 Provider 类型在 refreshModels 上下文上不兼容，

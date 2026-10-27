@@ -1,7 +1,7 @@
-/** usage-api 计费拆分：智谱 GLM Coding Plan 按牌价估算 + DeepSeek 峰谷回归 + 裸名桶归一。 */
+/** usage-api 计费拆分：智谱 GLM Coding Plan 按牌价估算 + DeepSeek 峰谷回归 + 裸名桶归一 + Copilot 配额精简。 */
 
 import { describe, expect, it } from "vitest";
-import { migration, pricing } from "../src/usage-api.ts";
+import { migration, normalizeCopilotUsage, pricing } from "../src/usage-api.ts";
 
 const record = (over: {
   inputTokens?: number;
@@ -170,5 +170,86 @@ describe("历史裸名桶归一", () => {
     migration.normalizeModelBuckets(day);
     expect(Object.keys(day.byModel)).toEqual(["zai-coding-cn/glm-5.3"]);
     expect(day.byModel["zai-coding-cn/glm-5.3"].calls).toBe(5);
+  });
+});
+
+describe("Copilot 配额响应精简", () => {
+  it("提取套餐、SKU、重置日与三个配额窗口（对齐 copilot_internal/user 真实形态）", () => {
+    const usage = normalizeCopilotUsage({
+      login: "octocat",
+      copilot_plan: "individual",
+      access_type_sku: "free_engaged_oss_quota",
+      quota_reset_date: "2026-11-01",
+      quota_snapshots: {
+        chat: {
+          percent_remaining: 100.0,
+          unlimited: true,
+          credits_used: 0,
+          remaining: 0,
+          entitlement: 0,
+          overage_permitted: false,
+        },
+        completions: {
+          percent_remaining: 100.0,
+          unlimited: true,
+          credits_used: 0,
+          remaining: 0,
+          entitlement: 0,
+          overage_permitted: false,
+        },
+        premium_interactions: {
+          percent_remaining: 0.0,
+          quota_remaining: -7.7,
+          unlimited: false,
+          credits_used: 1507,
+          remaining: -8,
+          entitlement: 1500,
+          overage_permitted: false,
+        },
+      },
+    });
+    expect(usage).toMatchObject({
+      ok: true,
+      plan: "individual",
+      sku: "free_engaged_oss_quota",
+      resetDate: "2026-11-01",
+    });
+    expect(usage.quotas).toHaveLength(3);
+    expect(usage.quotas?.[0]).toMatchObject({
+      id: "premium_interactions",
+      entitlement: 1500,
+      remaining: -8,
+      used: 1507,
+      percentRemaining: 0,
+      unlimited: false,
+    });
+    expect(usage.quotas?.[1]).toMatchObject({ id: "chat", unlimited: true });
+    expect(usage.quotas?.[2]).toMatchObject({
+      id: "completions",
+      unlimited: true,
+    });
+  });
+
+  it("非法形态与非有限数值安全降级", () => {
+    expect(normalizeCopilotUsage(null)).toMatchObject({ ok: false });
+    expect(normalizeCopilotUsage("nope")).toMatchObject({ ok: false });
+    const usage = normalizeCopilotUsage({
+      quota_snapshots: {
+        premium_interactions: {
+          entitlement: Number.NaN,
+          remaining: "bad",
+          credits_used: 3,
+          percent_remaining: 250,
+          unlimited: false,
+        },
+      },
+    });
+    expect(usage.ok).toBe(true);
+    expect(usage.quotas?.[0]).toMatchObject({
+      entitlement: 0,
+      remaining: 0,
+      used: 3,
+      percentRemaining: 100,
+    });
   });
 });

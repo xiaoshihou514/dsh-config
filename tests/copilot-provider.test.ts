@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OAuthAuth, OAuthCredential } from "@earendil-works/pi-ai";
@@ -6,9 +6,18 @@ import { describe, expect, it, vi } from "vitest";
 import { copilotSubscriptionAccessToken } from "../src/copilot-auth.ts";
 import {
   CopilotLoginManager,
+  copilotAvailableModelIds,
   createCopilotAdapter,
+  filterCopilotModels,
   PROVIDER,
 } from "../src/copilot-provider.ts";
+
+/** 模型目录样例（Claude 系代表 pi-ai 内置 Copilot 目录）。 */
+const CATALOG = [
+  { id: "claude-opus-5" },
+  { id: "claude-sonnet-5" },
+  { id: "claude-haiku-4.5" },
+] as const;
 
 function oauth(refresh: OAuthAuth["refresh"]): OAuthAuth {
   return {
@@ -99,6 +108,67 @@ describe("Copilot 订阅提供方", () => {
     const models = await createCopilotAdapter().listModels(PROVIDER);
     expect(models.length).toBeGreaterThan(0);
     expect(models.every((model) => model.provider === PROVIDER)).toBe(true);
+  });
+
+  it("无可用清单时过滤保底全集", () => {
+    const catalog = [{ id: "a" }, { id: "b" }];
+    expect(filterCopilotModels(catalog, undefined)).toEqual(catalog);
+    expect(copilotAvailableModelIds(join(tmpdir(), "不存在-dsh-copilot"))).toBeUndefined();
+  });
+
+  it("按凭据回写的 availableModelIds 过滤目录（模型分级）", () => {
+    const available = new Set(["claude-sonnet-5", "claude-haiku-4.5"]);
+    expect(filterCopilotModels(CATALOG, available).map((m) => m.id)).toEqual([
+      "claude-sonnet-5",
+      "claude-haiku-4.5",
+    ]);
+  });
+
+  it("从凭据文件读取账户可用模型清单", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-copilot-models-"));
+    const previous = process.env.COPILOT_HOME;
+    process.env.COPILOT_HOME = root;
+    try {
+      await mkdir(join(root, "copilot"), { recursive: true });
+      await writeFile(
+        join(root, "copilot", "auth.json"),
+        JSON.stringify(credential({ availableModelIds: ["claude-sonnet-5"] })),
+      );
+      expect(copilotAvailableModelIds()).toEqual(new Set(["claude-sonnet-5"]));
+      // 空清单视为无信息（保底全集而非空目录）。
+      await writeFile(
+        join(root, "copilot", "auth.json"),
+        JSON.stringify(credential({ availableModelIds: [] })),
+      );
+      expect(copilotAvailableModelIds()).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("适配器目录按凭据清单收窄（端到端）", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-copilot-adapter-"));
+    const previous = process.env.COPILOT_HOME;
+    process.env.COPILOT_HOME = root;
+    try {
+      const full = await createCopilotAdapter().listModels(PROVIDER);
+      expect(full.length).toBeGreaterThan(1);
+      await mkdir(join(root, "copilot"), { recursive: true });
+      await writeFile(
+        join(root, "copilot", "auth.json"),
+        JSON.stringify(
+          credential({ availableModelIds: [full[0]?.id ?? ""] }),
+        ),
+      );
+      const narrowed = await createCopilotAdapter().listModels(PROVIDER);
+      expect(narrowed.map((model) => model.id)).toEqual([full[0]?.id]);
+    } finally {
+      if (previous === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = previous;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("可在 DSH 内发起设备码登录并保存凭据", async () => {

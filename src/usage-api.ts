@@ -18,6 +18,7 @@ import { basename, dirname, join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
+import { copilotAuthFile } from "./copilot-auth.ts";
 
 export const name = "dsh-config-usage-api";
 export const inject = ["sessions", "webServer"];
@@ -432,7 +433,7 @@ export const pricing = { costOf };
 /** 裸名模型桶归一（测试出口）。 */
 export const migration = { normalizeModelBuckets };
 
-// ===== 供应商状态代理（DeepSeek 余额 / 智谱套餐配额）=====
+// ===== 供应商状态代理（DeepSeek 余额 / 智谱套餐配额 / Copilot 配额）=====
 
 /** 单条余额：币种与金额。 */
 interface BalanceItem {
@@ -576,6 +577,123 @@ async function fetchZaiQuota(ctx: Context): Promise<ZaiQuota> {
       ...(parsed.data?.level !== undefined ? { level: parsed.data.level } : {}),
       windows,
     };
+  } catch {
+    return { ok: false, reason: "network" };
+  }
+}
+
+/** Copilot 一个配额窗口的精简快照。 */
+interface CopilotQuotaWindow {
+  /** 配额名：premium_interactions / chat / completions。 */
+  id: string;
+  /** 配额总量（积分）；unlimited 时为 0。 */
+  entitlement: number;
+  /** 剩余量（可为负：免费档用超后挂账）。 */
+  remaining: number;
+  /** 已用量（credits_used）。 */
+  used: number;
+  /** 剩余百分比（0-100，负值截为 0）。 */
+  percentRemaining: number;
+  unlimited: boolean;
+  overagePermitted: boolean;
+}
+
+interface CopilotUsage {
+  ok: boolean;
+  /** unconfigured（未登录）/ HTTP n / network */
+  reason?: string;
+  /** 套餐档（copilot_plan：individual / business / enterprise …）。 */
+  plan?: string;
+  /** 具体 SKU（access_type_sku，如 free_engaged_oss_quota）。 */
+  sku?: string;
+  /** 配额重置日（ISO 日期，无时刻，GitHub 按自然月重置）。 */
+  resetDate?: string;
+  quotas?: CopilotQuotaWindow[];
+}
+
+/** 把 copilot_internal/user 响应精简成用量卡需要的字段（测试出口）。 */
+export function normalizeCopilotUsage(parsed: unknown): CopilotUsage {
+  if (parsed === null || typeof parsed !== "object") return { ok: false };
+  const raw = parsed as {
+    copilot_plan?: unknown;
+    access_type_sku?: unknown;
+    quota_reset_date?: unknown;
+    quota_snapshots?: Record<string, unknown>;
+  };
+  const windows: CopilotQuotaWindow[] = [];
+  for (const id of ["premium_interactions", "chat", "completions"]) {
+    const snapshot = raw.quota_snapshots?.[id];
+    if (snapshot === null || typeof snapshot !== "object") continue;
+    const quota = snapshot as Record<string, unknown>;
+    const number = (key: string): number =>
+      typeof quota[key] === "number" && Number.isFinite(quota[key])
+        ? (quota[key] as number)
+        : 0;
+    windows.push({
+      id,
+      entitlement: number("entitlement"),
+      remaining: number("remaining"),
+      used: number("credits_used"),
+      percentRemaining: Math.max(
+        0,
+        Math.min(100, number("percent_remaining")),
+      ),
+      unlimited: quota.unlimited === true,
+      overagePermitted: quota.overage_permitted === true,
+    });
+  }
+  const plan =
+    typeof raw.copilot_plan === "string" && raw.copilot_plan.length > 0
+      ? raw.copilot_plan
+      : undefined;
+  const sku =
+    typeof raw.access_type_sku === "string" && raw.access_type_sku.length > 0
+      ? raw.access_type_sku
+      : undefined;
+  const resetDate =
+    typeof raw.quota_reset_date === "string" && raw.quota_reset_date.length > 0
+      ? raw.quota_reset_date
+      : undefined;
+  return {
+    ok: true,
+    ...(plan !== undefined ? { plan } : {}),
+    ...(sku !== undefined ? { sku } : {}),
+    ...(resetDate !== undefined ? { resetDate } : {}),
+    quotas: windows,
+  };
+}
+
+/** Copilot 凭据里的 GitHub OAuth 长效令牌（copilot_internal API 用它鉴权）。 */
+async function readCopilotRefreshToken(): Promise<string | undefined> {
+  try {
+    const parsed: unknown = JSON.parse(
+      await readFile(copilotAuthFile(), "utf8"),
+    );
+    if (parsed === null || typeof parsed !== "object") return undefined;
+    const token = (parsed as { refresh?: unknown }).refresh;
+    return typeof token === "string" && token.length > 0 ? token : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function fetchCopilotUsage(): Promise<CopilotUsage> {
+  const token = await readCopilotRefreshToken();
+  if (token === undefined) return { ok: false, reason: "unconfigured" };
+  try {
+    const response = await fetch(
+      "https://api.github.com/copilot_internal/user",
+      {
+        headers: {
+          authorization: `Bearer ${token}`,
+          accept: "application/vnd.github+json",
+          "user-agent": "dsh-config",
+        },
+        signal: AbortSignal.timeout(8_000),
+      },
+    );
+    if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
+    return normalizeCopilotUsage(await response.json());
   } catch {
     return { ok: false, reason: "network" };
   }
@@ -749,9 +867,11 @@ export function apply(ctx: Context): void {
 
   ctx.on("session/event", account);
 
-  // 供应商状态代理：DeepSeek 余额 + 智谱套餐配额（宿主持凭据代取，60 秒缓存）。
+  // 供应商状态代理：DeepSeek 余额 + 智谱套餐配额 + Copilot 配额（宿主持
+  // 凭据代取，60 秒缓存）。
   const deepseekBalance = cached(() => fetchDeepseekBalance(ctx));
   const zaiQuota = cached(() => fetchZaiQuota(ctx));
+  const copilotUsage = cached(() => fetchCopilotUsage());
   const providerRoute: WebRoute = {
     kind: "exact",
     path: PROVIDER_ROUTE,
@@ -768,7 +888,11 @@ export function apply(ctx: Context): void {
         "kind",
       );
       const payload =
-        kind === "zai" ? await zaiQuota() : await deepseekBalance();
+        kind === "zai"
+          ? await zaiQuota()
+          : kind === "copilot"
+            ? await copilotUsage()
+            : await deepseekBalance();
       respondJson(response, payload);
     },
   };
