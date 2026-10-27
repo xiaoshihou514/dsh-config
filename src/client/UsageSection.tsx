@@ -307,7 +307,7 @@ function levelFromQuantile(
 function cellColor(level: number): string {
   const base = "var(--dsw-alias-bg-layer-2)";
   if (level === 0) return base;
-  const mix = [30, 55, 80, 100][level - 1] ?? 100;
+  const mix = [45, 65, 85, 100][level - 1] ?? 100;
   return `color-mix(in srgb, var(--dsw-alias-state-success-primary) ${mix}%, ${base})`;
 }
 
