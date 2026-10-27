@@ -23,7 +23,7 @@ export const inject = ["slots"];
 /** 行配置条目的 key = `<包名>#<行 id>`（行 id 即 cordis.patch.yml 声明的行）。 */
 const ROW_KEY = (rowId: string): `dsh-config#${string}` => `dsh-config#${rowId}`;
 
-console.log("[dsh-config] client bundle 2026-10-27-1（家族分组 + 堆叠柱状图 + 通知）");
+console.log("[dsh-config] client bundle 2026-10-27-2（总览并入指标卡）");
 
 export function apply(ctx: Context): void {
   // 侧边栏「用量」入口（设置上方）：root 列表槽位，owner 传 wide。

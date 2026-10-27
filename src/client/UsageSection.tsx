@@ -328,10 +328,12 @@ function Metric({
   icon,
   value,
   label: text,
+  hint,
 }: {
   icon: ReactNode;
   value: string;
   label: string;
+  hint?: ReactNode;
 }) {
   return (
     <div
@@ -367,43 +369,18 @@ function Metric({
       >
         {value}
       </div>
-    </div>
-  );
-}
-
-function Summary({
-  label: title,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-}) {
-  return (
-    <div style={{ minWidth: 0 }}>
-      <div style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 12 }}>
-        {title}
-      </div>
-      <strong
-        style={{
-          display: "block",
-          marginTop: 4,
-          fontSize: 18,
-          letterSpacing: "-0.02em",
-        }}
-      >
-        {value}
-      </strong>
-      <div
-        style={{
-          color: "var(--dsw-alias-label-tertiary)",
-          fontSize: 11,
-          marginTop: 2,
-        }}
-      >
-        {hint}
-      </div>
+      {hint !== undefined ? (
+        <div
+          style={{
+            marginTop: 5,
+            fontSize: 11,
+            lineHeight: 1.7,
+            color: "var(--dsw-alias-label-tertiary)",
+          }}
+        >
+          {hint}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -866,13 +843,60 @@ export function UsageSection() {
         </p>
       ) : null}
 
+      {selected !== null ? (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "baseline",
+            marginTop: 18,
+          }}
+        >
+          <strong style={{ fontSize: 13 }}>
+            {fullLabel(selected.start, view)} 合计
+          </strong>
+          <button
+            type="button"
+            onClick={() => setSelected(null)}
+            style={{
+              border: 0,
+              background: "none",
+              padding: 0,
+              color: "var(--dsw-alias-label-tertiary)",
+              cursor: "pointer",
+              fontSize: 12,
+            }}
+          >
+            取消选择
+          </button>
+        </div>
+      ) : null}
+
       <div
-        style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 18 }}
+        style={{
+          display: "flex",
+          gap: 10,
+          flexWrap: "wrap",
+          marginTop: selected !== null ? 12 : 18,
+        }}
       >
         <Metric
           icon={<IconDataOutline16 size={16} />}
-          value={number(metrics.tokens)}
-          label="累计词元数"
+          value={number(shown.tokens)}
+          label="词元总数"
+          hint={
+            <>
+              <div>
+                {number(shown.calls)} 次调用 · 输入{" "}
+                {number(shown.input + shown.cacheWrite)} / 输出{" "}
+                {number(shown.output)}
+              </div>
+              <div>
+                缓存命中 {number(shown.cacheRead)} · 写入{" "}
+                {number(shown.cacheWrite)}
+              </div>
+            </>
+          }
         />
         <Metric
           icon={<IconRightUpOutline16 size={16} />}
@@ -881,8 +905,9 @@ export function UsageSection() {
         />
         <Metric
           icon={<IconListPenOutline16 size={16} />}
-          value={money(metrics.cost)}
-          label="累计费用"
+          value={money(shown.cost)}
+          label="费用"
+          hint={`高峰 ${money(shown.peakCost)} · 闲时 ${money(shown.offCost)}`}
         />
       </div>
 
@@ -1254,68 +1279,6 @@ export function UsageSection() {
           </span>
         </div>
 
-      </div>
-
-      {selected !== null ? (
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "baseline",
-            marginTop: 20,
-          }}
-        >
-          <strong style={{ fontSize: 13 }}>
-            {fullLabel(selected.start, view)} 合计
-          </strong>
-          <button
-            type="button"
-            onClick={() => setSelected(null)}
-            style={{
-              border: 0,
-              background: "none",
-              padding: 0,
-              color: "var(--dsw-alias-label-tertiary)",
-              cursor: "pointer",
-              fontSize: 12,
-            }}
-          >
-            取消选择
-          </button>
-        </div>
-      ) : null}
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-          gap: 12,
-          marginTop: selected === null ? 20 : 12,
-          padding: "13px 0",
-          borderTop: "1px solid var(--dsw-alias-border-l2)",
-          borderBottom: "1px solid var(--dsw-alias-border-l2)",
-        }}
-      >
-        <Summary
-          label="实际费用"
-          value={money(shown.cost)}
-          hint={`高峰 ${money(shown.peakCost)} · 闲时 ${money(shown.offCost)}`}
-        />
-        <Summary
-          label="词元总数"
-          value={number(shown.tokens)}
-          hint={`${number(shown.calls)}次模型调用`}
-        />
-        <Summary
-          label="输入 / 输出"
-          value={`${number(shown.input + shown.cacheWrite)} / ${number(shown.output)}`}
-          hint="未命中输入 / 输出"
-        />
-        <Summary
-          label="缓存命中"
-          value={number(shown.cacheRead)}
-          hint={`缓存写入 ${number(shown.cacheWrite)}`}
-        />
       </div>
 
       <ProviderCards />
