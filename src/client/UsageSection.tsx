@@ -1657,14 +1657,8 @@ function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
               : remainPct <= 50
                 ? "var(--dsw-alias-state-warn-primary)"
                 : "var(--dsw-alias-state-success-primary)";
-          const tail = [
-            w.unlimited
-              ? "无限"
-              : `已用 ${cnDigits(w.used)} / ${cnDigits(w.entitlement)}`,
-            index === 0 && reset !== undefined ? `重置 ${reset}` : undefined,
-          ]
-            .filter((part) => part !== undefined)
-            .join(" · ");
+          // 剩余量为负（免费档挂账）按 0 显示，与进度条口径一致。
+          const remaining = Math.max(0, w.remaining);
           return (
             <div
               key={w.id}
@@ -1673,20 +1667,19 @@ function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
               <div style={{ whiteSpace: "nowrap" }}>
                 <span style={{ color: "var(--dsw-alias-label-secondary)" }}>
                   {copilotWindowLabel(w.id)}
-                </span>
-                {w.unlimited ? null : (
-                  <span style={{ color }}>{` · 剩余 ${w.percentRemaining}%`}</span>
+                </span>{" "}
+                {w.unlimited ? (
+                  "无限"
+                ) : (
+                  <>
+                    剩余 {cnDigits(remaining)} / {cnDigits(w.entitlement)}
+                    <span style={{ color }}>{` · 已用 ${100 - remainPct}%`}</span>
+                    {index === 0 && reset !== undefined ? (
+                      <Muted>{` · 重置 ${reset}`}</Muted>
+                    ) : null}
+                    {w.overagePermitted ? <Muted> · 可超额</Muted> : null}
+                  </>
                 )}
-                <Muted>{w.overagePermitted ? " · 可超额" : ""}</Muted>
-              </div>
-              <div
-                style={{
-                  whiteSpace: "nowrap",
-                  color: "var(--dsw-alias-label-tertiary)",
-                  fontSize: 11,
-                }}
-              >
-                {tail}
               </div>
               {w.unlimited ? null : (
                 <div
