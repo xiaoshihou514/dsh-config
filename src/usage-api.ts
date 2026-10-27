@@ -534,7 +534,10 @@ async function fetchZaiQuota(ctx: Context): Promise<ZaiQuota> {
   try {
     const response = await fetch(
       "https://bigmodel.cn/api/monitor/usage/quota/limit",
-      { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8_000) },
+      {
+        headers: { authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(8_000),
+      },
     );
     if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
     const parsed = (await response.json()) as {
@@ -553,13 +556,14 @@ async function fetchZaiQuota(ctx: Context): Promise<ZaiQuota> {
         }[];
       };
     };
-    if (parsed.code !== 200) return { ok: false, reason: `code ${parsed.code}` };
+    if (parsed.code !== 200)
+      return { ok: false, reason: `code ${parsed.code}` };
     const windows = (parsed.data?.limits ?? [])
       .filter((limit) => limit.type === "CREDIT_LIMIT")
       .map((limit) => ({
         label:
           limit.unit === 3
-            ? `${limit.number ?? 1}h`
+            ? `${limit.number ?? 1}时`
             : limit.unit === 6
               ? (limit.number ?? 1) === 1
                 ? "周"
@@ -634,10 +638,7 @@ export function normalizeCopilotUsage(parsed: unknown): CopilotUsage {
       entitlement: number("entitlement"),
       remaining: number("remaining"),
       used: number("credits_used"),
-      percentRemaining: Math.max(
-        0,
-        Math.min(100, number("percent_remaining")),
-      ),
+      percentRemaining: Math.max(0, Math.min(100, number("percent_remaining"))),
       unlimited: quota.unlimited === true,
       overagePermitted: quota.overage_permitted === true,
     });

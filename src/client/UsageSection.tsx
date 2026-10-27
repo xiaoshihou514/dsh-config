@@ -81,10 +81,7 @@ function addCell(target: CellSummary, source: CellSummary): CellSummary {
 
 function tokensOf(summary: CellSummary): number {
   return (
-    summary.input +
-    summary.output +
-    summary.cacheRead +
-    summary.cacheWrite
+    summary.input + summary.output + summary.cacheRead + summary.cacheWrite
   );
 }
 
@@ -118,17 +115,21 @@ function zaiPhase(now = Date.now()): { peak: boolean; nextInMs: number } {
     beijing.getUTCDate(),
   );
   const DAY_MS = 86_400_000;
-  const peakStartOf = (offset: number) => dayStartUtc + offset * DAY_MS + 840 * 60_000 - 8 * 3_600_000;
-  const peakEndOf = (offset: number) => dayStartUtc + offset * DAY_MS + 1080 * 60_000 - 8 * 3_600_000;
+  const peakStartOf = (offset: number) =>
+    dayStartUtc + offset * DAY_MS + 840 * 60_000 - 8 * 3_600_000;
+  const peakEndOf = (offset: number) =>
+    dayStartUtc + offset * DAY_MS + 1080 * 60_000 - 8 * 3_600_000;
   const weekday = (offset: number) => {
     const d = ((day - 1 + offset) % 7) + 1;
     return d <= 5;
   };
   if (weekday(0) && minutes >= 840 && minutes < 1080)
     return { peak: true, nextInMs: peakEndOf(0) - now };
-  if (weekday(0) && minutes < 840) return { peak: false, nextInMs: peakStartOf(0) - now };
+  if (weekday(0) && minutes < 840)
+    return { peak: false, nextInMs: peakStartOf(0) - now };
   for (let offset = 1; offset <= 7; offset++) {
-    if (weekday(offset)) return { peak: false, nextInMs: peakStartOf(offset) - now };
+    if (weekday(offset))
+      return { peak: false, nextInMs: peakStartOf(offset) - now };
   }
   return { peak: false, nextInMs: 0 };
 }
@@ -297,7 +298,9 @@ function monthLabelFor(weekStart: number): string | undefined {
  * 热力图色阶阈值：非零用量按四分位切 4 档——避免量级悬殊时小用量日子
  * 全部被压到最浅档（视觉上像没有数据）。
  */
-function quantileThresholds(values: readonly number[]): [number, number, number] {
+function quantileThresholds(
+  values: readonly number[],
+): [number, number, number] {
   const sorted = values.filter((v) => v > 0).sort((a, b) => a - b);
   const pick = (p: number): number =>
     sorted.length === 0
@@ -402,9 +405,10 @@ export function UsageSection() {
   const [view, setView] = useState<View>("day");
   const [project, setProject] = useState("全部项目");
   const [model, setModel] = useState("全部模型");
-  const [selected, setSelected] = useState<{ start: number; summary: CellSummary } | null>(
-    null,
-  );
+  const [selected, setSelected] = useState<{
+    start: number;
+    summary: CellSummary;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const etagRef = useRef<string | null>(null);
@@ -512,7 +516,11 @@ export function UsageSection() {
       for (let offset = 0; offset < 7; offset += 1) {
         const at = addDays(start, offset);
         days.push(
-          dayCells.get(at) ?? { at, summary: emptySummary(), future: at > todayStart },
+          dayCells.get(at) ?? {
+            at,
+            summary: emptySummary(),
+            future: at > todayStart,
+          },
         );
       }
       weeks.push({ start, days });
@@ -563,7 +571,8 @@ export function UsageSection() {
     const all = sumCells(Array.from(filteredDays.values()));
     const { current, longest } = streaks(Array.from(filteredDays.keys()));
     let peakDay = 0;
-    for (const summary of filteredDays.values()) peakDay = Math.max(peakDay, tokensOf(summary));
+    for (const summary of filteredDays.values())
+      peakDay = Math.max(peakDay, tokensOf(summary));
     return {
       tokens: tokensOf(all),
       peakDay,
@@ -594,7 +603,9 @@ export function UsageSection() {
     const firstAt = Object.keys(days)
       .map((key) => dayKeyToStart(key))
       .reduce((a, b) => Math.min(a, b), Number.POSITIVE_INFINITY);
-    const startAt = Number.isFinite(firstAt) ? Math.min(firstAt, todayStart) : todayStart;
+    const startAt = Number.isFinite(firstAt)
+      ? Math.min(firstAt, todayStart)
+      : todayStart;
     const span = Math.max(1, Math.round((todayStart - startAt) / DAY) + 1);
     const daysOut: {
       key: string;
@@ -641,13 +652,20 @@ export function UsageSection() {
           }
         }
       }
-      const segments = Array.from(totals, ([name, cell]) => ({ name, cell })).sort(
-        (a, b) => tokensOf(b.cell) - tokensOf(a.cell),
-      );
-      daysOut.push({ key, at, total: sumCells(segments.map((s) => s.cell)), segments });
+      const segments = Array.from(totals, ([name, cell]) => ({
+        name,
+        cell,
+      })).sort((a, b) => tokensOf(b.cell) - tokensOf(a.cell));
+      daysOut.push({
+        key,
+        at,
+        total: sumCells(segments.map((s) => s.cell)),
+        segments,
+      });
     }
     const names = new Set<string>();
-    for (const dayItem of daysOut) for (const segment of dayItem.segments) names.add(segment.name);
+    for (const dayItem of daysOut)
+      for (const segment of dayItem.segments) names.add(segment.name);
     return { days: daysOut, names: Array.from(names) };
   }, [view, days, project, model, todayStart]);
 
@@ -1129,7 +1147,10 @@ export function UsageSection() {
                           type="button"
                           title={`${fullLabel(bucket.start, "week")}：${number(tokens)} 词元，${money(bucket.summary.cost)}`}
                           onClick={() =>
-                            setSelected({ start: bucket.start, summary: bucket.summary })
+                            setSelected({
+                              start: bucket.start,
+                              summary: bucket.summary,
+                            })
                           }
                           style={{
                             width: "100%",
@@ -1197,7 +1218,10 @@ export function UsageSection() {
                     type="button"
                     title={`${fullLabel(bucket.start, "month")}：${number(tokens)} 词元，${money(bucket.summary.cost)}`}
                     onClick={() =>
-                      setSelected({ start: bucket.start, summary: bucket.summary })
+                      setSelected({
+                        start: bucket.start,
+                        summary: bucket.summary,
+                      })
                     }
                     style={{
                       width: MONTH_CELL,
@@ -1285,7 +1309,6 @@ export function UsageSection() {
                 : label(monthBuckets.at(-1)?.start ?? Date.now(), "month")}
           </span>
         </div>
-
       </div>
 
       <ProviderCards />
@@ -1486,8 +1509,8 @@ function DeepseekBalanceCard({ data }: { data: DeepseekBalance | null }) {
         {cny ? `¥${cny.total.toFixed(2)}` : "—"}
       </strong>
       <div style={{ color: "var(--dsw-alias-label-tertiary)", marginTop: 2 }}>
-        {phase.peak ? "高峰时段" : "闲时时段"} · 距{phase.peak ? "闲时" : "高峰"}{" "}
-        {countdown(phase.nextInMs)}
+        {phase.peak ? "高峰时段" : "闲时时段"} · 距
+        {phase.peak ? "闲时" : "高峰"} {countdown(phase.nextInMs)}
         {usd && usd.total > 0 ? ` · $${usd.total.toFixed(2)}` : ""}
         {cny && cny.granted > 0 ? ` · 赠金 ¥${cny.granted.toFixed(2)}` : ""}
       </div>
@@ -1515,9 +1538,7 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
   const windows = data.windows ?? [];
   const phase = zaiPhase();
   return (
-    <CardFrame
-      label={`智谱 GLM${data.level ? ` · ${data.level}` : ""}`}
-    >
+    <CardFrame label={`智谱 GLM${data.level ? ` · ${data.level}` : ""}`}>
       <div style={{ marginBottom: 6 }}>
         <strong
           style={{ fontSize: 15, letterSpacing: "-0.02em", display: "block" }}
@@ -1550,8 +1571,8 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
               <div style={{ whiteSpace: "nowrap" }}>
                 <span
                   style={{ color: "var(--dsw-alias-label-secondary)" }}
-                >{`${w.label} 窗口`}</span>{" "}
-                剩余 {cnDigits(w.remaining)} / {cnDigits(w.total)}
+                >{`${w.label}额度`}</span>{" "}
+                {cnDigits(w.remaining)} / {cnDigits(w.total)}
                 <span style={{ color }}>{` · 已用 ${w.pct}%`}</span>
                 <Muted>{` · 重置 ${countdown(w.resetAt - Date.now())}`}</Muted>
               </div>
@@ -1583,9 +1604,7 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
 
 /** Copilot 配额窗口的中文标签。 */
 function copilotWindowLabel(id: string): string {
-  if (id === "premium_interactions") return "高级积分";
-  if (id === "chat") return "对话";
-  if (id === "completions") return "补全";
+  if (id === "premium_interactions") return "月积分";
   return id;
 }
 
@@ -1669,7 +1688,7 @@ function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
                 <span style={{ color: "var(--dsw-alias-label-secondary)" }}>
                   {copilotWindowLabel(w.id)}
                 </span>{" "}
-                剩余 {cnDigits(remaining)} / {cnDigits(w.entitlement)}
+                {cnDigits(remaining)} / {cnDigits(w.entitlement)}
                 <span style={{ color }}>{` · 已用 ${100 - remainPct}%`}</span>
                 {index === 0 && reset !== undefined ? (
                   <Muted>{` · 重置 ${reset}`}</Muted>
@@ -1735,7 +1754,12 @@ function DailyBars({
   selected,
 }: {
   breakdown: {
-    days: { key: string; at: number; total: CellSummary; segments: { name: string; cell: CellSummary }[] }[];
+    days: {
+      key: string;
+      at: number;
+      total: CellSummary;
+      segments: { name: string; cell: CellSummary }[];
+    }[];
     names: string[];
   };
   onSelect: (entry: { start: number; summary: CellSummary }) => void;
@@ -1747,11 +1771,19 @@ function DailyBars({
   );
   return (
     <div>
-      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
+      <div
+        style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10 }}
+      >
         {breakdown.names.map((name) => (
           <span
             key={name}
-            style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--dsw-alias-label-secondary)" }}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 11,
+              color: "var(--dsw-alias-label-secondary)",
+            }}
           >
             <span
               style={{
@@ -1782,15 +1814,15 @@ function DailyBars({
           const title = [
             fullLabel(day.at, "day"),
             `${number(tokens)} 词元 · ${number(day.total.calls)} 次`,
-            ...day.segments.map((s) => `${s.name}: ${number(tokensOf(s.cell))}`),
+            ...day.segments.map(
+              (s) => `${s.name}: ${number(tokensOf(s.cell))}`,
+            ),
           ].join("\n");
           return (
             <div
               key={day.key}
               title={title}
-              onClick={() =>
-                onSelect({ start: day.at, summary: day.total })
-              }
+              onClick={() => onSelect({ start: day.at, summary: day.total })}
               style={{
                 flex: 1,
                 height: "100%",
@@ -1809,12 +1841,15 @@ function DailyBars({
                   display: "flex",
                   flexDirection: "column",
                   overflow: "hidden",
-                  outline: isSelected ? "2px solid var(--dsw-alias-label-primary-bluish)" : undefined,
+                  outline: isSelected
+                    ? "2px solid var(--dsw-alias-label-primary-bluish)"
+                    : undefined,
                   outlineOffset: 1,
                 }}
               >
                 {day.segments.map((segment) => {
-                  const share = tokens > 0 ? tokensOf(segment.cell) / tokens : 0;
+                  const share =
+                    tokens > 0 ? tokensOf(segment.cell) / tokens : 0;
                   return (
                     <div
                       key={segment.name}
@@ -1840,9 +1875,15 @@ function DailyBars({
         }}
       >
         {breakdown.days.map((day, index) => (
-          <div key={day.key} style={{ flex: 1, textAlign: "center", minWidth: 0 }}>
+          <div
+            key={day.key}
+            style={{ flex: 1, textAlign: "center", minWidth: 0 }}
+          >
             {index % 5 === 0 || index === breakdown.days.length - 1
-              ? new Date(day.at).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })
+              ? new Date(day.at).toLocaleDateString("zh-CN", {
+                  month: "numeric",
+                  day: "numeric",
+                })
               : ""}
           </div>
         ))}
