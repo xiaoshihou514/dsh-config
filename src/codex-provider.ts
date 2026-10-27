@@ -31,7 +31,13 @@ export const inject = ["llm", "webServer"];
 export const PROVIDER = "openai-codex";
 /** 各账户档位的可用模型白名单（access_token 的 auth claim.plan）。 */
 const PLAN_MODELS: Record<string, readonly string[]> = {
-  free: ["gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra", "gpt-6-terra"],
+  free: [
+    "gpt-5.6-luna",
+    "gpt-6-luna",
+    "gpt-5.6-terra",
+    "gpt-6-terra",
+    "gpt-6.1-terra",
+  ],
 };
 /** 已停产的目录模型：网关一律拒绝（400 not supported），不再暴露。 */
 const DEAD_MODELS = new Set(["gpt-5.3-codex-spark"]);
@@ -67,16 +73,32 @@ function catalogModels(provider: unknown): CatalogModel[] {
 }
 
 /**
- * pi-ai 尚未收录 GPT-6 Terra 时，先以 GPT-6 Luna 的 Codex Responses 能力
- * 描述补出目录项。原生目录一旦加入 Terra，即优先使用上游的完整定义。
+ * pi-ai 尚未收录 GPT-6.1 Terra 时，先用官方模型文档明确的属性创建目录项。
+ * 原生目录一旦加入该模型，即优先使用上游的完整定义。
  */
-function withGpt6Terra<T extends CatalogModel>(catalog: T[]): T[] {
-  if (catalog.some((model) => model.id === "gpt-6-terra")) return catalog;
-  const luna = catalog.find((model) => model.id === "gpt-6-luna");
-  if (luna === undefined) return catalog;
+function withGpt61Terra<T extends CatalogModel>(catalog: T[]): T[] {
+  if (catalog.some((model) => model.id === "gpt-6.1-terra")) return catalog;
+  const gpt6 = catalog.find((model) => model.id === "gpt-6-luna");
+  if (gpt6 === undefined) return catalog;
   return [
     ...catalog,
-    { ...luna, id: "gpt-6-terra", name: "GPT-6 Terra" } as T,
+    {
+      ...gpt6,
+      id: "gpt-6.1-terra",
+      name: "GPT-6.1 Terra",
+      contextWindow: 1_050_000,
+      maxTokens: 128_000,
+      input: ["text", "image"],
+      thinkingLevelMap: {
+        off: "none",
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: "max",
+      },
+    } as T,
   ];
 }
 
@@ -238,10 +260,10 @@ export function createCodexAdapter(ctx?: Context): PiAiAdapter {
     // pi-ai 的目录消费走 Provider.getModels()（spread 会带上原目录的
     // getModels，必须覆盖），models 数据属性仅为类型兼容保留。
     getModels() {
-      return availableModels(withGpt6Terra(catalogModels(catalogProvider)));
+      return availableModels(withGpt61Terra(catalogModels(catalogProvider)));
     },
     get models() {
-      return availableModels(withGpt6Terra(catalogModels(catalogProvider)));
+      return availableModels(withGpt61Terra(catalogModels(catalogProvider)));
     },
     auth: {
       ...catalogProvider.auth,
@@ -272,7 +294,7 @@ export function createCodexAdapter(ctx?: Context): PiAiAdapter {
     retryPolicy: resolveRetryPolicy(CODEX_RETRY_POLICY, "Codex 订阅重试策略"),
     piProvider:
       piProvider as NonNullable<ResolvedPiAiProviderProfile["piProvider"]>,
-    configuredMaxTokens: new Map(),
+    configuredMaxTokens: new Map([["gpt-6.1-terra", 128_000]]),
     modelErrors: new Map(),
   };
   const profiles = new Map([[PROVIDER, profile]]);
