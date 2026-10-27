@@ -1639,18 +1639,19 @@ function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
         <Muted>宿主需重启加载新版后显示</Muted>
       </CardFrame>
     );
-  const windows = data.quotas ?? [];
+  // 无限额度（对话/补全）没有可展示的余量，直接不列出；只显示有限额度窗口。
+  const windows = (data.quotas ?? []).filter((w) => !w.unlimited);
   const reset = copilotReset(data.resetDate);
   return (
     <CardFrame
       label={`Copilot 订阅${data.plan ? ` · ${copilotPlanLabel(data.plan)}` : ""}`}
     >
       {windows.length === 0 ? (
-        <Muted>暂无配额数据</Muted>
+        <Muted>额度无限</Muted>
       ) : (
         windows.map((w, index) => {
-          // 无限额度不画条；有限额度按剩余比例着色（越少越红）。
-          const remainPct = w.unlimited ? 100 : w.percentRemaining;
+          // 有限额度按剩余比例着色（越少越红）。
+          const remainPct = w.percentRemaining;
           const color =
             remainPct <= 20
               ? "var(--dsw-alias-state-error-primary)"
@@ -1668,39 +1669,31 @@ function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
                 <span style={{ color: "var(--dsw-alias-label-secondary)" }}>
                   {copilotWindowLabel(w.id)}
                 </span>{" "}
-                {w.unlimited ? (
-                  "无限"
-                ) : (
-                  <>
-                    剩余 {cnDigits(remaining)} / {cnDigits(w.entitlement)}
-                    <span style={{ color }}>{` · 已用 ${100 - remainPct}%`}</span>
-                    {index === 0 && reset !== undefined ? (
-                      <Muted>{` · 重置 ${reset}`}</Muted>
-                    ) : null}
-                    {w.overagePermitted ? <Muted> · 可超额</Muted> : null}
-                  </>
-                )}
+                剩余 {cnDigits(remaining)} / {cnDigits(w.entitlement)}
+                <span style={{ color }}>{` · 已用 ${100 - remainPct}%`}</span>
+                {index === 0 && reset !== undefined ? (
+                  <Muted>{` · 重置 ${reset}`}</Muted>
+                ) : null}
+                {w.overagePermitted ? <Muted> · 可超额</Muted> : null}
               </div>
-              {w.unlimited ? null : (
+              <div
+                style={{
+                  height: 5,
+                  borderRadius: 3,
+                  marginTop: 3,
+                  background: "var(--dsw-alias-interactive-bg-hover)",
+                  overflow: "hidden",
+                }}
+              >
                 <div
                   style={{
-                    height: 5,
+                    width: `${remainPct}%`,
+                    height: "100%",
                     borderRadius: 3,
-                    marginTop: 3,
-                    background: "var(--dsw-alias-interactive-bg-hover)",
-                    overflow: "hidden",
+                    background: color,
                   }}
-                >
-                  <div
-                    style={{
-                      width: `${remainPct}%`,
-                      height: "100%",
-                      borderRadius: 3,
-                      background: color,
-                    }}
-                  />
-                </div>
-              )}
+                />
+              </div>
             </div>
           );
         })
