@@ -93,10 +93,18 @@ describe("Codex 订阅凭据", () => {
 });
 
 describe("Codex 订阅提供方", () => {
-  it("向 DSH 提供 Codex 模型目录", async () => {
+  it("向 DSH 提供 Codex 模型目录和 GPT-6 Terra", async () => {
     const models = await createCodexAdapter().listModels(PROVIDER);
     expect(models.length).toBeGreaterThan(0);
     expect(models.every((model) => model.provider === PROVIDER)).toBe(true);
+    expect(models).toContainEqual(
+      expect.objectContaining({
+        id: "gpt-6-terra",
+        name: "GPT-6 Terra",
+        provider: PROVIDER,
+        inputModalities: ["text", "image"],
+      }),
+    );
   });
 
   it("可在 DSH 内发起 OAuth 并保存登录凭据", async () => {

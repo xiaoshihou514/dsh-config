@@ -31,7 +31,7 @@ export const inject = ["llm", "webServer"];
 export const PROVIDER = "openai-codex";
 /** 各账户档位的可用模型白名单（access_token 的 auth claim.plan）。 */
 const PLAN_MODELS: Record<string, readonly string[]> = {
-  free: ["gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra"],
+  free: ["gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra", "gpt-6-terra"],
 };
 /** 已停产的目录模型：网关一律拒绝（400 not supported），不再暴露。 */
 const DEAD_MODELS = new Set(["gpt-5.3-codex-spark"]);
@@ -51,10 +51,33 @@ await refreshPlan();
 
 /** 按档位收窄目录：未知档位不收窄（保底全集）。 */
 /** pi-ai Provider 类型的目录字段未在类型上暴露；运行时由 createProvider 写入。 */
-function catalogModels(provider: unknown): { id: string }[] {
-  const getModels = (provider as { getModels?: () => { id: string }[] }).getModels;
-  if (typeof getModels === "function") return getModels.call(provider);
-  return (provider as { models?: { id: string }[] }).models ?? [];
+interface CatalogModel {
+  id: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
+function catalogModels(provider: unknown): CatalogModel[] {
+  const source = provider as {
+    getModels?: () => CatalogModel[];
+    models?: CatalogModel[];
+  };
+  if (typeof source.getModels === "function") return source.getModels();
+  return source.models ?? [];
+}
+
+/**
+ * pi-ai 尚未收录 GPT-6 Terra 时，先以 GPT-6 Luna 的 Codex Responses 能力
+ * 描述补出目录项。原生目录一旦加入 Terra，即优先使用上游的完整定义。
+ */
+function withGpt6Terra<T extends CatalogModel>(catalog: T[]): T[] {
+  if (catalog.some((model) => model.id === "gpt-6-terra")) return catalog;
+  const luna = catalog.find((model) => model.id === "gpt-6-luna");
+  if (luna === undefined) return catalog;
+  return [
+    ...catalog,
+    { ...luna, id: "gpt-6-terra", name: "GPT-6 Terra" } as T,
+  ];
 }
 
 function availableModels<T extends { id: string }>(
@@ -215,10 +238,10 @@ export function createCodexAdapter(ctx?: Context): PiAiAdapter {
     // pi-ai 的目录消费走 Provider.getModels()（spread 会带上原目录的
     // getModels，必须覆盖），models 数据属性仅为类型兼容保留。
     getModels() {
-      return availableModels(catalogModels(catalogProvider));
+      return availableModels(withGpt6Terra(catalogModels(catalogProvider)));
     },
     get models() {
-      return availableModels(catalogModels(catalogProvider));
+      return availableModels(withGpt6Terra(catalogModels(catalogProvider)));
     },
     auth: {
       ...catalogProvider.auth,
