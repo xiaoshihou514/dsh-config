@@ -1459,13 +1459,16 @@ function ProviderCards() {
 function CardFrame({
   label,
   children,
+  grow = "1 1 0",
 }: {
   label: string;
   children: ReactNode;
+  /** flex 值：内容少的卡传 "0 1 auto" 按内容自然宽，避免右侧大片留白。 */
+  grow?: string;
 }) {
   return (
-    // 三张套餐卡并排一行等分（容器 flex wrap 兜底窄屏）。
-    <div style={{ flex: "1 1 0", minWidth: 0 }}>
+    // 三张套餐卡并排一行（容器 flex wrap 兜底窄屏），宽度分配由 grow 决定。
+    <div style={{ flex: grow, minWidth: 0 }}>
       <div style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 12 }}>
         {label}
       </div>
@@ -1485,13 +1488,13 @@ function Muted({ children }: { children: ReactNode }) {
 function DeepseekBalanceCard({ data }: { data: DeepseekBalance | null }) {
   if (data === null)
     return (
-      <CardFrame label="DeepSeek 余额">
+      <CardFrame label="DeepSeek 余额" grow="0 1 auto">
         <Muted>读取中…</Muted>
       </CardFrame>
     );
   if (!data.ok)
     return (
-      <CardFrame label="DeepSeek 余额">
+      <CardFrame label="DeepSeek 余额" grow="0 1 auto">
         <Muted>
           {data.reason === "unconfigured"
             ? "未配置 API 密钥"
@@ -1503,7 +1506,7 @@ function DeepseekBalanceCard({ data }: { data: DeepseekBalance | null }) {
   const usd = data.balances?.find((b) => b.currency === "USD");
   const phase = peakPhase();
   return (
-    <CardFrame label="DeepSeek 余额">
+    <CardFrame label="DeepSeek 余额" grow="0 1 auto">
       <strong
         style={{ fontSize: 18, letterSpacing: "-0.02em", display: "block" }}
       >
