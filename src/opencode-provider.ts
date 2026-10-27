@@ -10,9 +10,16 @@
  *
  *  1. 4010 已监听（用户自己开着 opencode）→ 直接用；
  *  2. 未监听 → 确保插件包安装（~/.config/opencode 下 npm install）→ 确保
- *     opencode.json 声明 plugin → 后台拉起 `opencode serve` → 轮询就绪；
+ *     opencode.json 声明 plugin（V1 运行时只认单数键）→ 后台拉起无头
+ *     opencode（TUI 形态）→ 轮询就绪；
  *  3. 就绪后模型清单切换为代理实际提供的 `*-free` 模型；不可达期间用内置
  *     已知清单兜底（目录不隐藏，请求失败交由重试策略与错误归类处理）。
+ *
+ * 为什么拉起的是 TUI 而不是 `opencode serve`：opencode 1.19.x 的 serve/acp
+ * 等无头 server 模式不执行插件的 server hook（实测 1.19.3/1.19.4 均如此，
+ * DEBUG 日志无任何插件加载痕迹），只有完整运行时（TUI/run）会执行——llm
+ * proxy 恰恰通过 server hook 起网关。TUI 以 setsid 脱离会话、stdio 全弃、
+ * 伪终端缺失也能正常启动并服务，不产生任何用户可见界面。
  */
 
 import { spawn } from "node:child_process";
@@ -39,8 +46,6 @@ export const PROVIDER = "opencode-free";
 /** opencode-llm-proxy 的固定地址（OpenAI 兼容，含 /v1）。 */
 const PROXY_BASE = "http://127.0.0.1:4010/v1";
 const PROXY_HEALTH = "http://127.0.0.1:4010/health";
-/** opencode server 的端口（llm-proxy 插件随 opencode 进程启动）。 */
-const OPENCODE_SERVE_PORT = 4096;
 const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 /** 与官方 CLI 对齐（32000）：8192 会截断长回复。 */
 const DEFAULT_MAX_TOKENS = 32_000;
@@ -49,11 +54,16 @@ const HEALTH_TIMEOUT_MS = 1_500;
 const BOOTSTRAP_TIMEOUT_MS = 60_000;
 const OPENCODE_CONFIG_DIR = join(homedir(), ".config", "opencode");
 
-/** 内置兜底清单：代理不可达时目录不空（用量历史中真实出现过的 free 模型）。 */
+/** 内置兜底清单：代理不可达时目录不空（代理实测提供的 *-free 模型）。 */
 const FALLBACK_MODELS = [
-  "deepseek-v4.1-flash-free",
-  "mimo-v2.5-free",
-  "x-preview-f-free",
+  "opencode/deepseek-v4.1-flash-free",
+  "opencode/glm-5.3-flash-free",
+  "opencode/mimo-v2.6-flash-free",
+  "opencode/flint-40b-free",
+  "opencode/nemotron-3-ultra-free",
+  "opencode/nemotron-3.5-super-vl-free",
+  "opencode/nemotron-3.5-lightning-free",
+  "opencode/beam-free",
 ];
 
 /** 与 codex/copilot 同款的限流/网络错误指数退避。 */
@@ -216,11 +226,13 @@ function ensureProxy(): Promise<void> {
     try {
       await ensurePluginInstalled();
       await ensurePluginConfigured();
-      spawn(
-        opencodeBin(),
-        ["serve", "--port", String(OPENCODE_SERVE_PORT)],
-        { detached: true, stdio: "ignore" },
-      ).unref();
+      // 无头拉起 TUI 形态（完整运行时）：serve/acp 等无头 server 模式不执行
+      // 插件 server hook（见文件头注释），只有 TUI/run 会起 llm-proxy 网关。
+      // stdin/stdout 全弃 + detached，不产生用户可见界面，随宿主会话存活。
+      spawn(opencodeBin(), [], {
+        detached: true,
+        stdio: "ignore",
+      }).unref();
       if (await waitProxyReady(BOOTSTRAP_TIMEOUT_MS)) await refreshModels();
     } catch {
       // 拉起失败（opencode 未装/插件安装失败等）：保持内置清单。

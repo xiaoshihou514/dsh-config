@@ -7,9 +7,14 @@ describe("OpenCode 代理适配器", () => {
   it("代理不可达时目录回落内置 free 清单", async () => {
     const models = await createOpencodeAdapter().listModels(PROVIDER);
     expect(models.map((model) => model.id)).toEqual([
-      "deepseek-v4.1-flash-free",
-      "mimo-v2.5-free",
-      "x-preview-f-free",
+      "opencode/deepseek-v4.1-flash-free",
+      "opencode/glm-5.3-flash-free",
+      "opencode/mimo-v2.6-flash-free",
+      "opencode/flint-40b-free",
+      "opencode/nemotron-3-ultra-free",
+      "opencode/nemotron-3.5-super-vl-free",
+      "opencode/nemotron-3.5-lightning-free",
+      "opencode/beam-free",
     ]);
     expect(models.every((model) => model.provider === PROVIDER)).toBe(true);
   });
@@ -18,11 +23,11 @@ describe("OpenCode 代理适配器", () => {
     const adapter = createOpencodeAdapter();
     const resolved = await adapter.resolveModel(
       PROVIDER,
-      "deepseek-v4.1-flash-free",
+      "opencode/deepseek-v4.1-flash-free",
     );
     expect(resolved).toMatchObject({
       provider: PROVIDER,
-      id: "deepseek-v4.1-flash-free",
+      id: "opencode/deepseek-v4.1-flash-free",
       context: { contextWindow: 1_000_000 },
       defaultMaxTokens: 32_000,
     });
