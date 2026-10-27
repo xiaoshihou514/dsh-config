@@ -176,6 +176,19 @@ function dayKeyToStart(key: string): number {
   return new Date(`${key}T00:00:00`).getTime();
 }
 
+/**
+ * 按日历天数加减（非毫秒数累加）：夏令时切换当天实际只有 23 或 25 小时，
+ * `time + n * DAY` 会在切换前后累积 1 小时偏移，导致网格时间戳与
+ * `dayKeyToStart` 算出的午夜时间戳对不上（历史格子全部落空，只有切换点
+ * 之后的最近几天凑巧仍能命中——即「热力图只显示最近两天」的成因）。
+ * `setDate` 按日历字段运算，自动吸收夏令时跳变。
+ */
+function addDays(time: number, delta: number): number {
+  const date = new Date(time);
+  date.setDate(date.getDate() + delta);
+  return date.getTime();
+}
+
 function mondayOf(time: number): number {
   const date = new Date(dayStart(time));
   date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
@@ -238,9 +251,9 @@ function dayKeyOf(time: number): string {
 }
 
 function isNextDay(a: string, b: string): boolean {
-  return (
-    dayKeyToStart(b) - dayKeyToStart(a) === DAY
-  );
+  // 严格比较毫秒差值会在夏令时切换日误判（该日实际只有 23/25 小时，
+  // 差值不等于 86400000）；改为日历日比较。
+  return addDays(dayKeyToStart(a), 1) === dayKeyToStart(b);
 }
 
 /** 连续使用天数（按聚合里的自然日键）。 */
@@ -275,7 +288,7 @@ function monthLabelFor(weekStart: number): string | undefined {
     monday.getMonth(),
     1,
   ).getTime();
-  return firstOfMonth >= weekStart && firstOfMonth < weekStart + 7 * DAY
+  return firstOfMonth >= weekStart && firstOfMonth < addDays(weekStart, 7)
     ? `${monday.getMonth() + 1}月`
     : undefined;
 }
@@ -517,10 +530,10 @@ export function UsageSection() {
   const dayWeeks = useMemo(() => {
     const weeks: { start: number; days: DayCell[] }[] = [];
     for (let week = 51; week >= 0; week -= 1) {
-      const start = thisMonday - week * 7 * DAY;
+      const start = addDays(thisMonday, -week * 7);
       const days: DayCell[] = [];
       for (let offset = 0; offset < 7; offset += 1) {
-        const at = start + offset * DAY;
+        const at = addDays(start, offset);
         days.push(
           dayCells.get(at) ?? { at, summary: emptySummary(), future: at > todayStart },
         );
@@ -533,11 +546,12 @@ export function UsageSection() {
   const weekBuckets = useMemo(() => {
     const buckets: Bucket[] = [];
     for (let week = 15; week >= 0; week -= 1) {
-      const start = thisMonday - week * 7 * DAY;
+      const start = addDays(thisMonday, -week * 7);
+      const end = addDays(start, 7);
       const cells: CellSummary[] = [];
       for (const [key, summary] of filteredDays) {
         const at = dayKeyToStart(key);
-        if (at >= start && at < start + 7 * DAY) cells.push(summary);
+        if (at >= start && at < end) cells.push(summary);
       }
       buckets.push({ start, summary: sumCells(cells) });
     }
@@ -612,7 +626,7 @@ export function UsageSection() {
       segments: { name: string; cell: CellSummary }[];
     }[] = [];
     for (let offset = span - 1; offset >= 0; offset -= 1) {
-      const at = startAt + offset * DAY;
+      const at = addDays(startAt, offset);
       const key = dayKeyOf(at);
       const day = days[key];
       if (day === undefined) {
