@@ -1448,7 +1448,7 @@ function ProviderCards() {
   }, []);
 
   return (
-    <div style={{ display: "flex", gap: 32, flexWrap: "wrap", marginTop: 16 }}>
+    <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginTop: 16 }}>
       <DeepseekBalanceCard data={deepseek} />
       <ZaiQuotaCard data={zai} />
       <CopilotUsageCard data={copilot} />
@@ -1464,7 +1464,8 @@ function CardFrame({
   children: ReactNode;
 }) {
   return (
-    <div style={{ minWidth: 200 }}>
+    // 三张套餐卡并排一行等分（容器 flex wrap 兜底窄屏）。
+    <div style={{ flex: "1 1 0", minWidth: 0 }}>
       <div style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 12 }}>
         {label}
       </div>
@@ -1619,7 +1620,7 @@ function copilotPlanLabel(plan: string): string {
   return known[plan] ?? plan;
 }
 
-/** 配额重置日（ISO 日期）到本地「N月N日」与剩余天数。 */
+/** 配额重置日（ISO 日期）到短文案：等分行内空间有限，只显示剩余天数。 */
 function copilotReset(resetDate: string | undefined): string | undefined {
   if (resetDate === undefined) return undefined;
   const start = new Date(`${resetDate}T00:00:00`).getTime();
@@ -1628,9 +1629,7 @@ function copilotReset(resetDate: string | undefined): string | undefined {
     0,
     Math.ceil((start - new Date().setHours(0, 0, 0, 0)) / DAY),
   );
-  const date = new Date(start);
-  const text = `${date.getMonth() + 1}月${date.getDate()}日`;
-  return days > 0 ? `${text}（${days} 天后）` : text;
+  return days > 1 ? `${days}天后` : "今日";
 }
 
 function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {

@@ -1,17 +1,25 @@
 /**
- * OpenCode Free 经本地 OpenAI 兼容代理接入（opencode-llm-proxy 等网关）：
- * dsh 侧退化为标准 openai-completions 客户端，由 pi-ai 原生适配——工具调用、
- * 流式、多轮消息、推理等级（标准 reasoning_effort 词汇表）与系统提示全部
- * 经代理透传给上游模型，不再直连 opencode zen 网关做仿 CLI 头与占位工具
- * 注入等 hack（那套实现随 zen 免费网关的策略变化反复失效，已整体移除）。
+ * OpenCode Free 经本地 opencode-llm-proxy 网关接入（零配置，全部写死）：
  *
- * 模型清单：配置 `models` 优先；为空时启动时从代理的 `/models` 自动发现
- * `*-free` 模型（拉取失败则目录为空，部署代理并重启宿主后出现）。模型目录
- * 在适配器创建（宿主启动）时物化，运行期不变。
+ * opencode-llm-proxy 是 OpenCode 的官方生态插件，随 opencode 进程在本机
+ * 4010 端口起一个 OpenAI 兼容网关（/v1/chat/completions，流式 + 工具调用
+ * 透传）。dsh 侧因此退化为标准 openai-completions 客户端，不再直连
+ * opencode zen 网关做仿 CLI 头等 hack。
+ *
+ * 「选 opencode free 模型就有一个可用代理」由本插件保证（自动拉起）：
+ *
+ *  1. 4010 已监听（用户自己开着 opencode）→ 直接用；
+ *  2. 未监听 → 确保插件包安装（~/.config/opencode 下 npm install）→ 确保
+ *     opencode.json 声明 plugin → 后台拉起 `opencode serve` → 轮询就绪；
+ *  3. 就绪后模型清单切换为代理实际提供的 `*-free` 模型；不可达期间用内置
+ *     已知清单兜底（目录不隐藏，请求失败交由重试策略与错误归类处理）。
  */
 
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
-import z from "@deepseek-ai/schemastery";
 import {
   InMemoryCredentialStore,
   createProvider,
@@ -21,27 +29,35 @@ import {
 import type { Model } from "@earendil-works/pi-ai";
 import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
 import type { ResolvedPiAiProviderProfile } from "@deepseek-ai/dsh-llm-pi-ai";
-import {
-  resolveRetryPolicy,
-  RetryPolicySchema,
-  type RetryPolicyConfig,
-} from "@deepseek-ai/dsh-llm";
+import { resolveRetryPolicy, type RetryPolicyConfig } from "@deepseek-ai/dsh-llm";
 
 export const name = "dsh-config-opencode";
 export const inject = ["llm"];
 
 export const PROVIDER = "opencode-free";
 
-/** 本地 OpenAI 兼容代理地址（opencode-llm-proxy 默认端口 8080）。 */
-const DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1";
+/** opencode-llm-proxy 的固定地址（OpenAI 兼容，含 /v1）。 */
+const PROXY_BASE = "http://127.0.0.1:4010/v1";
+const PROXY_HEALTH = "http://127.0.0.1:4010/health";
+/** opencode server 的端口（llm-proxy 插件随 opencode 进程启动）。 */
+const OPENCODE_SERVE_PORT = 4096;
 const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 /** 与官方 CLI 对齐（32000）：8192 会截断长回复。 */
 const DEFAULT_MAX_TOKENS = 32_000;
 const FREE_SUFFIX = "-free";
-const MODELS_FETCH_TIMEOUT_MS = 4_000;
+const HEALTH_TIMEOUT_MS = 1_500;
+const BOOTSTRAP_TIMEOUT_MS = 60_000;
+const OPENCODE_CONFIG_DIR = join(homedir(), ".config", "opencode");
+
+/** 内置兜底清单：代理不可达时目录不空（用量历史中真实出现过的 free 模型）。 */
+const FALLBACK_MODELS = [
+  "deepseek-v4.1-flash-free",
+  "mimo-v2.5-free",
+  "x-preview-f-free",
+];
 
 /** 与 codex/copilot 同款的限流/网络错误指数退避。 */
-const DEFAULT_RETRY_POLICY: RetryPolicyConfig = {
+const RETRY_POLICY = {
   mode: "normal",
   maxRetries: 3,
   retryableCodes: [
@@ -52,111 +68,195 @@ const DEFAULT_RETRY_POLICY: RetryPolicyConfig = {
     "TRANSPORT",
   ],
   backoff: { initialDelayMs: 1_000, maxDelayMs: 30_000, jitterRatio: 0.2 },
-};
+} satisfies RetryPolicyConfig;
 
-export interface Config {
-  /** 代理的 OpenAI 兼容 base URL（含 /v1）。 */
-  baseUrl?: string;
-  /** 代理 API 密钥（本地代理通常不需要；未配置时发送占位 Bearer）。 */
-  apiKey?: string;
-  /** 固定模型 id 清单；为空时启动时从 modelsUrl 自动发现 `*-free`。 */
-  models?: string[];
-  /** 模型列表端点（默认 {baseUrl}/models）。 */
-  modelsUrl?: string;
-  /** 模型上下文容量（词元）。 */
-  contextWindow?: number;
-  /** 每请求默认输出上限（词元）。 */
-  maxTokens?: number;
-  /** 限流/网络错误的指数退避重试策略。 */
-  retryPolicy?: RetryPolicyConfig;
-}
+/** 当前模型清单（代理就绪后刷新为实际提供的 *-free 模型）。 */
+let modelIds: string[] = [...FALLBACK_MODELS];
 
-export const Config = z.object({
-  baseUrl: z.string().default(DEFAULT_BASE_URL),
-  apiKey: z.string().default(""),
-  models: z.array(z.string()).default([]),
-  modelsUrl: z.string().default(""),
-  contextWindow: z.number().default(DEFAULT_CONTEXT_WINDOW),
-  maxTokens: z.number().default(DEFAULT_MAX_TOKENS),
-  retryPolicy: RetryPolicySchema.default(DEFAULT_RETRY_POLICY),
-});
-
-/** Config schema 填充默认值后的运行时形态。 */
-export interface ResolvedConfig {
-  baseUrl: string;
-  apiKey: string;
-  models: string[];
-  modelsUrl: string;
-  contextWindow: number;
-  maxTokens: number;
-  retryPolicy: RetryPolicyConfig;
-}
-
-/** 目录模型描述：免费档不按词元计费，cost 恒 0。 */
-function modelOf(id: string, config: ResolvedConfig): Model<"openai-completions"> {
+function modelOf(id: string): Model<"openai-completions"> {
   return {
     id,
     name: id,
     api: "openai-completions",
     provider: PROVIDER,
-    baseUrl: config.baseUrl,
+    baseUrl: PROXY_BASE,
     reasoning: true,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: config.contextWindow,
-    maxTokens: config.maxTokens,
+    contextWindow: DEFAULT_CONTEXT_WINDOW,
+    maxTokens: DEFAULT_MAX_TOKENS,
   };
 }
 
-/** 代理的模型列表端点（未配置时按 OpenAI 惯例取 {baseUrl}/models）。 */
-function modelsUrlOf(config: ResolvedConfig): string {
-  return config.modelsUrl !== "" ? config.modelsUrl : `${config.baseUrl}/models`;
+async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+/** 从代理拉取 *-free 模型清单；成功且非空时更新缓存。 */
+async function refreshModels(): Promise<void> {
+  const parsed = (await fetchJson(`${PROXY_BASE}/models`, 5_000)) as {
+    data?: { id?: string }[];
+  };
+  const ids = (parsed.data ?? [])
+    .map((item) => item.id ?? "")
+    .filter((id) => id.endsWith(FREE_SUFFIX));
+  if (ids.length > 0) modelIds = ids;
+}
+
+/** opencode 可执行文件：PATH 上的 opencode 或默认安装位置。 */
+function opencodeBin(): string {
+  if (existsSync(join(homedir(), ".opencode", "bin", "opencode")))
+    return join(homedir(), ".opencode", "bin", "opencode");
+  return "opencode";
+}
+
+/** 插件包是否已安装到 opencode 配置目录。 */
+function pluginInstalled(): boolean {
+  return existsSync(
+    join(OPENCODE_CONFIG_DIR, "node_modules", "opencode-llm-proxy"),
+  );
+}
+
+function execFile(
+  command: string,
+  args: string[],
+  options: { cwd?: string; timeoutMs: number },
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      stdio: "ignore",
+    });
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`timeout: ${command}`));
+    }, options.timeoutMs);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`exit ${code}: ${command}`));
+    });
+  });
+}
+
+/** 确保 ~/.config/opencode 里装了 opencode-llm-proxy（幂等）。 */
+async function ensurePluginInstalled(): Promise<void> {
+  if (pluginInstalled()) return;
+  await execFile(
+    "npm",
+    ["install", "opencode-llm-proxy", "--no-audit", "--no-fund", "--silent"],
+    { cwd: OPENCODE_CONFIG_DIR, timeoutMs: 30_000 },
+  );
 }
 
 /**
- * 启动时从代理拉取模型清单并过滤 `*-free`（OpenAI 兼容 {data:[{id}]} 响应）。
- * 失败返回空清单：目录为空但 provider 不崩，代理可用后重启宿主即出现。
+ * 确保 opencode.json 声明了 llm-proxy 插件（V1 用单数 plugin 键）。只合并
+ * 该键，其余内容原样保留；已有配置在 opencode.jsonc 时也写独立 json
+ * （两处键不冲突，jsonc 未声明 plugin）。
  */
-export async function discoverModels(config: ResolvedConfig): Promise<string[]> {
-  if (config.models.length > 0) return config.models;
+async function ensurePluginConfigured(): Promise<void> {
+  const path = join(OPENCODE_CONFIG_DIR, "opencode.json");
+  const { readFile, writeFile, mkdir } = await import("node:fs/promises");
+  let config: Record<string, unknown> = {};
   try {
-    const response = await fetch(modelsUrlOf(config), {
-      signal: AbortSignal.timeout(MODELS_FETCH_TIMEOUT_MS),
-    });
-    if (!response.ok) return [];
-    const parsed = (await response.json()) as { data?: { id?: string }[] };
-    return (parsed.data ?? [])
-      .map((item) => item.id ?? "")
-      .filter((id) => id.endsWith(FREE_SUFFIX));
+    config = JSON.parse(await readFile(path, "utf8")) as Record<
+      string,
+      unknown
+    >;
   } catch {
-    return [];
+    // 无配置文件或非法 JSON：新建。
+  }
+  const plugins = Array.isArray(config.plugin) ? config.plugin : [];
+  if (plugins.includes("opencode-llm-proxy")) return;
+  await mkdir(OPENCODE_CONFIG_DIR, { recursive: true });
+  config.plugin = [...plugins, "opencode-llm-proxy"];
+  await writeFile(path, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+/** 代理是否已在监听。 */
+async function proxyAlive(): Promise<boolean> {
+  try {
+    await fetchJson(PROXY_HEALTH, HEALTH_TIMEOUT_MS);
+    return true;
+  } catch {
+    return false;
   }
 }
 
-export function createOpencodeAdapter(
-  config: ResolvedConfig,
-  ctx?: Context,
-): PiAiAdapter {
-  const piProvider = createProvider({
-    id: PROVIDER,
-    name: "OpenCode Free",
-    baseUrl: config.baseUrl,
-    auth: {
-      apiKey: {
-        name: "opencode 代理密钥",
-        resolve: async (input: { credential?: { key?: string } }) =>
-          input.credential?.key === undefined
-            ? undefined
-            : {
-                auth: { apiKey: input.credential.key },
-                source: "opencode 代理",
-              },
+/** 轮询代理就绪。 */
+async function waitProxyReady(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await proxyAlive()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  return false;
+}
+
+let bootstrap: Promise<void> | undefined;
+
+/**
+ * 确保代理可用并刷新模型清单（进程级单例：并发调用共享同一次拉起）。
+ * 任何一步失败都静默结束——目录回落内置清单，不阻塞宿主启动。
+ */
+function ensureProxy(): Promise<void> {
+  bootstrap ??= (async () => {
+    if (await proxyAlive()) {
+      await refreshModels();
+      return;
+    }
+    try {
+      await ensurePluginInstalled();
+      await ensurePluginConfigured();
+      spawn(
+        opencodeBin(),
+        ["serve", "--port", String(OPENCODE_SERVE_PORT)],
+        { detached: true, stdio: "ignore" },
+      ).unref();
+      if (await waitProxyReady(BOOTSTRAP_TIMEOUT_MS)) await refreshModels();
+    } catch {
+      // 拉起失败（opencode 未装/插件安装失败等）：保持内置清单。
+    }
+  })();
+  return bootstrap;
+}
+
+export function createOpencodeAdapter(ctx?: Context): PiAiAdapter {
+  const piProvider = {
+    ...createProvider({
+      id: PROVIDER,
+      name: "OpenCode Free",
+      baseUrl: PROXY_BASE,
+      auth: {
+        apiKey: {
+          name: "opencode 代理密钥",
+          resolve: async (input: { credential?: { key?: string } }) =>
+            input.credential?.key === undefined
+              ? undefined
+              : {
+                  auth: { apiKey: input.credential.key },
+                  source: "opencode 代理",
+                },
+        },
       },
+      models: modelIds.map(modelOf),
+      // 与上游 openAICompletionsApi() 同款：懒加载 completions 实现。
+      api: lazyApi(() => import("@earendil-works/pi-ai/api/openai-completions")),
+    }),
+    // 目录动态读缓存：代理就绪刷新清单后，下一次快照重建即生效（profiles
+    // 每次操作新建，PiAiAdapter 快照随之重建）。
+    getModels() {
+      return modelIds.map(modelOf);
     },
-    models: config.models.map((id) => modelOf(id, config)),
-    // 与上游 openAICompletionsApi() 同款：懒加载 completions 实现。
-    api: lazyApi(() => import("@earendil-works/pi-ai/api/openai-completions")),
-  });
+  } as unknown as ReturnType<typeof createProvider>;
 
   const profile: ResolvedPiAiProviderProfile = {
     provider: PROVIDER,
@@ -165,26 +265,23 @@ export function createOpencodeAdapter(
     maxRequestImageBytes: 20 * 1024 * 1024,
     requestImagePixelBudget: 2048 * 2048,
     requestImageMaxBytes: 1024 * 1024,
-    retryPolicy: resolveRetryPolicy(
-      config.retryPolicy,
-      "opencode-free retryPolicy",
-    ),
+    retryPolicy: resolveRetryPolicy(RETRY_POLICY, "opencode-free retryPolicy"),
     piProvider:
       piProvider as NonNullable<ResolvedPiAiProviderProfile["piProvider"]>,
-    // 每模型默认输出上限：经此 Map 物化为 resolveModel 的 defaultMaxTokens
-    // 与请求默认 cap（不进 Map 则只作用于目录，不作用于请求）。
+    // 每模型默认输出上限：物化为 resolveModel 的 defaultMaxTokens 与请求
+    // 默认 cap（不进 Map 则只作用于目录，不作用于请求）。
     configuredMaxTokens: new Map(
-      config.models.map((id) => [id, config.maxTokens]),
+      modelIds.map((id) => [id, DEFAULT_MAX_TOKENS]),
     ),
     modelErrors: new Map(),
   };
-  const profiles = new Map([[PROVIDER, profile]]);
 
   return new PiAiAdapter({
-    profiles: () => profiles,
-    // 本地代理通常无认证；zen 免费档也接受 Bearer public。显式配置的
-    // apiKey 优先（带鉴权的代理场景）。
-    resolveApiKey: async () => (config.apiKey !== "" ? config.apiKey : "public"),
+    // 每次操作新建 Map：PiAiAdapter 快照按 identity 记忆，新建使快照在
+    // 模型清单刷新后重建（清单缓存在模块级，重建无 IO）。
+    profiles: () => new Map([[PROVIDER, profile]]),
+    // 本地代理无认证；zen 免费档也接受 Bearer public。
+    resolveApiKey: async () => "public",
     auth: {
       credentials: new InMemoryCredentialStore(),
       authContext: defaultProviderAuthContext(),
@@ -193,12 +290,8 @@ export function createOpencodeAdapter(
   });
 }
 
-/** 注册「OpenCode Free」provider（路由 opencode-free），经本地代理透传。 */
-export function apply(ctx: Context, config: ResolvedConfig): void {
-  void discoverModels(config).then((models) => {
-    ctx.llm.registerAdapter(
-      [PROVIDER],
-      createOpencodeAdapter({ ...config, models }, ctx),
-    );
-  });
+/** 注册「OpenCode Free」provider（路由 opencode-free），并后台确保代理可用。 */
+export function apply(ctx: Context): void {
+  ctx.llm.registerAdapter([PROVIDER], createOpencodeAdapter(ctx));
+  void ensureProxy();
 }
