@@ -1616,13 +1616,6 @@ function DailyBars({
     ...breakdown.days.map((day) => tokensOf(day.total)),
     0,
   );
-  console.log(
-    "[调试] DailyBars:",
-    "天数=" + breakdown.days.length,
-    "names=" + breakdown.names.join("/"),
-    "maximum=" + maximum,
-    "样本=" + breakdown.days.slice(-3).map((d) => d.key + "=" + tokensOf(d.total)).join(","),
-  );
   return (
     <div>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
