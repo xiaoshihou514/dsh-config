@@ -19,6 +19,10 @@
       "types": "./lib/opencode.d.ts",
       "default": "./lib/opencode.js"
     },
+    "./opencode-backend": {
+      "types": "./lib/opencode-backend.d.ts",
+      "default": "./lib/opencode-backend.js"
+    },
     "./copilot-provider": {
       "types": "./lib/copilot-provider.d.ts",
       "default": "./lib/copilot-provider.js"
@@ -94,7 +98,9 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
     "@deepseek-ai/dsh-agent": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-api-session-controller": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-client-connection": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-plugin-manager": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-renderer": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-settings-plugins": "^0.2.0-rc.2",
@@ -113,12 +119,12 @@
     "@earendil-works/pi-ai": "^0.87.1",
     "@types/node": "^22.20.0",
     "@types/react": "^18.3.1",
+    "@types/react-dom": "~18.3.7",
     "react": "^18.2.0",
+    "react-dom": "^18.3.1",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.9",
-    "@deepseek-ai/dsh-client-ui-conversation": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-api-session-controller": "^0.2.0-rc.2"
+    "vitest": "^4.1.9"
   },
   "engines": {
     "node": "^22.19.0 || >=24"

@@ -6,6 +6,8 @@
       name: dsh-config/usage-api
     - id: dsh-config-opencode
       name: dsh-config/opencode
+    - id: dsh-config-opencode-backend
+      name: dsh-config/opencode-backend
     - id: dsh-config-codex-provider
       name: dsh-config/codex-provider
     - id: dsh-config-copilot-provider

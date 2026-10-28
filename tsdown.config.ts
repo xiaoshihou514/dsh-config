@@ -1,6 +1,6 @@
 import { defineConfig } from "tsdown";
 
-const clientExternals = ["react", "react/jsx-runtime"];
+const clientExternals = ["react", "react/jsx-runtime", "react-dom"];
 
 /**
  * pi-ai 必须保持 external：它的 OAuth 加载器用变量动态 import
@@ -17,6 +17,7 @@ export default defineConfig([
       index: "src/index.ts",
       "usage-api": "src/usage-api.ts",
       opencode: "src/opencode-provider.ts",
+      "opencode-backend": "src/opencode-backend.ts",
       "codex-provider": "src/codex-provider.ts",
       "copilot-provider": "src/copilot-provider.ts",
       "codex-imagegen": "src/codex-imagegen.ts",
