@@ -1,26 +1,26 @@
 /**
- * OpenCode 会话/agent 后端桥：把 opencode 的 HTTP API（session、message、
- * SSE 事件、permission）原样接到 dsh 的同源 Web 服务下。
+ * OpenCode v2 后端桥：拉起并复用 `opencode serve`（v2 API），供模型 adapter
+ * 与可选的 `/opencode/*` 调试代理共用。
  *
- * opencode 的网页端与 `opencode serve` 共用同一套 OpenAPI 接口：会话创建、
- * 消息发送（含工具执行与权限请求）、`/event` SSE 流。dsh 浏览器端因此只需
- * 一个同源 `/opencode/*` 反向代理，不必处理 CORS、端口发现或鉴权头。
+ * v2 的 serve 不再提供 v1 的匿名 `/session`、`/event` API，而是：
+ *  - API 前缀 `/api`（`/api/session`、`/api/event`、`/api/model`…）；
+ *  - HTTP Basic 认证，用户名固定 `opencode`，密码由 serve 生成或由
+ *    `OPENCODE_SERVER_PASSWORD` 指定；
+ *  - 同一进程同时提供 Web UI，未匹配的路径会回落到 SPA。
  *
- * 后端进程策略：
- *  1. 4097 已在监听且是 opencode（/global/health 返回 healthy）→ 直接复用；
- *  2. 未监听 → detached 拉起 `opencode serve --port 4097`，stdio 全弃；
- *  3. 就绪前到达的代理请求会等待拉起完成，避免面板首屏拿到 502。
- *
- * 端口写死 4097：与 opencode-llm-proxy 的 4010 分开。后者由 TUI 运行时
- * 承载（见 ./opencode-provider.ts），serve 模式不会加载它的 server hook。
+ * 为了让 dsh 重启后仍能复用上一次拉起的 serve，密码保存在
+ * `~/.cache/dsh-opencode/password`（0600），并在 spawn 时通过
+ * `OPENCODE_SERVER_PASSWORD` 传给 serve。若 4097 已被别的服务占用（例如
+ * 密码未知的旧 serve），就顺延到 4098、4099…，不杀用户进程。
  */
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 
@@ -28,10 +28,11 @@ export const name = "dsh-config-opencode-backend";
 export const inject = ["webServer"];
 
 const HOST = "127.0.0.1";
-const PORT = 4097;
 const ROUTE = "/opencode";
+const CANDIDATE_PORTS = [4097, 4098, 4099, 4100, 4101];
 const HEALTH_TIMEOUT_MS = 1_500;
 const READY_TIMEOUT_MS = 30_000;
+const PASSWORD_FILE = join(homedir(), ".cache", "dsh-opencode", "password");
 
 /** hop-by-hop 头不能转发（RFC 7230 §6.1）。 */
 const HOP_BY_HOP = new Set([
@@ -50,18 +51,65 @@ function opencodeBin(): string {
   return existsSync(local) ? local : "opencode";
 }
 
-function baseUrl(): string {
-  return `http://${HOST}:${PORT}`;
+function origin(port: number): string {
+  return `http://${HOST}:${port}`;
 }
 
-async function healthy(): Promise<boolean> {
+let passwordCache: string | undefined;
+
+/** serve 的 Basic 密码：优先环境变量，其次持久化文件，最后生成。 */
+export function backendPassword(): string {
+  if (passwordCache !== undefined) return passwordCache;
+  const fromEnv = process.env.OPENCODE_SERVER_PASSWORD;
+  if (fromEnv !== undefined && fromEnv !== "") {
+    passwordCache = fromEnv;
+    return passwordCache;
+  }
   try {
-    const response = await fetch(`${baseUrl()}/global/health`, {
+    const saved = readFileSync(PASSWORD_FILE, "utf8").trim();
+    if (saved !== "") {
+      passwordCache = saved;
+      return passwordCache;
+    }
+  } catch {
+    // 首次运行：下面生成。
+  }
+  const created = randomBytes(32).toString("base64url");
+  try {
+    mkdirSync(dirname(PASSWORD_FILE), { recursive: true });
+    writeFileSync(PASSWORD_FILE, created, { mode: 0o600 });
+    chmodSync(PASSWORD_FILE, 0o600);
+  } catch {
+    // 只读 HOME 等：密码仍在本进程内有效。
+  }
+  passwordCache = created;
+  return passwordCache;
+}
+
+export function backendAuthHeader(): string {
+  return `Basic ${Buffer.from(`opencode:${backendPassword()}`).toString("base64")}`;
+}
+
+let activeOrigin: string | undefined;
+
+/** 当前后端地址；仅可在 `ensureBackend()` 成功之后调用。 */
+export function backendBaseUrl(): string {
+  if (activeOrigin === undefined) throw new Error("opencode backend is not ready");
+  return activeOrigin;
+}
+
+type PortState = "ready" | "busy" | "down";
+
+/** `ready`：密码匹配的 v2 serve；`busy`：端口有别的服务；`down`：无人监听。 */
+async function probe(port: number): Promise<PortState> {
+  try {
+    const response = await fetch(`${origin(port)}/api/session?limit=1`, {
+      headers: { authorization: backendAuthHeader() },
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     });
-    return response.ok;
+    return response.ok ? "ready" : "busy";
   } catch {
-    return false;
+    return "down";
   }
 }
 
@@ -69,63 +117,105 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function spawnServer(port: number): void {
+  spawn(opencodeBin(), ["serve", "--port", String(port), "--hostname", HOST], {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, OPENCODE_SERVER_PASSWORD: backendPassword() },
+  }).unref();
+}
+
 let booting: Promise<void> | undefined;
 
 /**
- * 确保 4097 上有一个可用的 opencode server（进程级单例）。
- * 失败静默结束：代理请求会得到 502，而不是阻塞 dsh 启动。
+ * 确保有一个可认证的 v2 serve（进程级单例）：先复用候选端口上密码匹配的
+ * 实例，否则从第一个空闲端口拉起。全部失败时抛错，调用方决定如何呈现。
  */
 export function ensureBackend(): Promise<void> {
   booting ??= (async () => {
-    if (await healthy()) return;
-    spawn(
-      opencodeBin(),
-      ["serve", "--port", String(PORT), "--hostname", HOST],
-      { detached: true, stdio: "ignore" },
-    ).unref();
-    const deadline = Date.now() + READY_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      if (await healthy()) return;
-      await sleep(500);
+    for (const port of CANDIDATE_PORTS) {
+      const state = await probe(port);
+      if (state === "ready") {
+        activeOrigin = origin(port);
+        return;
+      }
+      if (state === "busy") continue;
+      spawnServer(port);
+      const deadline = Date.now() + READY_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        if ((await probe(port)) === "ready") {
+          activeOrigin = origin(port);
+          return;
+        }
+        await sleep(300);
+      }
     }
-  })().catch(() => {
-    // opencode 未安装或拉起失败：保留 502 让面板显示可诊断的错误。
+    throw new Error(
+      "opencode v2 backend unavailable: install opencode or start `opencode serve`",
+    );
+  })().catch((error: unknown) => {
+    // 允许下一次请求重试（比如用户刚刚安装/启动了 opencode）。
+    booting = undefined;
+    throw error;
   });
   return booting;
 }
 
-function upstreamHeaders(headers: IncomingMessage["headers"]): OutgoingHttpHeaders {
+function upstreamHeaders(
+  headers: IncomingMessage["headers"],
+  extra: OutgoingHttpHeaders,
+  port: number,
+): OutgoingHttpHeaders {
   const out: OutgoingHttpHeaders = {};
   for (const [key, value] of Object.entries(headers)) {
     if (value === undefined) continue;
-    if (HOP_BY_HOP.has(key.toLowerCase())) continue;
-    // 只代理 opencode 自己的请求；浏览器 cookie 与 dsh 鉴权无关。
-    if (key.toLowerCase() === "cookie") continue;
+    const lower = key.toLowerCase();
+    if (HOP_BY_HOP.has(lower)) continue;
+    // 只代理 opencode 自己的请求；浏览器 cookie/dsh 鉴权头与 serve 无关。
+    if (lower === "cookie" || lower === "authorization") continue;
     out[key] = value;
   }
-  out.host = `${HOST}:${PORT}`;
+  Object.assign(out, extra);
+  out.host = `${HOST}:${port}`;
   return out;
 }
 
+let activePort: number | undefined;
+
 function proxyRequest(request: IncomingMessage, response: ServerResponse): void {
-  forwardTo({ host: HOST, port: PORT, route: ROUTE }, request, response);
+  if (activeOrigin === undefined || activePort === undefined) {
+    response.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+    response.end("opencode backend unavailable");
+    return;
+  }
+  forwardTo(
+    { host: HOST, port: activePort, route: ROUTE, prefix: "/api" },
+    request,
+    response,
+    { authorization: backendAuthHeader() },
+  );
 }
 
-/** 把 `/opencode/*` 请求转发到 upstream（导出以便单测真实流式行为）。 */
+/**
+ * 把 `/opencode/*` 转发到 upstream（导出以便单测真实流式行为）。
+ * `prefix` 用于补上 v2 的 `/api`；`extraHeaders` 注入 Basic 认证。
+ */
 export function forwardTo(
-  upstreamTarget: { host: string; port: number; route: string },
+  upstreamTarget: { host: string; port: number; route: string; prefix?: string },
   request: IncomingMessage,
   response: ServerResponse,
+  extraHeaders: OutgoingHttpHeaders = {},
 ): void {
   const url = new URL(request.url ?? "/", "http://x");
-  const path = `${url.pathname.slice(upstreamTarget.route.length) || "/"}${url.search}`;
+  const tail = url.pathname.slice(upstreamTarget.route.length) || "/";
+  const path = `${upstreamTarget.prefix ?? ""}${tail}${url.search}`;
   const upstream = httpRequest(
     {
       host: upstreamTarget.host,
       port: upstreamTarget.port,
       method: request.method,
       path,
-      headers: upstreamHeaders(request.headers),
+      headers: upstreamHeaders(request.headers, extraHeaders, upstreamTarget.port),
     },
     (incoming) => {
       const headers: OutgoingHttpHeaders = {};
@@ -169,11 +259,17 @@ export function apply(ctx: Context): void {
         kind: "prefix",
         path: ROUTE,
         handler: async (request, response) => {
-          await ensureBackend();
+          try {
+            await ensureBackend();
+          } catch {
+            response.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+            response.end("opencode backend unavailable");
+            return;
+          }
           proxyRequest(request, response);
         },
       }),
     "dsh-config: opencode backend proxy",
   );
-  void ensureBackend();
+  void ensureBackend().catch(() => undefined);
 }

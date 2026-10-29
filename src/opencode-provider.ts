@@ -1,69 +1,110 @@
 /**
- * OpenCode Free 经本地 opencode-llm-proxy 网关接入（零配置，全部写死）：
+ * OpenCode Free：在 dsh 原生模型选择器里选中任意 `*-free` 模型，即由本插件
+ * 自动拉起 `opencode serve`（v2 API），并把整轮对话交给 opencode 的 agent
+ * 后端执行。
  *
- * opencode-llm-proxy 是 OpenCode 的官方生态插件，随 opencode 进程在本机
- * 4010 端口起一个 OpenAI 兼容网关（/v1/chat/completions，流式 + 工具调用
- * 透传）。dsh 侧因此退化为标准 openai-completions 客户端，不再直连
- * opencode zen 网关做仿 CLI 头等 hack。
+ * 形态：
+ *  - adapter 是「黑盒 agent 模型」：只把用户文本交给 opencode 会话，opencode
+ *    在自己的进程里跑工具（read/edit/bash…）并请求权限，最终把文本流回来。
+ *  - dsh 的 agent loop 仍负责会话日志、上下文管理与 UI；dsh 的 tools 不会
+ *    重复执行，工具进度只存在于 opencode 侧。
+ *  - 只在首次创建 opencode 会话时把 dsh 既有历史拼进提示；之后复用会话，
+ *    只发送新增用户消息。
+ *  - opencode 的权限请求默认自动允许一次（无人值守）；中断时调用 v2 的
+ *    `/api/session/:id/interrupt`。
  *
- * 「选 opencode free 模型就有一个可用代理」由本插件保证（自动拉起）：
- *
- *  1. 4010 已监听（用户自己开着 opencode）→ 直接用；
- *  2. 未监听 → 确保插件包安装（~/.config/opencode 下 npm install）→ 确保
- *     opencode.json 声明 plugin（V1 运行时只认单数键）→ 后台拉起无头
- *     opencode（TUI 形态）→ 轮询就绪；
- *  3. 就绪后模型清单切换为代理实际提供的 `*-free` 模型；不可达期间用内置
- *     已知清单兜底（目录不隐藏，请求失败交由重试策略与错误归类处理）。
- *
- * 为什么拉起的是 TUI 而不是 `opencode serve`：opencode 1.19.x 的 serve/acp
- * 等无头 server 模式不执行插件的 server hook（实测 1.19.3/1.19.4 均如此，
- * DEBUG 日志无任何插件加载痕迹），只有完整运行时（TUI/run）会执行——llm
- * proxy 恰恰通过 server hook 起网关。TUI 以 setsid 脱离会话、stdio 全弃、
- * 伪终端缺失也能正常启动并服务，不产生任何用户可见界面。
+ * v2 的 serve 需要 Basic 认证（用户名 `opencode`），密码与端口由
+ * `./opencode-backend.ts` 统一管理，dsh 重启后可复用同一实例。
  */
 
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
+import { LlmAdapter, LlmError } from "@deepseek-ai/dsh-llm";
+import type {
+  GenerateOptions,
+  LlmModelInfo,
+  LlmResolvedModelInfo,
+  StreamChunk,
+  TokenUsage,
+} from "@deepseek-ai/dsh-llm";
+import type { ResolvedRetryPolicy } from "@deepseek-ai/dsh-llm";
+import { resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
 import {
-  InMemoryCredentialStore,
-  createProvider,
-  defaultProviderAuthContext,
-  lazyApi,
-} from "@earendil-works/pi-ai";
-import type { Model } from "@earendil-works/pi-ai";
-import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
-import type { ResolvedPiAiProviderProfile } from "@deepseek-ai/dsh-llm-pi-ai";
-import { resolveRetryPolicy, type RetryPolicyConfig } from "@deepseek-ai/dsh-llm";
+  backendAuthHeader,
+  backendBaseUrl,
+  ensureBackend,
+} from "./opencode-backend.ts";
 
 export const name = "dsh-config-opencode";
 export const inject = ["llm"];
 
 export const PROVIDER = "opencode-free";
 
-/** opencode-llm-proxy 的固定地址（OpenAI 兼容，含 /v1）。 */
-const PROXY_BASE = "http://127.0.0.1:4010/v1";
-const PROXY_HEALTH = "http://127.0.0.1:4010/health";
-const DEFAULT_CONTEXT_WINDOW = 1_000_000;
-/** 与官方 CLI 对齐（32000）：8192 会截断长回复。 */
+const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_MAX_TOKENS = 32_000;
 const FREE_SUFFIX = "-free";
-const HEALTH_TIMEOUT_MS = 1_500;
-const BOOTSTRAP_TIMEOUT_MS = 60_000;
-const OPENCODE_CONFIG_DIR = join(homedir(), ".config", "opencode");
 
-/** 内置兜底清单：代理不可达时目录不空（代理实测提供的 *-free 模型）。 */
-const FALLBACK_MODELS = [
-  "opencode/deepseek-v4.1-flash-free",
-  "opencode/glm-5.3-flash-free",
-  "opencode/mimo-v2.6-flash-free",
-  "opencode/flint-40b-free",
-  "opencode/nemotron-3-ultra-free",
-  "opencode/nemotron-3.5-super-vl-free",
-  "opencode/nemotron-3.5-lightning-free",
-  "opencode/beam-free",
+interface OpencodeModel {
+  id: string;
+  providerID: string;
+  name: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+}
+
+/**
+ * 内置兜底清单：后端不可达时目录不为空（可直接选中并触发自动拉起）。
+ * 与 `GET /api/model?types=chat` 中的 `-free` 模型保持一致。
+ */
+const FALLBACK_MODELS: OpencodeModel[] = [
+  {
+    id: "deepseek-v4.1-flash-free",
+    providerID: "opencode",
+    name: "DeepSeek V4.1 Flash Free",
+    contextWindow: 200_000,
+    maxOutputTokens: 32_000,
+  },
+  {
+    id: "glm-5.3-flash-free",
+    providerID: "opencode",
+    name: "GLM-5.3-Flash Free",
+    contextWindow: 200_000,
+    maxOutputTokens: 32_000,
+  },
+  {
+    id: "mimo-v2.6-flash-free",
+    providerID: "opencode",
+    name: "MiMo-V2.6-Flash Free",
+    contextWindow: 200_000,
+    maxOutputTokens: 32_000,
+  },
+  {
+    id: "flint-40b-free",
+    providerID: "opencode",
+    name: "Flint 40B Free",
+    contextWindow: 262_144,
+    maxOutputTokens: 65_536,
+  },
+  {
+    id: "nemotron-3.5-super-vl-free",
+    providerID: "opencode",
+    name: "Nemotron 3.5 Super VL Free",
+    contextWindow: 1_048_576,
+    maxOutputTokens: 131_072,
+  },
+  {
+    id: "nemotron-3.5-lightning-free",
+    providerID: "opencode",
+    name: "Nemotron 3.5 Lightning Free",
+    contextWindow: 262_144,
+    maxOutputTokens: 262_144,
+  },
+  {
+    id: "beam-free",
+    providerID: "opencode",
+    name: "Beam Free",
+    contextWindow: 1_048_576,
+    maxOutputTokens: 131_072,
+  },
 ];
 
 /** 与 codex/copilot 同款的限流/网络错误指数退避。 */
@@ -78,232 +119,427 @@ const RETRY_POLICY = {
     "TRANSPORT",
   ],
   backoff: { initialDelayMs: 1_000, maxDelayMs: 30_000, jitterRatio: 0.2 },
-} satisfies RetryPolicyConfig;
+} satisfies import("@deepseek-ai/dsh-llm").RetryPolicyConfig;
 
-/** 当前模型清单（代理就绪后刷新为实际提供的 *-free 模型）。 */
-let modelIds: string[] = [...FALLBACK_MODELS];
+let cached: OpencodeModel[] = FALLBACK_MODELS;
 
-function modelOf(id: string): Model<"openai-completions"> {
-  return {
-    id,
-    name: id,
-    api: "openai-completions",
-    provider: PROVIDER,
-    baseUrl: PROXY_BASE,
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: DEFAULT_MAX_TOKENS,
-  };
+function parseModel(model: string): { providerID: string; modelID: string } {
+  const slash = model.indexOf("/");
+  if (slash === -1) return { providerID: "opencode", modelID: model };
+  return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) };
 }
 
-async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
+function authHeaders(): Record<string, string> {
+  return { authorization: backendAuthHeader() };
 }
 
-/** 从代理拉取 *-free 模型清单；成功且非空时更新缓存。 */
+/** 从 serve 拉取实际提供的 `*-free` 模型；失败保留兜底清单。 */
 async function refreshModels(): Promise<void> {
-  const parsed = (await fetchJson(`${PROXY_BASE}/models`, 5_000)) as {
-    data?: { id?: string }[];
-  };
-  const ids = (parsed.data ?? [])
-    .map((item) => item.id ?? "")
-    .filter((id) => id.endsWith(FREE_SUFFIX));
-  if (ids.length > 0) modelIds = ids;
+  try {
+    const response = await fetch(`${backendBaseUrl()}/api/model?types=chat`, {
+      headers: authHeaders(),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) return;
+    const body = (await response.json()) as {
+      data?: {
+        id?: string;
+        modelID?: string;
+        providerID?: string;
+        name?: string;
+        limit?: { context?: number; output?: number };
+      }[];
+    };
+    const found: OpencodeModel[] = [];
+    for (const model of body.data ?? []) {
+      const id = model.modelID ?? model.id;
+      if (id === undefined || !id.endsWith(FREE_SUFFIX)) continue;
+      found.push({
+        id,
+        providerID: model.providerID ?? "opencode",
+        name: model.name ?? id,
+        contextWindow: model.limit?.context ?? DEFAULT_CONTEXT_WINDOW,
+        maxOutputTokens: model.limit?.output ?? DEFAULT_MAX_TOKENS,
+      });
+    }
+    if (found.length > 0) cached = found;
+  } catch {
+    // 后端不可达：保留兜底清单，用户仍可选中并触发拉起。
+  }
 }
 
-/** opencode 可执行文件：PATH 上的 opencode 或默认安装位置。 */
-function opencodeBin(): string {
-  if (existsSync(join(homedir(), ".opencode", "bin", "opencode")))
-    return join(homedir(), ".opencode", "bin", "opencode");
-  return "opencode";
+let bootstrap: Promise<void> | undefined;
+
+/** 后台确保 serve 可用并刷新模型清单（进程级单例）。 */
+function bootstrapBackend(): Promise<void> {
+  bootstrap ??= (async () => {
+    await ensureBackend();
+    await refreshModels();
+  })().catch((error: unknown) => {
+    // opencode 未安装等：保留兜底清单，请求阶段再报错。
+    console.error("[dsh-config] opencode bootstrap failed:", error);
+  });
+  return bootstrap;
 }
 
-/** 插件包是否已安装到 opencode 配置目录。 */
-function pluginInstalled(): boolean {
-  return existsSync(
-    join(OPENCODE_CONFIG_DIR, "node_modules", "opencode-llm-proxy"),
-  );
+function textOf(message: GenerateOptions["messages"][number]): string {
+  return message.content
+    .filter((block) => block.type === "text")
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("");
 }
 
-function execFile(
-  command: string,
-  args: string[],
-  options: { cwd?: string; timeoutMs: number },
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      stdio: "ignore",
-    });
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error(`timeout: ${command}`));
-    }, options.timeoutMs);
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("exit", (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve();
-      else reject(new Error(`exit ${code}: ${command}`));
-    });
+/** 本轮真正要发给 opencode 的最新用户文本（跳过工具结果等）。 */
+function latestUserText(messages: GenerateOptions["messages"]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message === undefined || message.role !== "user") continue;
+    const text = textOf(message);
+    if (text.trim() !== "") return text;
+  }
+  return "";
+}
+
+/** 首次建会话时灌入的历史（不含最后一条用户消息）。 */
+function seedHistory(messages: GenerateOptions["messages"]): string {
+  let lastUser = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      lastUser = index;
+      break;
+    }
+  }
+  const lines: string[] = [];
+  for (const message of messages.slice(0, lastUser === -1 ? messages.length : lastUser)) {
+    // dsh 的 system prompt 不转交：opencode 有自己的 agent/system prompt。
+    if (message.role === "system") continue;
+    const text = textOf(message);
+    if (text.trim() === "") continue;
+    lines.push(`${message.role === "assistant" ? "助手" : "用户"}：${text}`);
+  }
+  if (lines.length === 0) return "";
+  return `以下是此前的对话，请在此基础上继续：\n\n${lines.join("\n\n")}`;
+}
+
+const sessionMap = new Map<string, string>();
+
+async function postJson(path: string, body?: unknown): Promise<Response> {
+  return fetch(`${backendBaseUrl()}${path}`, {
+    method: "POST",
+    headers: { ...authHeaders(), "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }
 
-/** 确保 ~/.config/opencode 里装了 opencode-llm-proxy（幂等）。 */
-async function ensurePluginInstalled(): Promise<void> {
-  if (pluginInstalled()) return;
-  await execFile(
-    "npm",
-    ["install", "opencode-llm-proxy", "--no-audit", "--no-fund", "--silent"],
-    { cwd: OPENCODE_CONFIG_DIR, timeoutMs: 30_000 },
-  );
-}
-
-/**
- * 确保 opencode.json 声明了 llm-proxy 插件（V1 用单数 plugin 键）。只合并
- * 该键，其余内容原样保留；已有配置在 opencode.jsonc 时也写独立 json
- * （两处键不冲突，jsonc 未声明 plugin）。
- */
-async function ensurePluginConfigured(): Promise<void> {
-  const path = join(OPENCODE_CONFIG_DIR, "opencode.json");
-  const { readFile, writeFile, mkdir } = await import("node:fs/promises");
-  let config: Record<string, unknown> = {};
+async function sessionAlive(id: string): Promise<boolean> {
   try {
-    config = JSON.parse(await readFile(path, "utf8")) as Record<
-      string,
-      unknown
-    >;
-  } catch {
-    // 无配置文件或非法 JSON：新建。
-  }
-  const plugins = Array.isArray(config.plugin) ? config.plugin : [];
-  if (plugins.includes("opencode-llm-proxy")) return;
-  await mkdir(OPENCODE_CONFIG_DIR, { recursive: true });
-  config.plugin = [...plugins, "opencode-llm-proxy"];
-  await writeFile(path, `${JSON.stringify(config, null, 2)}\n`);
-}
-
-/** 代理是否已在监听。 */
-async function proxyAlive(): Promise<boolean> {
-  try {
-    await fetchJson(PROXY_HEALTH, HEALTH_TIMEOUT_MS);
-    return true;
+    const response = await fetch(`${backendBaseUrl()}/api/session/${id}`, {
+      headers: authHeaders(),
+      signal: AbortSignal.timeout(2_000),
+    });
+    return response.ok;
   } catch {
     return false;
   }
 }
 
-/** 轮询代理就绪。 */
-async function waitProxyReady(timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await proxyAlive()) return true;
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
+/** 复用 dsh 会话映射的 opencode 会话；不存在则新建。 */
+async function ensureSession(key: string): Promise<{ id: string; created: boolean }> {
+  const existing = sessionMap.get(key);
+  if (existing !== undefined && (await sessionAlive(existing))) {
+    return { id: existing, created: false };
   }
-  return false;
+  const response = await postJson("/api/session", {
+    title: "dsh",
+    location: { directory: process.cwd() },
+  });
+  if (!response.ok) throw new Error(`opencode: create session failed (HTTP ${response.status})`);
+  const payload = (await response.json()) as { data?: { id?: string } };
+  const id = payload.data?.id;
+  if (id === undefined) throw new Error("opencode: create session returned no id");
+  sessionMap.set(key, id);
+  return { id, created: true };
 }
 
-let bootstrap: Promise<void> | undefined;
+interface ServerEvent {
+  type?: string;
+  data?: Record<string, unknown>;
+}
 
-/**
- * 确保代理可用并刷新模型清单（进程级单例：并发调用共享同一次拉起）。
- * 任何一步失败都静默结束——目录回落内置清单，不阻塞宿主启动。
- */
-function ensureProxy(): Promise<void> {
-  bootstrap ??= (async () => {
-    if (await proxyAlive()) {
-      await refreshModels();
+/** 订阅 opencode v2 全局 SSE，逐帧产出 JSON 事件（`data:` 行）。 */
+async function* openEvents(signal: AbortSignal): AsyncGenerator<ServerEvent> {
+  const response = await fetch(`${backendBaseUrl()}/api/event`, {
+    headers: { ...authHeaders(), accept: "text/event-stream" },
+    signal,
+  });
+  if (!response.ok || response.body === null) {
+    throw new Error(`opencode: event stream failed (HTTP ${response.status})`);
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      buffer += value;
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        for (const line of frame.split("\n")) {
+          const trimmed = line.endsWith("\r") ? line.slice(0, -1) : line;
+          if (!trimmed.startsWith("data:")) continue;
+          const payload = trimmed.slice(5).trimStart();
+          if (payload === "") continue;
+          try {
+            yield JSON.parse(payload) as ServerEvent;
+          } catch {
+            // 忽略坏帧。
+          }
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
+function mapUsage(tokens: Record<string, unknown> | undefined): TokenUsage | undefined {
+  if (tokens === undefined) return undefined;
+  const cache = tokens["cache"] as Record<string, unknown> | undefined;
+  const usage: TokenUsage = {
+    inputTokens: typeof tokens["input"] === "number" ? tokens["input"] : 0,
+    outputTokens: typeof tokens["output"] === "number" ? tokens["output"] : 0,
+  };
+  if (typeof tokens["reasoning"] === "number") usage.reasoningTokens = tokens["reasoning"];
+  if (typeof cache?.["read"] === "number") usage.cacheReadTokens = cache["read"];
+  if (typeof cache?.["write"] === "number") usage.cacheWriteTokens = cache["write"];
+  return usage;
+}
+
+async function replyPermission(sessionID: string, requestID: string): Promise<void> {
+  await postJson(`/api/session/${sessionID}/permission/${requestID}/reply`, {
+    decision: "once",
+  }).catch(() => undefined);
+}
+
+async function interruptSession(id: string): Promise<void> {
+  await postJson(`/api/session/${id}/interrupt`).catch(() => undefined);
+}
+
+class OpencodeServeAdapter extends LlmAdapter {
+  override providerInfo(provider: string) {
+    return { id: provider, name: "OpenCode Free" };
+  }
+
+  override providerRetryPolicy(provider: string): ResolvedRetryPolicy {
+    return resolveRetryPolicy(RETRY_POLICY, `${provider} retryPolicy`);
+  }
+
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    return cached.map((model) => ({
+      provider,
+      id: model.id,
+      name: model.name,
+    }));
+  }
+
+  override async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    const parsed = parseModel(model);
+    const found = cached.find(
+      (candidate) =>
+        candidate.id === parsed.modelID && candidate.providerID === parsed.providerID,
+    );
+    return {
+      provider,
+      id: model,
+      name: found?.name ?? model,
+      context: { contextWindow: found?.contextWindow ?? DEFAULT_CONTEXT_WINDOW },
+      defaultMaxTokens: found?.maxOutputTokens ?? DEFAULT_MAX_TOKENS,
+      inputModalities: ["text"],
+      reasoning: {
+        efforts: [
+          { id: "low" as never, name: "Low" },
+          { id: "medium" as never, name: "Medium" },
+          { id: "high" as never, name: "High" },
+        ],
+        defaultEffort: "high" as never,
+      },
+    };
+  }
+
+  override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    const key = options.sessionId === undefined ? "default" : String(options.sessionId);
+    const text = latestUserText(options.messages);
+    if (text === "") {
+      yield { type: "finish", reason: { kind: "stop" } };
       return;
     }
-    try {
-      await ensurePluginInstalled();
-      await ensurePluginConfigured();
-      // 无头拉起 TUI 形态（完整运行时）：serve/acp 等无头 server 模式不执行
-      // 插件 server hook（见文件头注释），只有 TUI/run 会起 llm-proxy 网关。
-      // stdin/stdout 全弃 + detached，不产生用户可见界面，随宿主会话存活。
-      spawn(opencodeBin(), [], {
-        detached: true,
-        stdio: "ignore",
-      }).unref();
-      if (await waitProxyReady(BOOTSTRAP_TIMEOUT_MS)) await refreshModels();
-    } catch {
-      // 拉起失败（opencode 未装/插件安装失败等）：保持内置清单。
+
+    await bootstrapBackend();
+    const { providerID, modelID } = parseModel(options.model);
+    const session = await ensureSession(key);
+
+    // 复用会话时也要切回用户当前选择的模型。
+    const switched = await postJson(`/api/session/${session.id}/model`, {
+      model: { providerID, id: modelID },
+    });
+    if (!switched.ok) {
+      throw new Error(`opencode: switch model failed (HTTP ${switched.status})`);
     }
-  })();
-  return bootstrap;
-}
 
-export function createOpencodeAdapter(ctx?: Context): PiAiAdapter {
-  const piProvider = {
-    ...createProvider({
-      id: PROVIDER,
-      name: "OpenCode Free",
-      baseUrl: PROXY_BASE,
-      auth: {
-        apiKey: {
-          name: "opencode 代理密钥",
-          resolve: async (input: { credential?: { key?: string } }) =>
-            input.credential?.key === undefined
-              ? undefined
-              : {
-                  auth: { apiKey: input.credential.key },
-                  source: "opencode 代理",
+    // 只有新建会话才灌历史；复用会话时 opencode 自己已经记住了上一轮。
+    const history = session.created ? seedHistory(options.messages) : "";
+    const promptText =
+      history === "" ? text : `${history}\n\n[当前用户消息]\n${text}`;
+
+    const signal = options.signal ?? new AbortController().signal;
+    const events = openEvents(signal);
+    const abortUpstream = (): void => {
+      void interruptSession(session.id);
+    };
+    signal.addEventListener("abort", abortUpstream, { once: true });
+
+    try {
+      // 先建立 SSE 连接（消费 server.connected），避免 prompt 触发的早期事件丢失。
+      await events.next();
+      const prompt = await postJson(`/api/session/${session.id}/prompt`, {
+        text: promptText,
+      });
+      if (!prompt.ok) {
+        const detail = await prompt.text().catch(() => "");
+        throw new Error(
+          `opencode: prompt failed (HTTP ${prompt.status})` +
+            (detail === "" ? "" : ` ${detail.slice(0, 300)}`),
+        );
+      }
+
+      let nextIndex = 0;
+      const partIndex = new Map<string, number>();
+      const seenDelta = new Set<string>();
+      const emittedEnd = new Set<string>();
+      let usage: TokenUsage | undefined;
+      let finishKind: "stop" | "max-tokens" = "stop";
+
+      const indexOf = (partKey: string): number => {
+        let index = partIndex.get(partKey);
+        if (index === undefined) {
+          index = nextIndex;
+          nextIndex += 1;
+          partIndex.set(partKey, index);
+        }
+        return index;
+      };
+
+      const keyOf = (
+        data: Record<string, unknown>,
+        kind: "text" | "reasoning",
+      ): string =>
+        `${String(data["assistantMessageID"])}:${String(data["ordinal"])}:${kind}`;
+
+      for await (const event of events) {
+        const data = event.data ?? {};
+        if (data["sessionID"] !== session.id) continue;
+        switch (event.type) {
+          case "session.text.delta":
+          case "session.reasoning.delta": {
+            const delta = data["delta"];
+            if (typeof delta !== "string" || delta === "") break;
+            const kind = event.type === "session.text.delta" ? "text" : "reasoning";
+            const partKey = keyOf(data, kind);
+            seenDelta.add(partKey);
+            const index = indexOf(partKey);
+            yield kind === "text"
+              ? { type: "text-delta", index, text: delta }
+              : { type: "reasoning-delta", index, text: delta };
+            break;
+          }
+          case "session.text.ended":
+          case "session.reasoning.ended": {
+            // 非增量 provider 只在完整 part 里给文本。
+            const kind = event.type === "session.text.ended" ? "text" : "reasoning";
+            const partKey = keyOf(data, kind);
+            if (seenDelta.has(partKey) || emittedEnd.has(partKey)) break;
+            const full = data["text"];
+            if (typeof full !== "string" || full === "") break;
+            emittedEnd.add(partKey);
+            const index = indexOf(partKey);
+            yield kind === "text"
+              ? { type: "text-delta", index, text: full }
+              : { type: "reasoning-delta", index, text: full };
+            break;
+          }
+          case "session.step.ended": {
+            const mapped = mapUsage(data["tokens"] as Record<string, unknown> | undefined);
+            if (mapped !== undefined) usage = mapped;
+            if (data["finish"] === "length") finishKind = "max-tokens";
+            else finishKind = "stop";
+            break;
+          }
+          case "session.execution.succeeded": {
+            if (usage !== undefined) yield { type: "usage", usage };
+            yield { type: "finish", reason: { kind: finishKind } };
+            return;
+          }
+          case "session.execution.interrupted": {
+            yield {
+              type: "finish",
+              reason: {
+                kind: "aborted",
+                failure: { message: "opencode execution interrupted", code: "ABORTED" },
+              },
+            };
+            return;
+          }
+          case "session.execution.failed": {
+            const error = data["error"] ?? data["reason"] ?? "opencode execution failed";
+            yield {
+              type: "finish",
+              reason: {
+                kind: "error",
+                failure: {
+                  message:
+                    typeof error === "string"
+                      ? error
+                      : JSON.stringify(error).slice(0, 500),
+                  code: "PROVIDER",
                 },
-        },
-      },
-      models: modelIds.map(modelOf),
-      // 与上游 openAICompletionsApi() 同款：懒加载 completions 实现。
-      api: lazyApi(() => import("@earendil-works/pi-ai/api/openai-completions")),
-    }),
-    // 目录动态读缓存：代理就绪刷新清单后，下一次快照重建即生效（profiles
-    // 每次操作新建，PiAiAdapter 快照随之重建）。
-    getModels() {
-      return modelIds.map(modelOf);
-    },
-  } as unknown as ReturnType<typeof createProvider>;
+              },
+            };
+            return;
+          }
+          case "permission.asked": {
+            const id = data["id"];
+            if (typeof id === "string") void replyPermission(session.id, id);
+            break;
+          }
+          default:
+            break;
+        }
+      }
 
-  const profile: ResolvedPiAiProviderProfile = {
-    provider: PROVIDER,
-    displayName: "OpenCode Free",
-    streamIdleTimeoutMs: 300_000,
-    maxRequestImageBytes: 20 * 1024 * 1024,
-    requestImagePixelBudget: 2048 * 2048,
-    requestImageMaxBytes: 1024 * 1024,
-    retryPolicy: resolveRetryPolicy(RETRY_POLICY, "opencode-free retryPolicy"),
-    piProvider:
-      piProvider as NonNullable<ResolvedPiAiProviderProfile["piProvider"]>,
-    // 每模型默认输出上限：物化为 resolveModel 的 defaultMaxTokens 与请求
-    // 默认 cap（不进 Map 则只作用于目录，不作用于请求）。
-    configuredMaxTokens: new Map(
-      modelIds.map((id) => [id, DEFAULT_MAX_TOKENS]),
-    ),
-    modelErrors: new Map(),
-  };
-
-  return new PiAiAdapter({
-    // 每次操作新建 Map：PiAiAdapter 快照按 identity 记忆，新建使快照在
-    // 模型清单刷新后重建（清单缓存在模块级，重建无 IO）。
-    profiles: () => new Map([[PROVIDER, profile]]),
-    // 本地代理无认证；zen 免费档也接受 Bearer public。
-    resolveApiKey: async () => "public",
-    auth: {
-      credentials: new InMemoryCredentialStore(),
-      authContext: defaultProviderAuthContext(),
-    },
-    resolveAttachments: () => ctx?.get("attachments"),
-  });
+      // SSE 意外结束：把已收到的内容按正常结束处理，避免 UI 卡在流式态。
+      if (usage !== undefined) yield { type: "usage", usage };
+      yield { type: "finish", reason: { kind: finishKind } };
+    } catch (error: unknown) {
+      if (signal.aborted) {
+        throw new LlmError("opencode request aborted by caller", "ABORTED", { cause: error });
+      }
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", abortUpstream);
+      await events.return(undefined).catch(() => undefined);
+    }
+  }
 }
 
-/** 注册「OpenCode Free」provider（路由 opencode-free），并后台确保代理可用。 */
+export function createOpencodeAdapter(_ctx?: Context): OpencodeServeAdapter {
+  return new OpencodeServeAdapter();
+}
+
+/** 注册「OpenCode Free」provider（路由 opencode-free），并后台拉起 serve。 */
 export function apply(ctx: Context): void {
   ctx.llm.registerAdapter([PROVIDER], createOpencodeAdapter(ctx));
-  void ensureProxy();
+  void bootstrapBackend();
 }

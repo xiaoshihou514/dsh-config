@@ -4,8 +4,8 @@
 
 - 词元用量统计
 - DeepSeek、智谱用量
-- opencode免费模型接入
-- opencode 会话/agent 面板接入（侧边栏 OpenCode）
+- opencode 免费模型接入（在原生模型选择器里只列 `*-free`；自动拉起/复用
+  `opencode serve`，密码与端口由插件管理）
 - Codex OAuth接入
 - Copilot OAuth接入
 - 提示词备忘录

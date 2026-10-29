@@ -16,7 +16,6 @@ import { UsageTrigger } from "./UsageTrigger.tsx";
 import { CodexLoginCard } from "./CodexLoginCard.tsx";
 import { CopilotLoginCard } from "./CopilotLoginCard.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
-import { OpencodeTrigger } from "./OpencodePanel.tsx";
 import { TurnNotify } from "./TurnNotify.tsx";
 
 export const inject = ["slots"];
@@ -31,11 +30,6 @@ export function apply(ctx: Context): void {
   ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register(
     { name: "sidebar.footer.action", id: "usage", order: 0 },
     UsageTrigger,
-  ));
-  // 侧边栏「OpenCode」入口：把 opencode 的会话/agent 后端接进 dsh。
-  ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register(
-    { name: "sidebar.footer.action", id: "opencode", order: 1 },
-    OpencodeTrigger,
   ));
   // 回合完成系统通知（隐形槽位组件：监听 session 快照，自身不渲染）。
   ctx.slots.inject("conversation.input.left", () => ctx.slots.register(

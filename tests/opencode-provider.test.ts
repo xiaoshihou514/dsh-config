@@ -1,20 +1,19 @@
-/** opencode 经本地代理接入：零配置目录兜底与适配器解析。 */
+/** opencode v2 接入：零配置目录兜底与适配器解析。 */
 
 import { describe, expect, it } from "vitest";
 import { PROVIDER, createOpencodeAdapter } from "../src/opencode-provider.ts";
 
-describe("OpenCode 代理适配器", () => {
-  it("代理不可达时目录回落内置 free 清单", async () => {
+describe("OpenCode v2 适配器", () => {
+  it("后端不可达时目录回落内置 free 清单", async () => {
     const models = await createOpencodeAdapter().listModels(PROVIDER);
     expect(models.map((model) => model.id)).toEqual([
-      "opencode/deepseek-v4.1-flash-free",
-      "opencode/glm-5.3-flash-free",
-      "opencode/mimo-v2.6-flash-free",
-      "opencode/flint-40b-free",
-      "opencode/nemotron-3-ultra-free",
-      "opencode/nemotron-3.5-super-vl-free",
-      "opencode/nemotron-3.5-lightning-free",
-      "opencode/beam-free",
+      "deepseek-v4.1-flash-free",
+      "glm-5.3-flash-free",
+      "mimo-v2.6-flash-free",
+      "flint-40b-free",
+      "nemotron-3.5-super-vl-free",
+      "nemotron-3.5-lightning-free",
+      "beam-free",
     ]);
     expect(models.every((model) => model.provider === PROVIDER)).toBe(true);
   });
@@ -28,7 +27,7 @@ describe("OpenCode 代理适配器", () => {
     expect(resolved).toMatchObject({
       provider: PROVIDER,
       id: "opencode/deepseek-v4.1-flash-free",
-      context: { contextWindow: 1_000_000 },
+      context: { contextWindow: 200_000 },
       defaultMaxTokens: 32_000,
     });
     expect(resolved.reasoning?.efforts.map((effort) => effort.id)).toContain(
