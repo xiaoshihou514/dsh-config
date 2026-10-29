@@ -224,6 +224,31 @@ function seedHistory(messages: GenerateOptions["messages"]): string {
   return `以下是此前的对话，请在此基础上继续：\n\n${lines.join("\n\n")}`;
 }
 
+/**
+ * 辅助请求（会话标题生成、上下文压缩）不是一轮 agent 对话：它们既不该
+ * 复用主会话（会把标题指令当成用户消息写进 opencode 历史），也不该让
+ * opencode 的 agent loop 执行。这里把它们拼成单次文本生成提示，交给
+ * serve 的无会话生成端点。
+ */
+function auxiliaryPrompt(options: GenerateOptions): string {
+  const parts: string[] = [];
+  if (options.system !== undefined && options.system.trim() !== "") {
+    parts.push(options.system);
+  }
+  if (options.purpose === "session-title") {
+    const text = latestUserText(options.messages);
+    if (text !== "") parts.push(text);
+    return parts.join("\n\n");
+  }
+  for (const message of options.messages) {
+    if (message.role === "system") continue;
+    const text = textOf(message);
+    if (text.trim() === "") continue;
+    parts.push(`${message.role === "assistant" ? "助手" : "用户"}：${text}`);
+  }
+  return parts.join("\n\n");
+}
+
 /** dsh 会话 → opencode 会话，跨 dsh 重启持久化（测试可用环境变量改写路径）。 */
 const SESSION_MAP_FILE =
   process.env.DSH_OPENCODE_SESSION_MAP ??
@@ -425,7 +450,46 @@ class OpencodeServeAdapter extends LlmAdapter {
     };
   }
 
+  /**
+   * 辅助请求走 serve 的无会话文本生成端点：不创建/复用 opencode 会话，
+   * 因而不会把标题指令写进用户对话，也不会被标题生成的事件污染。
+   */
+  private async *auxiliaryStream(
+    options: GenerateOptions,
+  ): AsyncIterable<StreamChunk> {
+    await bootstrapBackend();
+    const prompt = auxiliaryPrompt(options);
+    if (prompt === "") {
+      yield { type: "finish", reason: { kind: "stop" } };
+      return;
+    }
+    const { providerID, modelID } = parseModel(options.model);
+    const response = await fetch(`${backendBaseUrl()}/api/experimental/generate/text`, {
+      method: "POST",
+      headers: { ...authHeaders(), "content-type": "application/json" },
+      body: JSON.stringify({ prompt, model: { providerID, id: modelID } }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+    const body = (await response.json().catch(() => undefined)) as
+      | { data?: { text?: string }; message?: string }
+      | undefined;
+    if (!response.ok) {
+      const detail = body?.message ?? `HTTP ${response.status}`;
+      throw new LlmError(
+        `opencode: auxiliary generate failed (${detail})`,
+        response.status === 429 ? "RATE_LIMIT" : "PROVIDER",
+      );
+    }
+    const text = body?.data?.text ?? "";
+    if (text !== "") yield { type: "text-delta", index: 0, text };
+    yield { type: "finish", reason: { kind: "stop" } };
+  }
+
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    if (options.purpose !== undefined) {
+      yield* this.auxiliaryStream(options);
+      return;
+    }
     const key = options.sessionId === undefined ? "default" : String(options.sessionId);
     const text = latestUserText(options.messages);
     if (text === "") {

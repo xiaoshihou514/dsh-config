@@ -21,6 +21,10 @@ interface ServeState {
   active: string | undefined;
   /** 会话探测的状态码；0 表示按 sessions 返回 200/404。 */
   probeStatus: number;
+  /** 无会话文本生成端点的调用次数。 */
+  generateText: number;
+  /** 最近一次无会话生成请求体。 */
+  lastGenerateText: Record<string, unknown> | undefined;
 }
 
 function json(value: unknown, status = 200): Response {
@@ -60,6 +64,11 @@ function mockServe(state: ServeState): void {
           },
           { type: "session.execution.succeeded", data: { sessionID: state.active } },
         ]);
+      }
+      if (url.pathname === "/api/experimental/generate/text" && method === "POST") {
+        state.generateText += 1;
+        state.lastGenerateText = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json({ data: { text: "dsh 配置" } });
       }
       if (url.pathname === "/api/session" && method === "POST") {
         state.counter += 1;
@@ -102,6 +111,29 @@ async function turn(sessionId: string): Promise<boolean> {
   return sawText;
 }
 
+/** 跑一次辅助请求（会话标题/上下文压缩），返回文本增量。 */
+async function auxiliary(
+  purpose: "session-title" | "compaction",
+  messages: unknown[],
+  system?: string,
+): Promise<string> {
+  const { PROVIDER, createOpencodeAdapter } = await import("../src/opencode-provider.ts");
+  const adapter = createOpencodeAdapter();
+  let text = "";
+  const options = {
+    provider: PROVIDER,
+    model: "opencode/deepseek-v4.1-flash-free",
+    messages,
+    ...(system === undefined ? {} : { system }),
+    purpose,
+    sessionId: "session-a",
+  } as never;
+  for await (const chunk of adapter.stream(options)) {
+    if (chunk.type === "text-delta") text += chunk.text;
+  }
+  return text;
+}
+
 let directory: string;
 let mapFile: string;
 let state: ServeState;
@@ -110,7 +142,15 @@ beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), "dsh-opencode-reuse-"));
   mapFile = join(directory, "sessions.json");
   vi.stubEnv("DSH_OPENCODE_SESSION_MAP", mapFile);
-  state = { sessions: new Set(), counter: 0, created: 0, active: undefined, probeStatus: 0 };
+  state = {
+    sessions: new Set(),
+    counter: 0,
+    created: 0,
+    active: undefined,
+    probeStatus: 0,
+    generateText: 0,
+    lastGenerateText: undefined,
+  };
   mockServe(state);
   vi.resetModules();
 });
@@ -168,5 +208,35 @@ describe("opencode 会话复用", () => {
   it("同一会话并发请求只新建一个 opencode 会话", async () => {
     await Promise.all([turn("session-a"), turn("session-a")]);
     expect(state.created).toBe(1);
+  });
+
+  it("标题/压缩等辅助请求走无会话生成，不污染主会话", async () => {
+    const text = await auxiliary(
+      "session-title",
+      [{ role: "user", content: [{ type: "text", text: "熟悉一下 dsh-config" }] }],
+      "Create a concise title.",
+    );
+
+    expect(text).toBe("dsh 配置");
+    expect(state.generateText).toBe(1);
+    expect(state.created).toBe(0);
+    expect(state.lastGenerateText).toEqual({
+      prompt: "Create a concise title.\n\n熟悉一下 dsh-config",
+      model: { providerID: "opencode", id: "deepseek-v4.1-flash-free" },
+    });
+  });
+
+  it("压缩请求保留历史文本并排除 system 消息", async () => {
+    await auxiliary("compaction", [
+      { role: "system", content: [{ type: "text", text: "你是助手" }] },
+      { role: "user", content: [{ type: "text", text: "第一问" }] },
+      { role: "assistant", content: [{ type: "text", text: "第一答" }] },
+      { role: "user", content: [{ type: "text", text: "请总结" }] },
+    ]);
+
+    expect(state.lastGenerateText?.["prompt"]).toBe(
+      "用户：第一问\n\n助手：第一答\n\n用户：请总结",
+    );
+    expect(state.created).toBe(0);
   });
 });
