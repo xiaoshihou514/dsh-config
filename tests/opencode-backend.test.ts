@@ -2,7 +2,7 @@
 
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { forwardTo } from "../src/opencode-backend.ts";
 
 const servers: Server[] = [];
@@ -24,6 +24,7 @@ function proxyTo(port: number): Promise<number> {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     servers.splice(0).map(
       (server) =>
@@ -93,5 +94,45 @@ describe("opencode 代理", () => {
     const { value } = await reader.read();
     expect(new TextDecoder().decode(value)).toContain("server.connected");
     controller.abort();
+  });
+
+  it("apply() 注册的代理转发到 ensureBackend 解析出的端口并补 /api 前缀", async () => {
+    const upstream = await listen((request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({ url: request.url, auth: request.headers.authorization }),
+      );
+    });
+    vi.resetModules();
+    vi.stubEnv("OPENCODE_SERVER_PASSWORD", "test-password");
+    vi.stubEnv("DSH_OPENCODE_PORTS", String(upstream));
+
+    const backend = await import("../src/opencode-backend.ts");
+    await backend.ensureBackend();
+    expect(backend.backendBaseUrl()).toBe(`http://127.0.0.1:${upstream}`);
+
+    let route:
+      | { handler: (request: Parameters<typeof forwardTo>[1], response: Parameters<typeof forwardTo>[2]) => unknown }
+      | undefined;
+    backend.apply({
+      effect: (fn: () => unknown) => fn(),
+      webServer: {
+        register: (registered: unknown) => {
+          route = registered as typeof route;
+          return () => undefined;
+        },
+      },
+    } as never);
+    expect(route).toBeDefined();
+    const handler = route!.handler;
+
+    const proxy = await listen((request, response) => {
+      void handler(request, response);
+    });
+    const response = await fetch(`http://127.0.0.1:${proxy}/opencode/session`);
+    await expect(response.json()).resolves.toEqual({
+      url: "/api/session",
+      auth: `Basic ${Buffer.from("opencode:test-password").toString("base64")}`,
+    });
   });
 });

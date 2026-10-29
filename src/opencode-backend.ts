@@ -29,7 +29,7 @@ export const inject = ["webServer"];
 
 const HOST = "127.0.0.1";
 const ROUTE = "/opencode";
-const CANDIDATE_PORTS = [4097, 4098, 4099, 4100, 4101];
+const DEFAULT_CANDIDATE_PORTS = [4097, 4098, 4099, 4100, 4101];
 const HEALTH_TIMEOUT_MS = 1_500;
 const READY_TIMEOUT_MS = 30_000;
 const PASSWORD_FILE = join(homedir(), ".cache", "dsh-opencode", "password");
@@ -53,6 +53,17 @@ function opencodeBin(): string {
 
 function origin(port: number): string {
   return `http://${HOST}:${port}`;
+}
+
+/** 候选端口；`DSH_OPENCODE_PORTS` 仅供测试注入（逗号分隔）。 */
+function candidatePorts(): number[] {
+  const raw = process.env.DSH_OPENCODE_PORTS;
+  if (raw === undefined || raw === "") return DEFAULT_CANDIDATE_PORTS;
+  const parsed = raw
+    .split(",")
+    .map((part) => Number(part.trim()))
+    .filter((port) => Number.isInteger(port) && port > 0);
+  return parsed.length === 0 ? DEFAULT_CANDIDATE_PORTS : parsed;
 }
 
 let passwordCache: string | undefined;
@@ -90,12 +101,12 @@ export function backendAuthHeader(): string {
   return `Basic ${Buffer.from(`opencode:${backendPassword()}`).toString("base64")}`;
 }
 
-let activeOrigin: string | undefined;
+let active: { origin: string; port: number } | undefined;
 
 /** 当前后端地址；仅可在 `ensureBackend()` 成功之后调用。 */
 export function backendBaseUrl(): string {
-  if (activeOrigin === undefined) throw new Error("opencode backend is not ready");
-  return activeOrigin;
+  if (active === undefined) throw new Error("opencode backend is not ready");
+  return active.origin;
 }
 
 type PortState = "ready" | "busy" | "down";
@@ -133,10 +144,10 @@ let booting: Promise<void> | undefined;
  */
 export function ensureBackend(): Promise<void> {
   booting ??= (async () => {
-    for (const port of CANDIDATE_PORTS) {
+    for (const port of candidatePorts()) {
       const state = await probe(port);
       if (state === "ready") {
-        activeOrigin = origin(port);
+        active = { origin: origin(port), port };
         return;
       }
       if (state === "busy") continue;
@@ -144,7 +155,7 @@ export function ensureBackend(): Promise<void> {
       const deadline = Date.now() + READY_TIMEOUT_MS;
       while (Date.now() < deadline) {
         if ((await probe(port)) === "ready") {
-          activeOrigin = origin(port);
+          active = { origin: origin(port), port };
           return;
         }
         await sleep(300);
@@ -180,16 +191,14 @@ function upstreamHeaders(
   return out;
 }
 
-let activePort: number | undefined;
-
 function proxyRequest(request: IncomingMessage, response: ServerResponse): void {
-  if (activeOrigin === undefined || activePort === undefined) {
+  if (active === undefined) {
     response.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
     response.end("opencode backend unavailable");
     return;
   }
   forwardTo(
-    { host: HOST, port: activePort, route: ROUTE, prefix: "/api" },
+    { host: HOST, port: active.port, route: ROUTE, prefix: "/api" },
     request,
     response,
     { authorization: backendAuthHeader() },

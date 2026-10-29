@@ -35,7 +35,7 @@ import {
 } from "./opencode-backend.ts";
 
 export const name = "dsh-config-opencode";
-export const inject = ["llm"];
+export const inject = ["llm", "sessions"];
 
 export const PROVIDER = "opencode-free";
 
@@ -244,14 +244,17 @@ async function sessionAlive(id: string): Promise<boolean> {
 }
 
 /** 复用 dsh 会话映射的 opencode 会话；不存在则新建。 */
-async function ensureSession(key: string): Promise<{ id: string; created: boolean }> {
+async function ensureSession(
+  key: string,
+  cwd: string,
+): Promise<{ id: string; created: boolean }> {
   const existing = sessionMap.get(key);
   if (existing !== undefined && (await sessionAlive(existing))) {
     return { id: existing, created: false };
   }
   const response = await postJson("/api/session", {
     title: "dsh",
-    location: { directory: process.cwd() },
+    location: { directory: cwd },
   });
   if (!response.ok) throw new Error(`opencode: create session failed (HTTP ${response.status})`);
   const payload = (await response.json()) as { data?: { id?: string } };
@@ -329,6 +332,23 @@ async function interruptSession(id: string): Promise<void> {
 }
 
 class OpencodeServeAdapter extends LlmAdapter {
+  constructor(private readonly ctx?: Context) {
+    super();
+  }
+
+  /** dsh 会话的 cwd（会话日志按项目分目录）；未入 store 时回退进程目录。 */
+  private sessionCwd(sessionId: GenerateOptions["sessionId"]): string {
+    if (sessionId !== undefined) {
+      try {
+        const cwd = this.ctx?.sessions.get(sessionId)?.header.cwd;
+        if (cwd !== undefined && cwd !== "") return cwd;
+      } catch {
+        // 会话尚未进入 store 等：回退进程目录。
+      }
+    }
+    return process.cwd();
+  }
+
   override providerInfo(provider: string) {
     return { id: provider, name: "OpenCode Free" };
   }
@@ -379,7 +399,7 @@ class OpencodeServeAdapter extends LlmAdapter {
 
     await bootstrapBackend();
     const { providerID, modelID } = parseModel(options.model);
-    const session = await ensureSession(key);
+    const session = await ensureSession(key, this.sessionCwd(options.sessionId));
 
     // 复用会话时也要切回用户当前选择的模型。
     const switched = await postJson(`/api/session/${session.id}/model`, {
@@ -534,8 +554,8 @@ class OpencodeServeAdapter extends LlmAdapter {
   }
 }
 
-export function createOpencodeAdapter(_ctx?: Context): OpencodeServeAdapter {
-  return new OpencodeServeAdapter();
+export function createOpencodeAdapter(ctx?: Context): OpencodeServeAdapter {
+  return new OpencodeServeAdapter(ctx);
 }
 
 /** 注册「OpenCode Free」provider（路由 opencode-free），并后台拉起 serve。 */
