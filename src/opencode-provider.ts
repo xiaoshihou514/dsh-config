@@ -28,8 +28,15 @@ import type {
 } from "@deepseek-ai/dsh-llm";
 import type { ResolvedRetryPolicy } from "@deepseek-ai/dsh-llm";
 import { resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
+import z from "@deepseek-ai/schemastery";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  DEFAULT_TEST_URL,
+  createClashRotator,
+  resolveClashOptions,
+  type ClashRotator,
+} from "./clash.ts";
 import {
   backendAuthHeader,
   backendBaseUrl,
@@ -41,6 +48,46 @@ export const name = "dsh-config-opencode";
 export const inject = ["llm", "sessions"];
 
 export const PROVIDER = "opencode-free";
+
+/**
+ * 免费模型限流时自动切换 Clash 出口节点。
+ *
+ * 默认启用：探测不到 Clash（或没配代理组）时只是跳过切换，不影响正常请求。
+ * 也可以用 `DSH_CLASH_DISABLE=1`、`DSH_CLASH_API`、`DSH_CLASH_GROUP` 等
+ * 环境变量临时覆盖，详见 `./clash.ts`。
+ */
+export const Config = z.object({
+  /** 限流时自动切换出口节点。 */
+  clashEnabled: z.boolean().default(true),
+  /** external-controller 地址（unix socket 路径或 http://127.0.0.1:9090）；留空自动探测。 */
+  clashApi: z.string().default(""),
+  /** external-controller 的 secret。 */
+  clashSecret: z.string().default(""),
+  /** 手动指定代理组；留空按 opencode.ai 的实际连接链自动识别。 */
+  clashGroup: z.string().default(""),
+  /** 节点延迟测试 URL。 */
+  clashTestUrl: z.string().default(DEFAULT_TEST_URL),
+  /** 测速超时（ms）。 */
+  clashTimeoutMs: z.number().default(3_000),
+  /** 两次自动切换的最小间隔（ms）。 */
+  clashCooldownMs: z.number().default(3_000),
+  /** 最近切换过的节点数量，避免来回弹。 */
+  clashAvoidRecent: z.number().default(3),
+  /** 限流后重发同一轮请求的最大次数。 */
+  limitRetries: z.number().default(3),
+});
+
+export interface OpencodeConfig {
+  clashEnabled?: boolean;
+  clashApi?: string;
+  clashSecret?: string;
+  clashGroup?: string;
+  clashTestUrl?: string;
+  clashTimeoutMs?: number;
+  clashCooldownMs?: number;
+  clashAvoidRecent?: number;
+  limitRetries?: number;
+}
 
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_MAX_TOKENS = 32_000;
@@ -125,6 +172,33 @@ const RETRY_POLICY = {
 } satisfies import("@deepseek-ai/dsh-llm").RetryPolicyConfig;
 
 let cached: OpencodeModel[] = FALLBACK_MODELS;
+
+/**
+ * opencode 的免费额度/限流失败：`provider.free-limit`（配额类，通常不自动
+ * 重试）、`provider.rate-limit`（429）以及消息里带 429/rate limit 的兜底。
+ */
+const LIMIT_PATTERN =
+  /(?:^|\D)429(?:\D|$)|rate[\s_-]?limit|too many requests|free usage limit|freeusagelimiterror/i;
+
+/** 从 opencode 的错误对象/字符串里识别限流；命中返回可读的标记。 */
+export function limitFailure(value: unknown): string | undefined {
+  if (typeof value === "string")
+    return LIMIT_PATTERN.test(value) ? value.slice(0, 200) : undefined;
+  if (value === null || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const type = typeof record["type"] === "string" ? record["type"] : "";
+  if (type === "provider.free-limit" || type === "provider.rate-limit")
+    return type;
+  for (const key of ["message", "body", "detail", "error"]) {
+    const found = limitFailure(record[key]);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+/** 自动切换节点；`undefined` 表示 Clash 不可用，调用方应放弃追加重试。 */
+let rotator: ClashRotator = createClashRotator(resolveClashOptions());
+let limitRetries = 3;
 
 function parseModel(model: string): { providerID: string; modelID: string } {
   const slash = model.indexOf("/");
@@ -393,8 +467,21 @@ async function interruptSession(id: string): Promise<void> {
 }
 
 class OpencodeServeAdapter extends LlmAdapter {
-  constructor(private readonly ctx?: Context) {
+  constructor(
+    private readonly ctx?: Context,
+    private readonly clash: ClashRotator = rotator,
+  ) {
     super();
+  }
+
+  /** 切换 Clash 出口节点；返回是否真的发生了切换。 */
+  private async rotate(reason: string): Promise<boolean> {
+    try {
+      return (await this.clash.rotate(reason)) !== undefined;
+    } catch (error: unknown) {
+      console.error("[dsh-config] clash rotation failed:", error);
+      return false;
+    }
   }
 
   /** dsh 会话的 cwd（会话日志按项目分目录）；未入 store 时回退进程目录。 */
@@ -464,21 +551,39 @@ class OpencodeServeAdapter extends LlmAdapter {
       return;
     }
     const { providerID, modelID } = parseModel(options.model);
-    const response = await fetch(`${backendBaseUrl()}/api/experimental/generate/text`, {
-      method: "POST",
-      headers: { ...authHeaders(), "content-type": "application/json" },
-      body: JSON.stringify({ prompt, model: { providerID, id: modelID } }),
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-    });
-    const body = (await response.json().catch(() => undefined)) as
-      | { data?: { text?: string }; message?: string }
-      | undefined;
-    if (!response.ok) {
+    let response: Response | undefined;
+    let body: { data?: { text?: string }; message?: string } | undefined;
+    for (let attempt = 0; attempt <= limitRetries; attempt += 1) {
+      response = await fetch(
+        `${backendBaseUrl()}/api/experimental/generate/text`,
+        {
+          method: "POST",
+          headers: { ...authHeaders(), "content-type": "application/json" },
+          body: JSON.stringify({ prompt, model: { providerID, id: modelID } }),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        },
+      );
+      body = (await response.json().catch(() => undefined)) as
+        { data?: { text?: string }; message?: string } | undefined;
+      if (response.ok) break;
       const detail = body?.message ?? `HTTP ${response.status}`;
+      // 辅助请求（标题/压缩）每次都是独立的一次生成，可以放心换节点后重发。
+      if (
+        (response.status === 429 || limitFailure(detail) !== undefined) &&
+        attempt < limitRetries &&
+        (await this.rotate(`auxiliary ${response.status}`))
+      ) {
+        continue;
+      }
       throw new LlmError(
         `opencode: auxiliary generate failed (${detail})`,
-        response.status === 429 ? "RATE_LIMIT" : "PROVIDER",
+        response.status === 429 || limitFailure(detail) !== undefined
+          ? "RATE_LIMIT"
+          : "PROVIDER",
       );
+    }
+    if (response === undefined || !response.ok) {
+      throw new LlmError("opencode: auxiliary generate failed", "RATE_LIMIT");
     }
     const text = body?.data?.text ?? "";
     if (text !== "") yield { type: "text-delta", index: 0, text };
@@ -515,151 +620,219 @@ class OpencodeServeAdapter extends LlmAdapter {
       history === "" ? text : `${history}\n\n[当前用户消息]\n${text}`;
 
     const signal = options.signal ?? new AbortController().signal;
-    const events = openEvents(signal);
-    const abortUpstream = (): void => {
-      void interruptSession(session.id);
-    };
-    signal.addEventListener("abort", abortUpstream, { once: true });
+    /** 已经向 UI 输出过内容后就不再自动重发，避免重复文本。 */
+    let emitted = false;
+    let retries = 0;
 
-    try {
-      // 先建立 SSE 连接（消费 server.connected），避免 prompt 触发的早期事件丢失。
-      await events.next();
-      const prompt = await postJson(`/api/session/${session.id}/prompt`, {
-        text: promptText,
-      });
-      if (!prompt.ok) {
-        const detail = await prompt.text().catch(() => "");
-        throw new Error(
-          `opencode: prompt failed (HTTP ${prompt.status})` +
-            (detail === "" ? "" : ` ${detail.slice(0, 300)}`),
-        );
-      }
-
-      let nextIndex = 0;
-      const partIndex = new Map<string, number>();
-      const seenDelta = new Set<string>();
-      const emittedEnd = new Set<string>();
-      let usage: TokenUsage | undefined;
-      let finishKind: "stop" | "max-tokens" = "stop";
-
-      const indexOf = (partKey: string): number => {
-        let index = partIndex.get(partKey);
-        if (index === undefined) {
-          index = nextIndex;
-          nextIndex += 1;
-          partIndex.set(partKey, index);
-        }
-        return index;
+    for (;;) {
+      const events = openEvents(signal);
+      const abortUpstream = (): void => {
+        void interruptSession(session.id);
       };
+      signal.addEventListener("abort", abortUpstream, { once: true });
+      let retry = false;
 
-      const keyOf = (
-        data: Record<string, unknown>,
-        kind: "text" | "reasoning",
-      ): string =>
-        `${String(data["assistantMessageID"])}:${String(data["ordinal"])}:${kind}`;
-
-      for await (const event of events) {
-        const data = event.data ?? {};
-        if (data["sessionID"] !== session.id) continue;
-        switch (event.type) {
-          case "session.text.delta":
-          case "session.reasoning.delta": {
-            const delta = data["delta"];
-            if (typeof delta !== "string" || delta === "") break;
-            const kind = event.type === "session.text.delta" ? "text" : "reasoning";
-            const partKey = keyOf(data, kind);
-            seenDelta.add(partKey);
-            const index = indexOf(partKey);
-            yield kind === "text"
-              ? { type: "text-delta", index, text: delta }
-              : { type: "reasoning-delta", index, text: delta };
-            break;
+      try {
+        // 先建立 SSE 连接（消费 server.connected），避免 prompt 触发的早期事件丢失。
+        await events.next();
+        const prompt = await postJson(`/api/session/${session.id}/prompt`, {
+          text: promptText,
+        });
+        if (!prompt.ok) {
+          const detail = await prompt.text().catch(() => "");
+          if (
+            prompt.status === 429 &&
+            !emitted &&
+            retries < limitRetries &&
+            (await this.rotate(`prompt ${prompt.status}`))
+          ) {
+            retries += 1;
+            continue;
           }
-          case "session.text.ended":
-          case "session.reasoning.ended": {
-            // 非增量 provider 只在完整 part 里给文本。
-            const kind = event.type === "session.text.ended" ? "text" : "reasoning";
-            const partKey = keyOf(data, kind);
-            if (seenDelta.has(partKey) || emittedEnd.has(partKey)) break;
-            const full = data["text"];
-            if (typeof full !== "string" || full === "") break;
-            emittedEnd.add(partKey);
-            const index = indexOf(partKey);
-            yield kind === "text"
-              ? { type: "text-delta", index, text: full }
-              : { type: "reasoning-delta", index, text: full };
-            break;
-          }
-          case "session.step.ended": {
-            const mapped = mapUsage(data["tokens"] as Record<string, unknown> | undefined);
-            if (mapped !== undefined) usage = mapped;
-            if (data["finish"] === "length") finishKind = "max-tokens";
-            else finishKind = "stop";
-            break;
-          }
-          case "session.execution.succeeded": {
-            if (usage !== undefined) yield { type: "usage", usage };
-            yield { type: "finish", reason: { kind: finishKind } };
-            return;
-          }
-          case "session.execution.interrupted": {
-            yield {
-              type: "finish",
-              reason: {
-                kind: "aborted",
-                failure: { message: "opencode execution interrupted", code: "ABORTED" },
-              },
-            };
-            return;
-          }
-          case "session.execution.failed": {
-            const error = data["error"] ?? data["reason"] ?? "opencode execution failed";
-            yield {
-              type: "finish",
-              reason: {
-                kind: "error",
-                failure: {
-                  message:
-                    typeof error === "string"
-                      ? error
-                      : JSON.stringify(error).slice(0, 500),
-                  code: "PROVIDER",
-                },
-              },
-            };
-            return;
-          }
-          case "permission.asked": {
-            const id = data["id"];
-            if (typeof id === "string") void replyPermission(session.id, id);
-            break;
-          }
-          default:
-            break;
+          throw new Error(
+            `opencode: prompt failed (HTTP ${prompt.status})` +
+              (detail === "" ? "" : ` ${detail.slice(0, 300)}`),
+          );
         }
-      }
 
-      // SSE 意外结束：把已收到的内容按正常结束处理，避免 UI 卡在流式态。
-      if (usage !== undefined) yield { type: "usage", usage };
-      yield { type: "finish", reason: { kind: finishKind } };
-    } catch (error: unknown) {
-      if (signal.aborted) {
-        throw new LlmError("opencode request aborted by caller", "ABORTED", { cause: error });
+        let nextIndex = 0;
+        const partIndex = new Map<string, number>();
+        const seenDelta = new Set<string>();
+        const emittedEnd = new Set<string>();
+        let usage: TokenUsage | undefined;
+        let finishKind: "stop" | "max-tokens" = "stop";
+
+        const indexOf = (partKey: string): number => {
+          let index = partIndex.get(partKey);
+          if (index === undefined) {
+            index = nextIndex;
+            nextIndex += 1;
+            partIndex.set(partKey, index);
+          }
+          return index;
+        };
+
+        const keyOf = (
+          data: Record<string, unknown>,
+          kind: "text" | "reasoning",
+        ): string =>
+          `${String(data["assistantMessageID"])}:${String(data["ordinal"])}:${kind}`;
+
+        eventLoop: for await (const event of events) {
+          const data = event.data ?? {};
+          if (data["sessionID"] !== session.id) continue;
+          switch (event.type) {
+            case "session.text.delta":
+            case "session.reasoning.delta": {
+              const delta = data["delta"];
+              if (typeof delta !== "string" || delta === "") break;
+              const kind =
+                event.type === "session.text.delta" ? "text" : "reasoning";
+              const partKey = keyOf(data, kind);
+              seenDelta.add(partKey);
+              emitted = true;
+              const index = indexOf(partKey);
+              yield kind === "text"
+                ? { type: "text-delta", index, text: delta }
+                : { type: "reasoning-delta", index, text: delta };
+              break;
+            }
+            case "session.text.ended":
+            case "session.reasoning.ended": {
+              // 非增量 provider 只在完整 part 里给文本。
+              const kind =
+                event.type === "session.text.ended" ? "text" : "reasoning";
+              const partKey = keyOf(data, kind);
+              if (seenDelta.has(partKey) || emittedEnd.has(partKey)) break;
+              const full = data["text"];
+              if (typeof full !== "string" || full === "") break;
+              emittedEnd.add(partKey);
+              emitted = true;
+              const index = indexOf(partKey);
+              yield kind === "text"
+                ? { type: "text-delta", index, text: full }
+                : { type: "reasoning-delta", index, text: full };
+              break;
+            }
+            case "session.step.ended": {
+              const mapped = mapUsage(
+                data["tokens"] as Record<string, unknown> | undefined,
+              );
+              if (mapped !== undefined) usage = mapped;
+              if (data["finish"] === "length") finishKind = "max-tokens";
+              else finishKind = "stop";
+              break;
+            }
+            case "session.retry.scheduled": {
+              // opencode 自己准备重试：先把出口换到延迟最低的其他节点，
+              // 让下一次尝试走新 IP（不阻塞事件消费）。
+              if (limitFailure(data["error"]) !== undefined) {
+                void this.rotate("opencode retry");
+              }
+              break;
+            }
+            case "session.execution.succeeded": {
+              if (usage !== undefined) yield { type: "usage", usage };
+              yield { type: "finish", reason: { kind: finishKind } };
+              return;
+            }
+            case "session.execution.interrupted": {
+              yield {
+                type: "finish",
+                reason: {
+                  kind: "aborted",
+                  failure: {
+                    message: "opencode execution interrupted",
+                    code: "ABORTED",
+                  },
+                },
+              };
+              return;
+            }
+            case "session.execution.failed": {
+              const error =
+                data["error"] ?? data["reason"] ?? "opencode execution failed";
+              const limited = limitFailure(error) !== undefined;
+              if (limited) {
+                if (
+                  !emitted &&
+                  retries < limitRetries &&
+                  (await this.rotate("execution limit"))
+                ) {
+                  retries += 1;
+                  retry = true;
+                  break eventLoop;
+                }
+                // 已经输出过内容（或重试次数用完）：至少让下一轮换个出口。
+                void this.rotate("execution limit");
+              }
+              yield {
+                type: "finish",
+                reason: {
+                  kind: "error",
+                  failure: {
+                    message:
+                      typeof error === "string"
+                        ? error
+                        : JSON.stringify(error).slice(0, 500),
+                    code: limited ? "RATE_LIMIT" : "PROVIDER",
+                  },
+                },
+              };
+              return;
+            }
+            case "permission.asked": {
+              const id = data["id"];
+              if (typeof id === "string") void replyPermission(session.id, id);
+              break;
+            }
+            default:
+              break;
+          }
+        }
+
+        if (retry) continue;
+
+        // SSE 意外结束：把已收到的内容按正常结束处理，避免 UI 卡在流式态。
+        if (usage !== undefined) yield { type: "usage", usage };
+        yield { type: "finish", reason: { kind: finishKind } };
+        return;
+      } catch (error: unknown) {
+        if (signal.aborted) {
+          throw new LlmError("opencode request aborted by caller", "ABORTED", {
+            cause: error,
+          });
+        }
+        throw error;
+      } finally {
+        signal.removeEventListener("abort", abortUpstream);
+        await events.return(undefined).catch(() => undefined);
       }
-      throw error;
-    } finally {
-      signal.removeEventListener("abort", abortUpstream);
-      await events.return(undefined).catch(() => undefined);
     }
   }
 }
 
-export function createOpencodeAdapter(ctx?: Context): OpencodeServeAdapter {
-  return new OpencodeServeAdapter(ctx);
+export function createOpencodeAdapter(
+  ctx?: Context,
+  clash?: ClashRotator,
+): OpencodeServeAdapter {
+  return new OpencodeServeAdapter(ctx, clash ?? rotator);
 }
 
 /** 注册「OpenCode Free」provider（路由 opencode-free），并后台拉起 serve。 */
-export function apply(ctx: Context): void {
-  ctx.llm.registerAdapter([PROVIDER], createOpencodeAdapter(ctx));
+export function apply(ctx: Context, config: OpencodeConfig = {}): void {
+  const options = resolveClashOptions({
+    enabled: config.clashEnabled,
+    api: config.clashApi,
+    secret: config.clashSecret,
+    group: config.clashGroup,
+    testUrl: config.clashTestUrl,
+    timeoutMs: config.clashTimeoutMs,
+    cooldownMs: config.clashCooldownMs,
+    avoidRecent: config.clashAvoidRecent,
+  });
+  rotator = createClashRotator(options);
+  limitRetries = Math.max(0, Math.trunc(config.limitRetries ?? 3));
+  ctx.llm.registerAdapter([PROVIDER], new OpencodeServeAdapter(ctx, rotator));
   void bootstrapBackend();
 }
