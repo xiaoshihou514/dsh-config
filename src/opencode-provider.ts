@@ -28,11 +28,14 @@ import type {
 } from "@deepseek-ai/dsh-llm";
 import type { ResolvedRetryPolicy } from "@deepseek-ai/dsh-llm";
 import { resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   backendAuthHeader,
   backendBaseUrl,
   ensureBackend,
 } from "./opencode-backend.ts";
+import { readSessionMap, writeSessionMap } from "./opencode-session-map.ts";
 
 export const name = "dsh-config-opencode";
 export const inject = ["llm", "sessions"];
@@ -221,7 +224,12 @@ function seedHistory(messages: GenerateOptions["messages"]): string {
   return `以下是此前的对话，请在此基础上继续：\n\n${lines.join("\n\n")}`;
 }
 
-const sessionMap = new Map<string, string>();
+/** dsh 会话 → opencode 会话，跨 dsh 重启持久化（测试可用环境变量改写路径）。 */
+const SESSION_MAP_FILE =
+  process.env.DSH_OPENCODE_SESSION_MAP ??
+  join(homedir(), ".cache", "dsh-opencode", "sessions.json");
+
+const sessionMap = readSessionMap(SESSION_MAP_FILE);
 
 async function postJson(path: string, body?: unknown): Promise<Response> {
   return fetch(`${backendBaseUrl()}${path}`, {
@@ -231,26 +239,53 @@ async function postJson(path: string, body?: unknown): Promise<Response> {
   });
 }
 
-async function sessionAlive(id: string): Promise<boolean> {
+type SessionState = "alive" | "missing" | "unknown";
+
+/**
+ * 探测 opencode 会话是否仍在。只有明确的 404 才算「已删除」；超时、5xx
+ * 等一律视为「未知」并继续复用——否则 serve 刚启动时的慢响应就会被误判
+ * 成会话不存在，白白重建会话。
+ */
+async function sessionState(id: string): Promise<SessionState> {
   try {
     const response = await fetch(`${backendBaseUrl()}/api/session/${id}`, {
       headers: authHeaders(),
-      signal: AbortSignal.timeout(2_000),
+      signal: AbortSignal.timeout(5_000),
     });
-    return response.ok;
+    if (response.ok) return "alive";
+    return response.status === 404 ? "missing" : "unknown";
   } catch {
-    return false;
+    return "unknown";
   }
 }
 
-/** 复用 dsh 会话映射的 opencode 会话；不存在则新建。 */
+/** 同一 dsh 会话的并发请求共享一次建立/复用，避免各建一个 opencode 会话。 */
+const ensuring = new Map<string, Promise<{ id: string; created: boolean }>>();
+
+/** 复用 dsh 会话映射的 opencode 会话；确认已删除时才新建。 */
 async function ensureSession(
   key: string,
   cwd: string,
 ): Promise<{ id: string; created: boolean }> {
+  const running = ensuring.get(key);
+  if (running !== undefined) return running;
+  const task = openSession(key, cwd).finally(() => ensuring.delete(key));
+  ensuring.set(key, task);
+  return task;
+}
+
+async function openSession(
+  key: string,
+  cwd: string,
+): Promise<{ id: string; created: boolean }> {
   const existing = sessionMap.get(key);
-  if (existing !== undefined && (await sessionAlive(existing))) {
+  if (existing !== undefined && (await sessionState(existing)) !== "missing") {
     return { id: existing, created: false };
+  }
+  if (existing !== undefined) {
+    // opencode 侧会话已被删除：忘掉这条映射，下面重建。
+    sessionMap.delete(key);
+    writeSessionMap(SESSION_MAP_FILE, sessionMap);
   }
   const response = await postJson("/api/session", {
     title: "dsh",
@@ -261,6 +296,7 @@ async function ensureSession(
   const id = payload.data?.id;
   if (id === undefined) throw new Error("opencode: create session returned no id");
   sessionMap.set(key, id);
+  writeSessionMap(SESSION_MAP_FILE, sessionMap);
   return { id, created: true };
 }
 
