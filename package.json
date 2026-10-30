@@ -23,18 +23,6 @@
       "types": "./lib/opencode-backend.d.ts",
       "default": "./lib/opencode-backend.js"
     },
-    "./copilot-provider": {
-      "types": "./lib/copilot-provider.d.ts",
-      "default": "./lib/copilot-provider.js"
-    },
-    "./codex-provider": {
-      "types": "./lib/codex-provider.d.ts",
-      "default": "./lib/codex-provider.js"
-    },
-    "./codex-imagegen": {
-      "types": "./lib/codex-imagegen.d.ts",
-      "default": "./lib/codex-imagegen.js"
-    },
     "./inject-once": {
       "types": "./lib/inject-once.d.ts",
       "default": "./lib/inject-once.js"
@@ -90,7 +78,6 @@
     "@deepseek-ai/dsh-compaction": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-host-webserver": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-llm": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-llm-pi-ai": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-session": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-tools": "^0.2.0-rc.2",
     "react": "^18.2.0"
@@ -109,14 +96,12 @@
     "@deepseek-ai/dsh-compaction": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-host-webserver": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-llm": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-llm-pi-ai": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-sandbox-policy": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-session": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-settings": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-tools": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-user-approval": "^0.2.0-rc.2",
     "@deepseek-ai/schemastery": "~3.18.4",
-    "@earendil-works/pi-ai": "^0.87.1",
     "@types/node": "^22.20.0",
     "@types/react": "^18.3.1",
     "@types/react-dom": "~18.3.7",

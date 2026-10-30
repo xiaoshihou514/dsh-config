@@ -13,8 +13,6 @@ import type {} from "@deepseek-ai/dsh-client-ui-sidebar/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-plugin-manager/client";
 import { UsageTrigger } from "./UsageTrigger.tsx";
-import { CodexLoginCard } from "./CodexLoginCard.tsx";
-import { CopilotLoginCard } from "./CopilotLoginCard.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
 import { TurnNotify } from "./TurnNotify.tsx";
 
@@ -37,14 +35,6 @@ export function apply(ctx: Context): void {
     TurnNotify,
   ));
   // 插件管理器（侧边栏插件按钮 → dsh-config → 行「配置」）的行配置页。
-  ctx.slots.inject("plugins.row.config", () => ctx.slots.register(
-    { name: "plugins.row.config", key: ROW_KEY("dsh-config-codex-provider") },
-    CodexLoginCard,
-  ));
-  ctx.slots.inject("plugins.row.config", () => ctx.slots.register(
-    { name: "plugins.row.config", key: ROW_KEY("dsh-config-copilot-provider") },
-    CopilotLoginCard,
-  ));
   ctx.slots.inject("plugins.row.config", () => ctx.slots.register(
     { name: "plugins.row.config", key: ROW_KEY("dsh-config-inject-once") },
     InjectOnceCard,
