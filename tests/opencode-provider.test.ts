@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   PROVIDER,
   createOpencodeAdapter,
+  directoryFromLocation,
   limitFailure,
 } from "../src/opencode-provider.ts";
 
@@ -31,6 +32,27 @@ describe("OpenCode 限流识别", () => {
     expect(
       limitFailure({ type: "provider.auth", message: "invalid key" }),
     ).toBeUndefined();
+  });
+});
+
+describe("OpenCode 工作区目录", () => {
+  it("采用 location.get 解析出的规范目录", () => {
+    expect(
+      directoryFromLocation(
+        {
+          location: { directory: "/workspace/app" },
+          data: {
+            directory: "/workspace/app",
+            project: {
+              id: "prj_app",
+              directory: "/workspace/app",
+              canonical: "/workspace/app",
+            },
+          },
+        },
+        "/tmp/link",
+      ),
+    ).toBe("/workspace/app");
   });
 });
 

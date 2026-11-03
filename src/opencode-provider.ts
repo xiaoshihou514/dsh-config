@@ -6,12 +6,14 @@
  * 形态：
  *  - adapter 是「黑盒 agent 模型」：只把用户文本交给 opencode 会话，opencode
  *    在自己的进程里跑工具（read/edit/bash…）并请求权限，最终把文本流回来。
- *  - dsh 的 agent loop 仍负责会话日志、上下文管理与 UI；dsh 的 tools 不会
- *    重复执行，工具进度只存在于 opencode 侧。
+ *  - 工具调用写回 dsh 会话供 UI 展示；待办与目标同步到对应面板。dsh 不重复
+ *    执行这些工具，目标也不在 dsh 侧自动续跑。
  *  - 只在首次创建 opencode 会话时把 dsh 既有历史拼进提示；之后复用会话，
  *    只发送新增用户消息。
  *  - opencode 的权限请求默认自动允许一次（无人值守）；中断时调用 v2 的
  *    `/api/session/:id/interrupt`。
+ *  - 免费模型 429 并切走出口后，不再沿用原会话：先把已有内容总结，再开
+ *    新的 opencode 会话继续，避免上游从消息序号把换 IP 前后认成同一次对话。
  *
  * v2 的 serve 需要 Basic 认证（用户名 `opencode`），密码与端口由
  * `./opencode-backend.ts` 统一管理，dsh 重启后可复用同一实例。
@@ -42,10 +44,23 @@ import {
   backendBaseUrl,
   ensureBackend,
 } from "./opencode-backend.ts";
+import {
+  createOpencodeActivity,
+  openOpencodeSink,
+  type OpencodeActivity,
+} from "./opencode-activity.ts";
+import {
+  formatOpencodeTranscript,
+  handoffPrompt,
+  localDigest,
+  scrubIds,
+} from "./opencode-handoff.ts";
 import { readSessionMap, writeSessionMap } from "./opencode-session-map.ts";
 
 export const name = "dsh-config-opencode";
-export const inject = ["llm", "sessions"];
+// agents / goals 必须声明 inject，否则 Cordis 隔离上下文读取时会抛
+// cannot get property "agents" without inject，工具卡和目标都写不回去。
+export const inject = ["llm", "sessions", "agents", "goals"];
 
 export const PROVIDER = "opencode-free";
 
@@ -199,6 +214,8 @@ export function limitFailure(value: unknown): string | undefined {
 /** 自动切换节点；`undefined` 表示 Clash 不可用，调用方应放弃追加重试。 */
 let rotator: ClashRotator = createClashRotator(resolveClashOptions());
 let limitRetries = 3;
+/** 同一出口连续碰到这么多次 429，才换下一个节点。 */
+const LIMITS_BEFORE_ROTATE = 3;
 
 function parseModel(model: string): { providerID: string; modelID: string } {
   const slash = model.indexOf("/");
@@ -330,6 +347,17 @@ const SESSION_MAP_FILE =
 
 const sessionMap = readSessionMap(SESSION_MAP_FILE);
 
+/**
+ * 限流换出口后、下一次发言才用得上的交接摘要。
+ * 本轮已经输出过内容时不能当场重说，摘要留到下一条用户消息。
+ */
+const pendingHandoff = new Map<string, string>();
+
+type LimitShift =
+  | { action: "skipped" }
+  | { action: "parked" }
+  | { action: "retry"; sessionId: string; prompt: string; retries: number };
+
 async function postJson(path: string, body?: unknown): Promise<Response> {
   return fetch(`${backendBaseUrl()}${path}`, {
     method: "POST",
@@ -379,6 +407,9 @@ async function openSession(
 ): Promise<{ id: string; created: boolean }> {
   const existing = sessionMap.get(key);
   if (existing !== undefined && (await sessionState(existing)) !== "missing") {
+    // 已有会话如果建在别的目录，工作区视图不会把它列在当前文件夹下。
+    const location = await sessionLocation(cwd);
+    await placeSession(existing, location.directory);
     return { id: existing, created: false };
   }
   if (existing !== undefined) {
@@ -386,9 +417,23 @@ async function openSession(
     sessionMap.delete(key);
     writeSessionMap(SESSION_MAP_FILE, sessionMap);
   }
+  return { id: await createSession(key, cwd), created: true };
+}
+
+/** 丢掉当前映射并新建 opencode 会话，消息序号从 1 重新开始。 */
+async function replaceSession(key: string, cwd: string): Promise<string> {
+  sessionMap.delete(key);
+  writeSessionMap(SESSION_MAP_FILE, sessionMap);
+  return createSession(key, cwd);
+}
+
+async function createSession(key: string, cwd: string): Promise<string> {
+  // 工作区视图按 location.get 返回的规范目录和 subpath 列会话。
+  // 直接传原始 cwd（符号链接、尾斜杠）会对不上文件夹，会话就进不了该目录。
+  const location = await sessionLocation(cwd);
   const response = await postJson("/api/session", {
     title: "dsh",
-    location: { directory: cwd },
+    location,
   });
   if (!response.ok) throw new Error(`opencode: create session failed (HTTP ${response.status})`);
   const payload = (await response.json()) as { data?: { id?: string } };
@@ -396,7 +441,168 @@ async function openSession(
   if (id === undefined) throw new Error("opencode: create session returned no id");
   sessionMap.set(key, id);
   writeSessionMap(SESSION_MAP_FILE, sessionMap);
-  return { id, created: true };
+  return id;
+}
+
+/** 从 `GET /api/location` 的响应里取出工作区视图使用的目录。 */
+export function directoryFromLocation(body: unknown, fallback: string): string {
+  if (body === null || typeof body !== "object") return fallback;
+  const record = body as Record<string, unknown>;
+  const data =
+    record["data"] !== null && typeof record["data"] === "object"
+      ? (record["data"] as Record<string, unknown>)
+      : record;
+  const location =
+    record["location"] !== null && typeof record["location"] === "object"
+      ? (record["location"] as Record<string, unknown>)
+      : undefined;
+  const directory =
+    typeof data["directory"] === "string"
+      ? data["directory"]
+      : location !== undefined && typeof location["directory"] === "string"
+        ? location["directory"]
+        : undefined;
+  return directory !== undefined && directory.trim() !== "" ? directory : fallback;
+}
+
+async function sessionDirectory(id: string): Promise<string | undefined> {
+  try {
+    const response = await fetch(`${backendBaseUrl()}/api/session/${id}`, {
+      headers: authHeaders(),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as {
+      data?: { location?: { directory?: string } };
+      location?: { directory?: string };
+    };
+    const directory = body.data?.location?.directory ?? body.location?.directory;
+    return typeof directory === "string" && directory !== "" ? directory : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 把已有会话挪到工作区视图正在看的那个目录。 */
+async function placeSession(id: string, directory: string): Promise<void> {
+  const current = await sessionDirectory(id);
+  if (current === undefined || current === directory) return;
+  await postJson(`/api/session/${id}/move`, { directory }).catch(() => undefined);
+}
+
+async function sessionLocation(cwd: string): Promise<{ directory: string }> {
+  try {
+    const url = new URL(`${backendBaseUrl()}/api/location`);
+    // deepObject：与 OpenCode 客户端的 location.get({ directory }) 一致。
+    url.search = `location[directory]=${encodeURIComponent(cwd)}`;
+    const response = await fetch(url, {
+      headers: authHeaders(),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) return { directory: cwd };
+    return { directory: directoryFromLocation(await response.json(), cwd) };
+  } catch {
+    return { directory: cwd };
+  }
+}
+
+function conversationTranscript(messages: GenerateOptions["messages"]): string {
+  const lines: string[] = [];
+  for (const message of messages) {
+    if (message.role === "system") continue;
+    const text = textOf(message);
+    if (text.trim() === "") continue;
+    const label =
+      message.role === "assistant" ? "助手" : message.role === "user" ? "用户" : message.role;
+    lines.push(`${label}：${text}`);
+  }
+  return lines.join("\n\n");
+}
+
+async function loadTranscript(sessionId: string, signal: AbortSignal): Promise<string> {
+  try {
+    const response = await fetch(
+      `${backendBaseUrl()}/api/session/${sessionId}/message?limit=80&order=asc`,
+      { headers: authHeaders(), signal },
+    );
+    if (!response.ok) return "";
+    return formatOpencodeTranscript(await response.json());
+  } catch (error: unknown) {
+    if (signal.aborted) throw error;
+    return "";
+  }
+}
+
+/** 换出口之后做一次无会话总结；失败则退回截短的原文。 */
+async function handoverBrief(
+  sessionId: string,
+  model: { providerID: string; id: string },
+  fallback: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const remote = scrubIds(await loadTranscript(sessionId, signal));
+  const source = remote.trim() !== "" ? remote : scrubIds(fallback);
+  if (source.trim() === "") return "";
+  const summary = await summarize(source, model, signal);
+  return (summary ?? localDigest(source)).trim();
+}
+
+function consumePendingHandoff(key: string, userText: string, normal: string): string {
+  const parked = pendingHandoff.get(key);
+  if (parked === undefined) return normal;
+  pendingHandoff.delete(key);
+  return handoffPrompt(parked, userText);
+}
+
+function limitFinish(error: unknown): StreamChunk {
+  const message =
+    typeof error === "string"
+      ? error
+      : error === undefined
+        ? "opencode rate limit"
+        : JSON.stringify(error).slice(0, 500);
+  return {
+    type: "finish",
+    reason: {
+      kind: "error",
+      failure: { message, code: "RATE_LIMIT" },
+    },
+  };
+}
+
+async function summarize(
+  transcript: string,
+  model: { providerID: string; id: string },
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  const clipped =
+    transcript.length <= 24_000
+      ? transcript
+      : `${transcript.slice(0, 16_000)}\n\n…\n\n${transcript.slice(-7_000)}`;
+  const prompt = [
+    "把下面的编程会话压成交接摘要，给一个全新的会话继续干活。",
+    "保留用户目标、已改文件、关键结论和未完成事项。",
+    "不要写会话编号、消息序号或内部 id。不要粘贴工具的原始长输出。",
+    "",
+    clipped,
+  ].join("\n");
+  try {
+    const response = await fetch(`${backendBaseUrl()}/api/experimental/generate/text`, {
+      method: "POST",
+      headers: { ...authHeaders(), "content-type": "application/json" },
+      body: JSON.stringify({ prompt, model }),
+      signal,
+    });
+    if (!response.ok) return undefined;
+    const body = (await response.json().catch(() => undefined)) as
+      | { data?: { text?: string } }
+      | undefined;
+    const text = body?.data?.text?.trim() ?? "";
+    return text === "" ? undefined : scrubIds(text);
+  } catch (error: unknown) {
+    if (signal.aborted) throw error;
+    return undefined;
+  }
 }
 
 interface ServerEvent {
@@ -474,10 +680,20 @@ class OpencodeServeAdapter extends LlmAdapter {
     super();
   }
 
-  /** 切换 Clash 出口节点；返回是否真的发生了切换。 */
-  private async rotate(reason: string): Promise<boolean> {
+  /**
+   * 切换到还没在本轮试过的出口。`tried` 会记下换之前和换之后的节点，
+   * 组里每个节点最多用一次。
+   */
+  private async rotate(reason: string, tried?: Set<string>): Promise<boolean> {
     try {
-      return (await this.clash.rotate(reason)) !== undefined;
+      const result = await this.clash.rotate(
+        reason,
+        tried === undefined ? undefined : { skip: [...tried] },
+      );
+      if (result === undefined || tried?.has(result.to) === true) return false;
+      tried?.add(result.from);
+      tried?.add(result.to);
+      return true;
     } catch (error: unknown) {
       console.error("[dsh-config] clash rotation failed:", error);
       return false;
@@ -495,6 +711,60 @@ class OpencodeServeAdapter extends LlmAdapter {
       }
     }
     return process.cwd();
+  }
+
+  /**
+   * 同一出口的 429 要攒满 3 次才换节点。还没展示给用户时，前两次在原会话上立刻重发。
+   */
+  private noteLimit(
+    strikes: number,
+    emitted: boolean,
+  ): { strikes: number; action: "retry-same" | "rotate" | "surface" } {
+    const next = strikes + 1;
+    if (next < LIMITS_BEFORE_ROTATE) {
+      return { strikes: next, action: emitted ? "surface" : "retry-same" };
+    }
+    return { strikes: 0, action: "rotate" };
+  }
+
+  /**
+   * 限流且出口已经换成新 IP 时，旧会话不能再续：序号还接着会暴露换线。
+   * 先总结旧内容，再换一个新会话。本轮还没展示给用户时立刻用摘要重发；
+   * 已经展示过就先存下摘要，等下一条用户消息再交给新会话。
+   */
+  private async shiftAfterLimit(input: {
+    reason: string;
+    key: string;
+    cwd: string;
+    sessionId: string;
+    userText: string;
+    fallback: string;
+    model: { providerID: string; id: string };
+    signal: AbortSignal;
+    emitted: boolean;
+    retries: number;
+    tried: Set<string>;
+  }): Promise<LimitShift> {
+    if (!(await this.rotate(input.reason, input.tried))) return { action: "skipped" };
+    const brief = await handoverBrief(
+      input.sessionId,
+      input.model,
+      input.fallback,
+      input.signal,
+    );
+    await interruptSession(input.sessionId);
+    const sessionId = await replaceSession(input.key, input.cwd);
+    // 连续 3 次 429 后才换出口；换过的节点本轮不再用。
+    if (!input.emitted) {
+      return {
+        action: "retry",
+        sessionId,
+        prompt: handoffPrompt(brief, input.userText),
+        retries: input.retries + 1,
+      };
+    }
+    if (brief !== "") pendingHandoff.set(input.key, brief);
+    return { action: "parked" };
   }
 
   override providerInfo(provider: string) {
@@ -603,54 +873,82 @@ class OpencodeServeAdapter extends LlmAdapter {
     }
 
     await bootstrapBackend();
-    const { providerID, modelID } = parseModel(options.model);
-    const session = await ensureSession(key, this.sessionCwd(options.sessionId));
-
-    // 复用会话时也要切回用户当前选择的模型。
-    const switched = await postJson(`/api/session/${session.id}/model`, {
-      model: { providerID, id: modelID },
-    });
-    if (!switched.ok) {
-      throw new Error(`opencode: switch model failed (HTTP ${switched.status})`);
-    }
+    const model = parseModel(options.model);
+    const cwd = this.sessionCwd(options.sessionId);
+    const session = await ensureSession(key, cwd);
+    const fallback = conversationTranscript(options.messages);
 
     // 只有新建会话才灌历史；复用会话时 opencode 自己已经记住了上一轮。
+    // 限流换过出口时，下一条消息改走摘要，不再接着旧序号。
     const history = session.created ? seedHistory(options.messages) : "";
-    const promptText =
-      history === "" ? text : `${history}\n\n[当前用户消息]\n${text}`;
+    const freshPrompt = history === "" ? text : `${history}\n\n[当前用户消息]\n${text}`;
+    let sessionId = session.id;
+    let activePrompt = consumePendingHandoff(key, text, freshPrompt);
 
     const signal = options.signal ?? new AbortController().signal;
     /** 已经向 UI 输出过内容后就不再自动重发，避免重复文本。 */
     let emitted = false;
     let retries = 0;
+    let limitStrikes = 0;
+    const triedNodes = new Set<string>();
+    const sink = openOpencodeSink(this.ctx, options.sessionId);
+    const shiftInput = () => ({
+      key,
+      cwd,
+      sessionId,
+      userText: text,
+      fallback,
+      model: { providerID: model.providerID, id: model.modelID },
+      signal,
+      emitted,
+      retries,
+      tried: triedNodes,
+    });
 
     for (;;) {
+      const attemptId = sessionId;
       const events = openEvents(signal);
       const abortUpstream = (): void => {
-        void interruptSession(session.id);
+        void interruptSession(attemptId);
       };
       signal.addEventListener("abort", abortUpstream, { once: true });
       let retry = false;
+      let activity: OpencodeActivity | undefined;
 
       try {
+        activity = createOpencodeActivity(sink, attemptId);
         // 先建立 SSE 连接（消费 server.connected），避免 prompt 触发的早期事件丢失。
         await events.next();
-        const prompt = await postJson(`/api/session/${session.id}/prompt`, {
-          text: promptText,
+        const switched = await postJson(`/api/session/${attemptId}/model`, {
+          model: { providerID: model.providerID, id: model.modelID },
         });
-        if (!prompt.ok) {
-          const detail = await prompt.text().catch(() => "");
-          if (
-            prompt.status === 429 &&
-            !emitted &&
-            retries < limitRetries &&
-            (await this.rotate(`prompt ${prompt.status}`))
-          ) {
-            retries += 1;
-            continue;
+        if (!switched.ok) {
+          throw new Error(`opencode: switch model failed (HTTP ${switched.status})`);
+        }
+        const prompted = await postJson(`/api/session/${attemptId}/prompt`, {
+          text: activePrompt,
+        });
+        if (!prompted.ok) {
+          const detail = await prompted.text().catch(() => "");
+          if (prompted.status === 429) {
+            const noted = this.noteLimit(limitStrikes, emitted);
+            limitStrikes = noted.strikes;
+            if (noted.action === "retry-same") continue;
+            if (noted.action === "rotate") {
+              const shift = await this.shiftAfterLimit({
+                ...shiftInput(),
+                reason: `prompt ${prompted.status}`,
+              });
+              if (shift.action === "retry") {
+                sessionId = shift.sessionId;
+                activePrompt = shift.prompt;
+                retries = shift.retries;
+                continue;
+              }
+            }
           }
           throw new Error(
-            `opencode: prompt failed (HTTP ${prompt.status})` +
+            `opencode: prompt failed (HTTP ${prompted.status})` +
               (detail === "" ? "" : ` ${detail.slice(0, 300)}`),
           );
         }
@@ -680,7 +978,9 @@ class OpencodeServeAdapter extends LlmAdapter {
 
         eventLoop: for await (const event of events) {
           const data = event.data ?? {};
-          if (data["sessionID"] !== session.id) continue;
+          if (data["sessionID"] !== attemptId) continue;
+          // 工具卡、待办和目标写进 dsh 会话；不把它们编进模型流，避免 loop 再执行。
+          if (activity?.observe(event)) emitted = true;
           switch (event.type) {
             case "session.text.delta":
             case "session.reasoning.delta": {
@@ -724,12 +1024,35 @@ class OpencodeServeAdapter extends LlmAdapter {
               break;
             }
             case "session.retry.scheduled": {
-              // opencode 自己准备重试：先把出口换到延迟最低的其他节点，
-              // 让下一次尝试走新 IP（不阻塞事件消费）。
-              if (limitFailure(data["error"]) !== undefined) {
-                void this.rotate("opencode retry");
+              // opencode 准备在同一会话里重试。未满 3 次就打断它的长等待，立刻重发。
+              // 满 3 次才换出口；换了出口就不能让它接着原序号打。
+              if (limitFailure(data["error"]) === undefined) break;
+              const noted = this.noteLimit(limitStrikes, emitted);
+              limitStrikes = noted.strikes;
+              if (noted.action === "retry-same") {
+                await interruptSession(attemptId);
+                retry = true;
+                break eventLoop;
               }
-              break;
+              if (noted.action === "surface") {
+                await interruptSession(attemptId);
+                yield limitFinish(data["error"]);
+                return;
+              }
+              const shift = await this.shiftAfterLimit({
+                ...shiftInput(),
+                reason: "opencode retry",
+              });
+              if (shift.action === "skipped") break;
+              if (shift.action === "retry") {
+                sessionId = shift.sessionId;
+                activePrompt = shift.prompt;
+                retries = shift.retries;
+                retry = true;
+                break eventLoop;
+              }
+              yield limitFinish(data["error"]);
+              return;
             }
             case "session.execution.succeeded": {
               if (usage !== undefined) yield { type: "usage", usage };
@@ -754,17 +1077,25 @@ class OpencodeServeAdapter extends LlmAdapter {
                 data["error"] ?? data["reason"] ?? "opencode execution failed";
               const limited = limitFailure(error) !== undefined;
               if (limited) {
-                if (
-                  !emitted &&
-                  retries < limitRetries &&
-                  (await this.rotate("execution limit"))
-                ) {
-                  retries += 1;
+                const noted = this.noteLimit(limitStrikes, emitted);
+                limitStrikes = noted.strikes;
+                if (noted.action === "retry-same") {
                   retry = true;
                   break eventLoop;
                 }
-                // 已经输出过内容（或重试次数用完）：至少让下一轮换个出口。
-                void this.rotate("execution limit");
+                if (noted.action === "rotate") {
+                  const shift = await this.shiftAfterLimit({
+                    ...shiftInput(),
+                    reason: "execution limit",
+                  });
+                  if (shift.action === "retry") {
+                    sessionId = shift.sessionId;
+                    activePrompt = shift.prompt;
+                    retries = shift.retries;
+                    retry = true;
+                    break eventLoop;
+                  }
+                }
               }
               yield {
                 type: "finish",
@@ -783,7 +1114,7 @@ class OpencodeServeAdapter extends LlmAdapter {
             }
             case "permission.asked": {
               const id = data["id"];
-              if (typeof id === "string") void replyPermission(session.id, id);
+              if (typeof id === "string") void replyPermission(attemptId, id);
               break;
             }
             default:
@@ -805,6 +1136,7 @@ class OpencodeServeAdapter extends LlmAdapter {
         }
         throw error;
       } finally {
+        activity?.close();
         signal.removeEventListener("abort", abortUpstream);
         await events.return(undefined).catch(() => undefined);
       }

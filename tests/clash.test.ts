@@ -180,6 +180,24 @@ describe("clash 控制", () => {
     expect(state.now).toBe("C");
   });
 
+  it("指定已试节点后，每个出口只走一次，试完即停", async () => {
+    const state = baseState();
+    const api = await fakeClash(state);
+    const rotator = createClashRotator(options(api), () => undefined);
+    const tried = new Set<string>();
+    const seen: string[] = [];
+    for (;;) {
+      const result = await rotator.rotate("sweep", { skip: [...tried] });
+      if (result === undefined) break;
+      tried.add(result.from);
+      tried.add(result.to);
+      seen.push(result.to);
+    }
+    expect(seen).toEqual(["B", "C"]);
+    expect([...tried].sort()).toEqual(["A", "B", "C"]);
+    expect(state.now).toBe("C");
+  });
+
   it("历史延迟不新鲜时现场测速", async () => {
     const state = baseState();
     state.proxies["A"] = { type: "Vless", history: [] };

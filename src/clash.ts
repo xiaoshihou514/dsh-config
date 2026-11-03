@@ -91,9 +91,20 @@ export interface RotationResult {
   delayMs?: number;
 }
 
+export interface ClashRotateOptions {
+  /**
+   * 本轮已经用过的出口。传入后只在剩下的节点里选，全部试过就返回
+   * `undefined`，不再回到已经失败的节点。
+   */
+  skip?: readonly string[];
+}
+
 export interface ClashRotator {
   /** 切换到延迟最低的其他节点；未启用/不可达/找不到组时返回 `undefined`。 */
-  rotate(reason?: string): Promise<RotationResult | undefined>;
+  rotate(
+    reason?: string,
+    options?: ClashRotateOptions,
+  ): Promise<RotationResult | undefined>;
 }
 
 interface ProxyInfo {
@@ -401,11 +412,18 @@ export function createClashRotator(
 
   async function rotateInternal(
     reason: string | undefined,
+    sweep?: readonly string[],
   ): Promise<RotationResult | undefined> {
     if (!options.enabled) return undefined;
     const now = Date.now();
-    if (lastResult !== undefined && now - lastAt < options.cooldownMs)
+    // 扫完全部节点时必须真的换出口，不能把冷却期内的上一次结果当成新切换。
+    if (
+      sweep === undefined &&
+      lastResult !== undefined &&
+      now - lastAt < options.cooldownMs
+    ) {
       return lastResult;
+    }
 
     const target = await resolveEndpoint();
     if (target === undefined) {
@@ -440,12 +458,19 @@ export function createClashRotator(
 
     const current = group.now ?? "";
     const nodes = leafNodes(proxies, group);
-    const pool = nodes.filter((name) => name !== current);
+    const skipped = new Set(sweep ?? []);
+    const pool = nodes.filter((name) => name !== current && !skipped.has(name));
     const used = recent.get(groupName) ?? [];
     const fresh = pool.filter((name) => !used.includes(name));
-    const candidates = fresh.length > 0 ? fresh : pool;
+    // 指定了已试节点时，试完就停，不再在少数节点之间来回弹。
+    const candidates =
+      sweep !== undefined ? pool : fresh.length > 0 ? fresh : pool;
     if (candidates.length === 0) {
-      log(`clash: group ${groupName} has no alternative node`);
+      log(
+        sweep !== undefined
+          ? `clash: group ${groupName} has no untried node`
+          : `clash: group ${groupName} has no alternative node`,
+      );
       return undefined;
     }
 
@@ -494,8 +519,11 @@ export function createClashRotator(
   }
 
   return {
-    rotate(reason?: string): Promise<RotationResult | undefined> {
-      inFlight ??= rotateInternal(reason).finally(() => {
+    rotate(
+      reason?: string,
+      options?: ClashRotateOptions,
+    ): Promise<RotationResult | undefined> {
+      inFlight ??= rotateInternal(reason, options?.skip).finally(() => {
         inFlight = undefined;
       });
       return inFlight;

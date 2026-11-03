@@ -25,6 +25,8 @@ interface ServeState {
   generateText: number;
   /** 最近一次无会话生成请求体。 */
   lastGenerateText: Record<string, unknown> | undefined;
+  /** 最近一次创建会话的请求体。 */
+  lastCreate: Record<string, unknown> | undefined;
 }
 
 function json(value: unknown, status = 200): Response {
@@ -70,11 +72,27 @@ function mockServe(state: ServeState): void {
         state.lastGenerateText = JSON.parse(String(init?.body)) as Record<string, unknown>;
         return json({ data: { text: "dsh 配置" } });
       }
+      if (url.pathname === "/api/location" && method === "GET") {
+        return json({
+          location: { directory: "/workspace/app" },
+          data: {
+            directory: "/workspace/app",
+            project: {
+              id: "prj_app",
+              directory: "/workspace/app",
+              canonical: "/workspace/app",
+            },
+          },
+        });
+      }
       if (url.pathname === "/api/session" && method === "POST") {
+        state.lastCreate = JSON.parse(String(init?.body)) as Record<string, unknown>;
         state.counter += 1;
         state.created += 1;
         const id = `ses_mock_${state.counter}`;
         state.sessions.add(id);
+        // 事件流在切模型之前就订阅，创建时就要能对上会话号。
+        state.active = id;
         return json({ data: { id } });
       }
       const match = /^\/api\/session\/([^/]+)(\/[^/]+)?$/.exec(url.pathname);
@@ -150,6 +168,7 @@ beforeEach(async () => {
     probeStatus: 0,
     generateText: 0,
     lastGenerateText: undefined,
+    lastCreate: undefined,
   };
   mockServe(state);
   vi.resetModules();
@@ -166,6 +185,9 @@ describe("opencode 会话复用", () => {
   it("dsh 重启后按会话 id 接回原来的 opencode 会话", async () => {
     await expect(turn("session-a")).resolves.toBe(true);
     expect(state.created).toBe(1);
+    expect(state.lastCreate).toMatchObject({
+      location: { directory: "/workspace/app" },
+    });
     expect(JSON.parse(await readFile(mapFile, "utf8"))).toEqual({
       "session-a": "ses_mock_1",
     });

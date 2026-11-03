@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  IconChevronDownOutline14,
   IconDataOutline16,
   IconGoalOutline16,
   IconListPenOutline16,
   IconRightUpOutline16,
   IconSparkle16,
 } from "./icons.tsx";
+import { modelGroupKey } from "../usage-models.ts";
 
 type View = "day" | "week" | "month" | "model" | "project";
 
@@ -94,14 +96,6 @@ function sumCells(items: readonly CellSummary[]): CellSummary {
     (sum, cell) => addCell(sum, cell),
     emptySummary(),
   );
-}
-
-/** 模型家族分组键：剥掉「provider/」前缀后取第一个「-」前的名字。 */
-function modelGroupKey(model: string): string {
-  const index = model.indexOf("/");
-  const bare = index === -1 ? model : model.slice(index + 1);
-  const dash = bare.indexOf("-");
-  return dash === -1 ? bare : bare.slice(0, dash);
 }
 
 /** 智谱峰谷相位：周一至周五 14:00-18:00（UTC+8）高峰，其余闲时（积分 5 折）。 */
@@ -399,6 +393,172 @@ interface Bucket {
   summary: CellSummary;
 }
 
+/** 设置页同款的选择按钮：平台底、圆角、下拉箭头，菜单用 Menu 卡片的表面。 */
+function FilterSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: readonly string[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div
+      ref={rootRef}
+      style={{
+        position: "relative",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+      }}
+    >
+      <span style={{ fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>
+        {label}
+      </span>
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        style={{
+          height: 32,
+          maxWidth: 220,
+          border: "none",
+          borderRadius: "var(--dsw-radius-md)",
+          background: open
+            ? "var(--dsw-alias-interactive-bg-hover)"
+            : "var(--dsw-alias-bg-module-platform)",
+          color: "var(--dsw-alias-label-primary)",
+          cursor: "pointer",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "0 10px 0 12px",
+          font: "inherit",
+          fontSize: 13,
+          lineHeight: "20px",
+        }}
+      >
+        <span
+          style={{
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {value}
+        </span>
+        <IconChevronDownOutline14 />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            right: 0,
+            zIndex: 20,
+            boxSizing: "border-box",
+            minWidth: 164,
+            maxWidth: 280,
+            maxHeight: 280,
+            overflowY: "auto",
+            padding: 2,
+            display: "flex",
+            flexDirection: "column",
+            border: "1px solid var(--dsw-alias-border-inverted)",
+            borderRadius: 7,
+            background: "var(--dsw-alias-bg-layer-2)",
+            boxShadow: "var(--dsw-shadow-lv3)",
+          }}
+        >
+          {options.map((item) => (
+            <button
+              key={item}
+              type="button"
+              role="menuitemradio"
+              aria-checked={item === value}
+              onClick={() => {
+                onChange(item);
+                setOpen(false);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                width: "100%",
+                minHeight: 26,
+                padding: "3px 7px",
+                border: "none",
+                borderRadius: 5,
+                background: "transparent",
+                cursor: "pointer",
+                font: "inherit",
+                fontSize: 12,
+                lineHeight: "18px",
+                color: "var(--dsw-alias-label-primary)",
+                textAlign: "left",
+              }}
+              onMouseEnter={(event) => {
+                event.currentTarget.style.background =
+                  "var(--dsw-alias-interactive-bg-hover)";
+              }}
+              onMouseLeave={(event) => {
+                event.currentTarget.style.background = "transparent";
+              }}
+            >
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {item}
+              </span>
+              {item === value ? (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path
+                    d="M3 7.2L5.6 9.8L11 4.2"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              ) : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function UsageSection() {
   const [days, setDays] = useState<Record<string, DaySummary>>({});
   const [today, setToday] = useState<RecordItem[]>([]);
@@ -471,8 +631,7 @@ export function UsageSection() {
     }
     return ["全部项目", ...Array.from(set).sort()];
   }, [days, today]);
-  // 模型筛选条目：复合名（provider/model）聚合到厂商一层，裸名（官方
-  // 模型）自成条目。筛选值 = 条目键，汇总时按组求和（见 summaryFor）。
+  // 模型筛选和图例都按家族归并（deepseek、glm、gpt、x-preview…）。
   const models = useMemo(() => {
     const groups = new Set<string>();
     const add = (model: string) => {
@@ -598,7 +757,7 @@ export function UsageSection() {
   // 按模型 / 按项目视图：最近 30 天的每日分段分布（堆叠柱数据）。
   const dailyBreakdown = useMemo(() => {
     if (view !== "model" && view !== "project") return null;
-    const byFamily = view === "model";
+    const byModel = view === "model";
     // 覆盖从最早记录到今天的全部天数（而不是只有最近 30 天）。
     const firstAt = Object.keys(days)
       .map((key) => dayKeyToStart(key))
@@ -613,7 +772,7 @@ export function UsageSection() {
       total: CellSummary;
       segments: { name: string; cell: CellSummary }[];
     }[] = [];
-    for (let offset = span - 1; offset >= 0; offset -= 1) {
+    for (let offset = 0; offset < span; offset += 1) {
       const at = addDays(startAt, offset);
       const key = dayKeyOf(at);
       const day = days[key];
@@ -622,18 +781,19 @@ export function UsageSection() {
         continue;
       }
       const totals = new Map<string, CellSummary>();
-      if (byFamily) {
+      if (byModel) {
         if (project !== "全部项目") {
           for (const [cellKey, cell] of Object.entries(day.cells)) {
             const index = cellKey.indexOf("\u0000");
             if (index === -1 || cellKey.slice(0, index) !== project) continue;
-            const family = modelGroupKey(cellKey.slice(index + 1));
+            const stored = cellKey.slice(index + 1);
+            const family = modelGroupKey(stored);
             if (model !== "全部模型" && family !== model) continue;
             totals.set(family, addCell(bucketOf(totals, family), cell));
           }
         } else {
-          for (const [name, cell] of Object.entries(day.byModel)) {
-            const family = modelGroupKey(name);
+          for (const [stored, cell] of Object.entries(day.byModel)) {
+            const family = modelGroupKey(stored);
             if (model !== "全部模型" && family !== model) continue;
             totals.set(family, addCell(bucketOf(totals, family), cell));
           }
@@ -642,7 +802,8 @@ export function UsageSection() {
         if (model !== "全部模型") {
           for (const [cellKey, cell] of Object.entries(day.cells)) {
             const index = cellKey.indexOf("\u0000");
-            if (index === -1 || cellKey.slice(index + 1) !== model) continue;
+            if (index === -1 || modelGroupKey(cellKey.slice(index + 1)) !== model)
+              continue;
             const name = cellKey.slice(0, index);
             totals.set(name, addCell(bucketOf(totals, name), cell));
           }
@@ -655,13 +816,29 @@ export function UsageSection() {
       const segments = Array.from(totals, ([name, cell]) => ({
         name,
         cell,
-      })).sort((a, b) => tokensOf(b.cell) - tokensOf(a.cell));
+      }));
       daysOut.push({
         key,
         at,
         total: sumCells(segments.map((s) => s.cell)),
         segments,
       });
+    }
+    // 按模型和按项目都用同一套顺序：按全部天数的总词元从少到多排。
+    // 柱子从上往下叠，总量最大的落在最下面。
+    const rank = new Map<string, number>();
+    for (const day of daysOut) {
+      for (const segment of day.segments) {
+        rank.set(
+          segment.name,
+          (rank.get(segment.name) ?? 0) + tokensOf(segment.cell),
+        );
+      }
+    }
+    for (const day of daysOut) {
+      day.segments.sort(
+        (a, b) => (rank.get(a.name) ?? 0) - (rank.get(b.name) ?? 0),
+      );
     }
     const names = new Set<string>();
     for (const dayItem of daysOut)
@@ -799,52 +976,24 @@ export function UsageSection() {
             flexWrap: "wrap",
           }}
         >
-          <label
-            style={{ fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}
-          >
-            项目　
-            <select
-              value={project}
-              onChange={(event) => {
-                setProject(event.target.value);
-                setSelected(null);
-              }}
-              style={{
-                color: "inherit",
-                background: "transparent",
-                border: "1px solid var(--dsw-alias-border-l2)",
-                borderRadius: 7,
-                padding: "5px 7px",
-              }}
-            >
-              {projects.map((item) => (
-                <option key={item}>{item}</option>
-              ))}
-            </select>
-          </label>
-          <label
-            style={{ fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}
-          >
-            模型　
-            <select
-              value={model}
-              onChange={(event) => {
-                setModel(event.target.value);
-                setSelected(null);
-              }}
-              style={{
-                color: "inherit",
-                background: "transparent",
-                border: "1px solid var(--dsw-alias-border-l2)",
-                borderRadius: 7,
-                padding: "5px 7px",
-              }}
-            >
-              {models.map((item) => (
-                <option key={item}>{item}</option>
-              ))}
-            </select>
-          </label>
+          <FilterSelect
+            label="项目"
+            value={project}
+            options={projects}
+            onChange={(next) => {
+              setProject(next);
+              setSelected(null);
+            }}
+          />
+          <FilterSelect
+            label="模型"
+            value={model}
+            options={models}
+            onChange={(next) => {
+              setModel(next);
+              setSelected(null);
+            }}
+          />
         </div>
       </header>
 
@@ -1771,6 +1920,8 @@ function DailyBars({
     ...breakdown.days.map((day) => tokensOf(day.total)),
     0,
   );
+  const [hover, setHover] = useState<string | null>(null);
+  const dimmed = (name: string): boolean => hover !== null && hover !== name;
   return (
     <div>
       <div
@@ -1779,12 +1930,18 @@ function DailyBars({
         {breakdown.names.map((name) => (
           <span
             key={name}
+            onMouseEnter={() => setHover(name)}
+            onMouseLeave={() => setHover(null)}
             style={{
               display: "inline-flex",
               alignItems: "center",
               gap: 5,
               fontSize: 11,
-              color: "var(--dsw-alias-label-secondary)",
+              cursor: "pointer",
+              color: hover === name
+                ? "var(--dsw-alias-label-primary)"
+                : "var(--dsw-alias-label-secondary)",
+              opacity: dimmed(name) ? 0.35 : 1,
             }}
           >
             <span
@@ -1855,9 +2012,12 @@ function DailyBars({
                   return (
                     <div
                       key={segment.name}
+                      onMouseEnter={() => setHover(segment.name)}
+                      onMouseLeave={() => setHover(null)}
                       style={{
                         flex: `${share * 100}%`,
                         background: segmentColor(segment.name, breakdown.names),
+                        opacity: dimmed(segment.name) ? 0.18 : 1,
                       }}
                     />
                   );
