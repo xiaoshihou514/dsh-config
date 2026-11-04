@@ -15,6 +15,7 @@ import {
   type OfficeMember,
   type OfficeSnapshot,
   type OfficeTask,
+  type OfficeTurnEnd,
   type ToolCategory,
 } from "./types.ts";
 
@@ -199,6 +200,8 @@ export interface SessionDigest {
   readonly stats: OfficeMember["stats"];
   readonly firstAt?: number | undefined;
   readonly lastActiveAt?: number | undefined;
+  /** 最近一轮的结束（之后又开了新一轮则没有）。 */
+  readonly lastTurn?: OfficeTurnEnd | undefined;
   /** 本会话收到的交流（to = 本会话）。 */
   readonly received: readonly OfficeInteraction[];
   /** 仅 Lead：团队名册（每个成员最后一次快照）。 */
@@ -245,6 +248,8 @@ export function digestSession(
   let outputTokens = 0;
   let firstAt: number | undefined;
   let lastActiveAt: number | undefined;
+  let lastTurnStart = -Infinity;
+  let lastTurn: OfficeTurnEnd | undefined;
   let spawnSeen = false;
 
   const push = (entry: OfficeActivity) => {
@@ -274,12 +279,15 @@ export function digestSession(
       case "turn/start": {
         turns += 1;
         lastActiveAt = event.time;
+        lastTurnStart = event.time;
         break;
       }
       case "turn/end": {
         stepOpen = false;
         openCalls.clear();
         const reason = str(dict(data.reason).kind);
+        const ok = reason === "completed" || reason === undefined;
+        lastTurn = { at: event.time, ok, ...(ok ? {} : { reason }) };
         push({
           at: event.time,
           kind: reason === "completed" || reason === undefined ? "turn" : "error",
@@ -482,6 +490,7 @@ export function digestSession(
     },
     firstAt,
     lastActiveAt,
+    lastTurn: lastTurn !== undefined && lastTurn.at >= lastTurnStart ? lastTurn : undefined,
     received,
     team: [...team.values()],
     tasks: [...tasks.values()],
@@ -547,6 +556,7 @@ export function assembleSnapshot(input: AssembleInput): OfficeSnapshot {
       busy,
       current: busy ? digest?.current : undefined,
       lastActiveAt: digest?.lastActiveAt,
+      lastTurn: digest?.lastTurn,
       stats: digest?.stats ?? {
         turns: 0,
         steps: 0,

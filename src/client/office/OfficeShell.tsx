@@ -28,6 +28,7 @@ export interface SceneModule {
     focus(id: string): void;
     setMode(mode: "office" | "gallery"): void;
     setPaused?(paused: boolean): void;
+    setAttention?(id: string | null, kind?: "report" | "error"): void;
     dispose(): void;
   };
 }
@@ -443,8 +444,15 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const isRunning = (m: OfficeMember) => live[m.id] ?? m.busy;
   const running = members.filter(isRunning).length;
   const member = members.find((m) => m.id === selected);
+  const attention = useAttention(snapshot, leadId, running, chatOpen);
+  useEffect(
+    () => scene.current?.setAttention?.(attention?.leadId ?? null, attention?.kind),
+    [attention?.leadId, attention?.kind, attention?.at, api, leadId],
+  );
   const openChat = (id: string) => {
     if (leadId === null) return;
+    // 打开组长对话就算看过这次汇报
+    if (id === leadId && attention !== null) acknowledge(leadId, attention.at);
     // 先立刻收起 3D、展开对话栏；打开会话（要加载历史）放到下一刻，免得点击后界面卡住不动。
     setOffice({ chatOpen: true });
     setTimeout(() => {
@@ -576,6 +584,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
           ) : (
             <TeamPanel
               api={api}
+              attention={attention?.kind ?? null}
               snapshot={snapshot}
               isRunning={isRunning}
               onPick={(id) => {
@@ -590,9 +599,120 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
         <main className="dso-stage">
           <div ref={sceneHost} className="dso-scene" />
           {notice && <div className="dso-notice">{notice}</div>}
+          {mode === "office" && attention !== null && (
+            <AttentionBanner
+              attention={attention}
+              onOpen={() => openChat(attention.leadId)}
+              onDismiss={() => acknowledge(attention.leadId, attention.at)}
+            />
+          )}
           {mode === "office" && <div className="dso-hint">点击角色查看详情</div>}
         </main>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 醒目提醒
+
+interface Attention {
+  readonly leadId: string;
+  readonly kind: "report" | "error";
+  /** 组长这一轮结束的时间（看过 / 关掉提醒时记下它）。 */
+  readonly at: number;
+  readonly reason?: string | undefined;
+}
+
+const ACK_KEY = "dsh-config:office-ack";
+const ackListeners = new Set<() => void>();
+function readAcks(): Record<string, number> {
+  try {
+    return JSON.parse(localStorage.getItem(ACK_KEY) ?? "{}") as Record<string, number>;
+  } catch {
+    return {};
+  }
+}
+/** 记下「这次汇报已看过」：同一轮结束不再提醒（刷新后也记得）。 */
+function acknowledge(leadId: string, at: number): void {
+  const acks = readAcks();
+  if ((acks[leadId] ?? 0) >= at) return;
+  acks[leadId] = at;
+  try {
+    localStorage.setItem(ACK_KEY, JSON.stringify(acks));
+  } catch {
+    // 隐私模式：只在本次会话里生效
+  }
+  for (const listener of ackListeners) listener();
+}
+
+/**
+ * 什么时候提醒：组长这一轮已经结束（快照里的 lastTurn），之后你没再发过指令，
+ * 整个团队也都停下来了（还有人在干活时组长会被组员的汇报自动叫醒，不必打扰你），
+ * 并且这次汇报还没看过。条件需持续 2 秒才亮，免得组员汇报接力时闪一下。
+ * 对话正开着组长会话时，视为已经在看了。
+ */
+function useAttention(snapshot: OfficeSnapshot | null, leadId: string | null, running: number, chatOpen: boolean): Attention | null {
+  const [, setVersion] = useState(0);
+  useEffect(() => {
+    const listener = () => setVersion((v) => v + 1);
+    ackListeners.add(listener);
+    return () => {
+      ackListeners.delete(listener);
+    };
+  }, []);
+  const lead = snapshot?.members.find((m) => m.role === "lead");
+  const turn = lead?.lastTurn;
+  const lastInstruction = Math.max(
+    0,
+    ...(snapshot?.interactions ?? []).filter((i) => i.kind === "instruction" && i.to === lead?.id).map((i) => i.at),
+  );
+  const acked = leadId === null ? 0 : (readAcks()[leadId] ?? 0);
+  const candidate: Attention | null =
+    leadId !== null && lead !== undefined && turn !== undefined && running === 0 && turn.at > lastInstruction && turn.at > acked
+      ? { leadId, kind: turn.ok ? "report" : "error", at: turn.at, reason: turn.reason }
+      : null;
+  const key = candidate === null ? "" : `${candidate.leadId}:${candidate.kind}:${candidate.at}`;
+  const [stable, setStable] = useState<Attention | null>(null);
+  useEffect(() => {
+    if (candidate === null) {
+      setStable(null);
+      return;
+    }
+    if (chatOpen && currentSession().sessionId === candidate.leadId) {
+      acknowledge(candidate.leadId, candidate.at);
+      return;
+    }
+    const timer = setTimeout(() => setStable(candidate), 2000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, chatOpen]);
+  return candidate === null ? null : stable;
+}
+
+function AttentionBanner({ attention, onOpen, onDismiss }: { attention: Attention; onOpen: () => void; onDismiss: () => void }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => tick((v) => v + 1), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  const error = attention.kind === "error";
+  return (
+    <div className={`dso-attn${error ? " error" : ""}`} role="status">
+      <span className="dso-attn-bang">!</span>
+      <span className="dso-attn-text">
+        <b>{error ? "组长这一轮出错停下了" : "组长汇报完毕，在等你回复"}</b>
+        <small>
+          {agoShort(attention.at)}
+          {error && attention.reason ? ` · ${attention.reason}` : ""}
+          {!error ? " · 团队成员都已停下" : ""}
+        </small>
+      </span>
+      <button type="button" className="dso-btn primary sm" onClick={onOpen}>
+        {error ? "去看看" : "查看汇报"}
+      </button>
+      <button type="button" className="dso-attn-x" title="知道了" onClick={onDismiss}>
+        ✕
+      </button>
     </div>
   );
 }
@@ -871,12 +991,14 @@ function InteractionItem({ item, names }: { item: OfficeInteraction; names: Map<
 
 function TeamPanel({
   api,
+  attention,
   snapshot,
   isRunning,
   onPick,
   onOpen,
 }: {
   api: SceneModule | null;
+  attention: "report" | "error" | null;
   snapshot: OfficeSnapshot | null;
   isRunning: (m: OfficeMember) => boolean;
   onPick: (id: string) => void;
@@ -888,7 +1010,7 @@ function TeamPanel({
       <h3 className="dso-section">
         <span>组长动态</span>
       </h3>
-      <LeadPanel snapshot={snapshot} isRunning={isRunning} onOpen={onOpen} />
+      <LeadPanel snapshot={snapshot} attention={attention} isRunning={isRunning} onOpen={onOpen} />
       <h3 className="dso-section">
         <span>队伍</span>
         <small>{snapshot.members.length}</small>
@@ -937,10 +1059,12 @@ function since(at: number): string {
  */
 function LeadPanel({
   snapshot,
+  attention,
   isRunning,
   onOpen,
 }: {
   snapshot: OfficeSnapshot;
+  attention: "report" | "error" | null;
   isRunning: (m: OfficeMember) => boolean;
   onOpen: (id: string) => void;
 }) {
@@ -964,12 +1088,16 @@ function LeadPanel({
     ? lead.current === undefined || lead.current.kind === "thinking"
       ? "思考中…"
       : lead.current.label
-    : st.text === "空闲"
-      ? "待命"
-      : st.text;
+    : attention === "report"
+      ? "汇报完毕，等你回复"
+      : attention === "error"
+        ? "这一轮出错停下了"
+        : st.text === "空闲"
+          ? "待命"
+          : st.text;
   return (
     <div className="dso-lead" style={{ ["--role" as string]: ROLE_COLOR.lead }}>
-      <div className={`dso-lead-now ${st.tone}`}>
+      <div className={`dso-lead-now ${attention !== null && !running ? `attn ${attention}` : st.tone}`}>
         <span className="dso-led" />
         <span className="dso-ellipsis">{action}</span>
         {running && lead.current && <small>{since(lead.current.since)}</small>}

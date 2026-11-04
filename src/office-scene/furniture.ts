@@ -478,6 +478,6 @@ export function buildLounge(): THREE.Group {
   counterMesh.position.set(ROOM.x1 - 0.7, 0, -7.4);
   group.add(counterMesh);
 
-  group.add(plant(4.5, ROOM.z0 + 0.6, 1.2), plant(8.6, ROOM.z0 + 0.6, 1.1), plant(ROOM.x1 - 0.7, ROOM.z1 - 0.7, 1.2));
+  group.add(plant(4.5, ROOM.z0 + 0.6, 1.2), plant(ROOM.x1 - 0.7, ROOM.z1 - 0.7, 1.2));
   return group;
 }

@@ -76,6 +76,14 @@ export interface OfficeMemberStats {
   readonly outputTokens: number;
 }
 
+/** 最近一轮的结束（之后没有新开一轮时才有）：组长一轮结束、整个团队都停下来时就是在等你回复。 */
+export interface OfficeTurnEnd {
+  readonly at: number;
+  readonly ok: boolean;
+  /** 非正常结束的原因（如 error / cancelled）。 */
+  readonly reason?: string | undefined;
+}
+
 export interface OfficeMember {
   readonly id: string;
   readonly name: string;
@@ -92,6 +100,7 @@ export interface OfficeMember {
   readonly busy: boolean;
   readonly current?: OfficeCurrent | undefined;
   readonly lastActiveAt?: number | undefined;
+  readonly lastTurn?: OfficeTurnEnd | undefined;
   readonly joinedAt?: number | undefined;
   readonly stats: OfficeMemberStats;
   /** 自动识别的人设 / 档位 / 岗位（有手动指定时与上面不同）。 */

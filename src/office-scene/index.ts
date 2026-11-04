@@ -48,6 +48,11 @@ export interface OfficeScene {
   setMode(mode: "office" | "gallery"): void;
   /** 暂停 / 恢复渲染循环（场景被隐藏时暂停，不跟原生界面抢主线程）。 */
   setPaused(paused: boolean): void;
+  /**
+   * 醒目提醒：某人（通常是组长）头顶浮一个大「!」、脚下光圈扩散，人站起来朝镜头挥手。
+   * report = 汇报完毕等你回复（金色），error = 这一轮出错停下（红色）；null 取消。
+   */
+  setAttention(id: string | null, kind?: "report" | "error"): void;
   dispose(): void;
 }
 
@@ -235,6 +240,14 @@ const LEAD_IDLE: Spot = {
   ],
 };
 
+/** 组长有事找你时站到桌前、面朝镜头。 */
+const LEAD_CALL: Spot = {
+  x: RING_CENTER[0] + 0.95,
+  z: RING_CENTER[1] + 2.25,
+  facing: 0.62,
+  approach: [...ENTRY, [RING_CENTER[0], RING_CENTER[1] + 2.6], [RING_CENTER[0] + 0.95, RING_CENTER[1] + 2.25]],
+};
+
 const DOOR: Spot = { x: ROOM.x0 + 0.6, z: 4.6, facing: Math.PI / 2, approach: [[ROOM.x0 + 1.5, AISLE], [ROOM.x0 + 0.6, 4.6]] };
 
 const TABLE: P2 = [LOUNGE.table[0], LOUNGE.table[1]];
@@ -270,8 +283,18 @@ const LOUNGE_SPOTS: readonly Spot[] = [
   ).map(([x, z]): Spot => ({ x, z, facing: faceTo(x, z, TABLE), approach: [[LOUNGE_X, AISLE], [LOUNGE_X, -4.7], [x, -4.7], [x, z]] })),
 ];
 
+/** 两条入场路径共用的前缀（逐点相同）长度。 */
+function sharedPrefix(a: readonly P2[], b: readonly P2[]): number {
+  let k = 0;
+  while (k < a.length - 1 && k < b.length - 1 && a[k]![0] === b[k]![0] && a[k]![1] === b[k]![1]) k += 1;
+  return k;
+}
+
+/** 从一个点位走到另一个：沿来路退回到两条路径的分岔点，再沿新路径走进去（不必绕回主过道）。 */
 function route(from: Spot, to: Spot): P2[] {
-  return [...from.approach.slice(0, -1).reverse(), ...to.approach];
+  const k = sharedPrefix(from.approach, to.approach);
+  if (k === 0) return [...from.approach.slice(0, -1).reverse(), ...to.approach];
+  return [...from.approach.slice(k, -1).reverse(), from.approach[k - 1]!, ...to.approach.slice(k)];
 }
 
 // ---------------------------------------------------------------- 样式
@@ -358,6 +381,10 @@ class Agent {
   labelHover = false;
   /** 固定表情（图鉴细看时用）；缺省按状态自动。 */
   face: [Eyes, Mouth] | undefined;
+  /** 醒目提醒：站到空地上朝镜头挥手（report）或垂头丧气（error）。 */
+  attention: "report" | "error" | null = null;
+  /** 有提醒时站的位置（组长：桌前）。 */
+  callAt: Spot | undefined;
 
   constructor(
     member: OfficeMember,
@@ -421,6 +448,7 @@ class Agent {
 
   /** 目标位置：工位或休息点。 */
   wanted(now: number): Spot {
+    if (this.attention !== null && this.status !== "running") return this.callAt ?? this.idleAt;
     if (this.status === "inactive" && now - this.inactiveSince > 6) return this.idleAt;
     return this.deskAt;
   }
@@ -579,8 +607,21 @@ function pose(agent: Agent, t: number, dt: number): void {
     rig.body.position.y = Math.sin(t * 2 + seed) * 0.008;
     rig.head.rotation.z = Math.sin(t * 0.7 + seed) * 0.07;
     rig.head.rotation.y = Math.sin(t * 0.37 + seed) * 0.3;
-    const wave = agent.status === "provisioning" ? 0 : every(t, 12, 1.6, seed);
-    if (agent.status === "provisioning" || wave >= 0) {
+    // 有提醒：汇报完毕时频繁挥手、蹦一下；出错时低头、手垂着
+    const calling = agent.attention === "report";
+    const wave = agent.status === "provisioning" ? 0 : calling ? every(t, 2.6, 1.7, seed) : every(t, 12, 1.6, seed);
+    if (calling) {
+      rig.head.rotation.y *= 0.3;
+      const hop = every(t, 2.6, 0.35, seed + 1.9);
+      if (hop >= 0) rig.body.position.y += Math.sin(hop * Math.PI) * 0.12;
+    }
+    if (agent.attention === "error") {
+      rig.head.rotation.x = 0.32;
+      rig.head.rotation.y = Math.sin(t * 0.8 + seed) * 0.12;
+      arms(rig, [0.05, 0, -0.12], [0.05, 0, 0.12]);
+      eyes = "half";
+      mouth = "small";
+    } else if (agent.status === "provisioning" || wave >= 0) {
       arms(rig, [-0.15, 0, -0.3], [-2.75 + Math.sin(t * 9) * 0.25, 0, 0.45 + Math.sin(t * 9) * 0.15]);
       eyes = "happy";
       mouth = "smile";
@@ -718,7 +759,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   // ---- 办公室
   const office = new THREE.Scene();
   // 房间外的环境按本地时间切换早晨 / 正午 / 傍晚 / 夜晚
-  const env = createEnvironment(office, container, lights(office, 17), RING_CENTER);
+  const env = createEnvironment(office, container, lights(office, 17), RING_CENTER, ROOM, LOUNGE.table);
   // 休息区、书架等装饰不影响信息：首帧之后空闲时再搭，先让人物和工位出来。
   const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
     .requestIdleCallback;
@@ -748,6 +789,53 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   ring.position.y = 0.03;
   ring.visible = false;
   office.add(ring);
+
+  // 醒目提醒：头顶大「!」（不被遮挡）、背后光晕、脚下扩散的光圈
+  let attention: { id: string; kind: "report" | "error" } | null = null;
+  const marker = (() => {
+    const group = new THREE.Group();
+    const v = new Voxels();
+    v.box(-1, 4, -1, 1, 12, 1, "#ffffff");
+    v.box(-1, 0, -1, 1, 2, 1, "#ffffff");
+    const geometry = v.geometry(0.13);
+    geometry.translate(0, -0.85, 0);
+    const bang = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: "#ffc93a", depthTest: false }));
+    bang.renderOrder = 21;
+    // 深色描边：同形状放大一圈画在后面
+    const outline = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: "#3a2a08", depthTest: false, side: THREE.BackSide }));
+    outline.scale.setScalar(1.22);
+    outline.renderOrder = 20;
+    bang.add(outline);
+    const glowTexture = (() => {
+      const c = document.createElement("canvas");
+      c.width = c.height = 64;
+      const g = c.getContext("2d")!;
+      const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0, "rgba(255,255,255,0.9)");
+      grad.addColorStop(0.35, "rgba(255,255,255,0.35)");
+      grad.addColorStop(1, "rgba(255,255,255,0)");
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 64, 64);
+      return new THREE.CanvasTexture(c);
+    })();
+    const glow = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: glowTexture, color: "#ffc93a", transparent: true, depthTest: false, blending: THREE.AdditiveBlending }),
+    );
+    glow.renderOrder = 19;
+    const rings = [0, 1, 2].map(() => {
+      const r = new THREE.Mesh(
+        new THREE.RingGeometry(0.42, 0.52, 40),
+        new THREE.MeshBasicMaterial({ color: "#ffc93a", transparent: true, depthWrite: false, side: THREE.DoubleSide }),
+      );
+      r.rotation.x = -Math.PI / 2;
+      group.add(r);
+      return r;
+    });
+    group.add(glow, bang);
+    group.visible = false;
+    office.add(group);
+    return { group, bang, glow, rings, color: "#ffc93a" };
+  })();
 
   // ---- 图鉴
   let gallery: THREE.Scene | undefined;
@@ -1270,6 +1358,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
         const fresh = initialized && member.role !== "lead";
         const start = fresh ? DOOR : status === "inactive" && member.role !== "lead" ? idleAt : deskAt;
         agent = new Agent(member, deskAt, idleAt, start, office, labels, (id) => options.onSelect(id));
+        if (member.role === "lead") agent.callAt = LEAD_CALL;
         agent.inactiveSince = status === "inactive" && !fresh ? -100 : now;
         agents.set(member.id, agent);
       } else if (
@@ -1281,11 +1370,13 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
         const { deskAt, idleAt, at } = agent;
         agent.dispose();
         agent = new Agent(member, deskAt, idleAt, at, office, labels, (id) => options.onSelect(id));
+        if (member.role === "lead") agent.callAt = LEAD_CALL;
         agents.set(member.id, agent);
       }
       if (agent.status !== "inactive" && status === "inactive") agent.inactiveSince = now;
       agent.status = status;
       agent.member = member;
+      agent.attention = attention?.id === member.id ? attention.kind : null;
       agent.renderTag();
     });
 
@@ -1427,6 +1518,31 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
         flight.mesh.scale.setScalar(1 + Math.sin(k * Math.PI) * 0.4);
       }
 
+      // 醒目提醒
+      const called = attention === null ? undefined : agents.get(attention.id);
+      marker.group.visible = called !== undefined;
+      if (called !== undefined) {
+        const root = called.rig.root.position;
+        const color = attention!.kind === "error" ? "#ff5a4f" : "#ffc93a";
+        if (marker.color !== color) {
+          marker.color = color;
+          marker.bang.material.color.set(color);
+          marker.glow.material.color.set(color);
+          for (const r of marker.rings) r.material.color.set(color);
+        }
+        const top = called.rig.body.position.y + called.rig.height + (called.rig.halo ? 0.75 : 0.35);
+        marker.bang.position.set(root.x, top + 0.8 + Math.sin(t * 3.2) * 0.15, root.z);
+        marker.bang.rotation.y = Math.sin(t * 1.4) * 0.5;
+        marker.glow.position.copy(marker.bang.position);
+        marker.glow.scale.setScalar(3.2 + Math.sin(t * 4) * 0.45);
+        marker.rings.forEach((r, i) => {
+          const k = (t * 0.8 + i / marker.rings.length) % 1;
+          r.position.set(root.x, 0.04, root.z);
+          r.scale.setScalar(0.6 + k * 3.2);
+          r.material.opacity = (1 - k) * 0.75;
+        });
+      }
+
       // 选中光环
       const sel = selected === null ? undefined : agents.get(selected);
       ring.visible = sel !== undefined;
@@ -1549,6 +1665,10 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       // 固定机位不动镜头：选中光环放大闪几下，标出这个人在哪
       selected = id;
       focusPulse = clock.elapsedTime;
+    },
+    setAttention(id, kind = "report") {
+      attention = id === null ? null : { id, kind };
+      for (const agent of agents.values()) agent.attention = agent.member.id === id ? kind : null;
     },
     setPaused(next) {
       if (paused === next) return;

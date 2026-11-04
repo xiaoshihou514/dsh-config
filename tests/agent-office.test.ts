@@ -76,6 +76,28 @@ describe("团队快照推导", () => {
   });
 });
 
+describe("最近一轮的结束", () => {
+  it("记录结束时间与是否成功，新开一轮后清掉", () => {
+    seq = 0;
+    const done = digestSession("L", [
+      ev("turn/start", {}, 100),
+      ev("turn/end", { reason: { kind: "completed" } }, 200),
+    ]);
+    expect(done.lastTurn).toEqual({ at: 200, ok: true });
+    const failed = digestSession("L", [
+      ev("turn/start", {}, 100),
+      ev("turn/end", { reason: { kind: "error" } }, 300),
+    ]);
+    expect(failed.lastTurn).toEqual({ at: 300, ok: false, reason: "error" });
+    const again = digestSession("L", [
+      ev("turn/start", {}, 100),
+      ev("turn/end", { reason: { kind: "completed" } }, 200),
+      ev("turn/start", {}, 400),
+    ]);
+    expect(again.lastTurn).toBeUndefined();
+  });
+});
+
 describe("成员手动指定", () => {
   it("覆盖岗位 / 人设 / 档位，组长岗位固定，并保留自动识别结果", async () => {
     const { applyOverrides } = await import("../src/agent-office.ts");

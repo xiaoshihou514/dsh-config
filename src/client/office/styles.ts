@@ -190,6 +190,36 @@ body[data-dsh-office] [class*="_centerCol"] {
   position: absolute; left: 50%; top: 16px; transform: translateX(-50%); padding: 7px 14px; border-radius: 10px;
   background: rgba(20,24,33,.8); color: #fff; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.2);
 }
+/* ---- 醒目提醒（组长汇报完毕 / 出错） ---- */
+.dso-attn {
+  --attn: #f2b632;
+  position: absolute; left: 50%; top: 14px; transform: translateX(-50%); z-index: 5;
+  display: flex; align-items: center; gap: 12px; max-width: calc(100% - 32px); padding: 9px 10px 9px 10px;
+  border-radius: 14px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary);
+  border: 2px solid var(--attn);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--attn) 22%, transparent), 0 10px 28px rgba(0,0,0,.22);
+  animation: dso-attn-in .35s cubic-bezier(.2,1.4,.4,1), dso-attn-pulse 2.2s ease-in-out .4s infinite;
+}
+.dso-attn.error { --attn: #e8574d; }
+.dso-attn-bang {
+  flex: none; width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
+  font-size: 22px; font-weight: 900; color: #3a2a08; background: linear-gradient(160deg, color-mix(in srgb, var(--attn) 60%, #fff), var(--attn));
+  box-shadow: inset 0 -3px 0 rgba(0,0,0,.18), 0 0 14px color-mix(in srgb, var(--attn) 70%, transparent);
+  animation: dso-attn-bob 1s ease-in-out infinite;
+}
+.dso-attn.error .dso-attn-bang { color: #fff; }
+.dso-attn-text { display: flex; flex-direction: column; min-width: 0; line-height: 18px; }
+.dso-attn-text b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dso-attn-text small { font-size: 11px; color: var(--dsw-alias-label-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dso-attn-x {
+  flex: none; width: 26px; height: 26px; border-radius: 8px; border: 0; cursor: pointer; background: transparent;
+  color: var(--dsw-alias-label-tertiary); font-size: 12px;
+}
+.dso-attn-x:hover { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
+@keyframes dso-attn-in { from { opacity: 0; transform: translate(-50%, -16px) scale(.9); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes dso-attn-pulse { 50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--attn) 10%, transparent), 0 10px 28px rgba(0,0,0,.22); } }
+@keyframes dso-attn-bob { 50% { transform: translateY(-2px) rotate(-6deg); } }
+
 .dso-hint {
   position: absolute; left: 12px; bottom: 10px; font-size: 11px; pointer-events: none;
   color: rgba(255,255,255,.85); text-shadow: 0 1px 2px rgba(0,0,0,.45);
@@ -337,6 +367,10 @@ body[data-dsh-office] [class*="_centerCol"] {
   box-shadow: inset 0 3px 0 var(--role);
 }
 .dso-lead-now { display: flex; align-items: center; gap: 8px; padding: 10px 6px 8px 12px; font-size: 13px; font-weight: 600; }
+.dso-lead-now.attn { background: color-mix(in srgb, #f2b632 16%, transparent); }
+.dso-lead-now.attn.error { background: color-mix(in srgb, #e8574d 14%, transparent); }
+.dso-lead-now.attn .dso-led { background: #f2b632; box-shadow: 0 0 8px #f2b632; animation: dso-blink .9s infinite; }
+.dso-lead-now.attn.error .dso-led { background: #e8574d; box-shadow: 0 0 8px #e8574d; }
 .dso-lead-now small { flex: none; font-size: 11px; font-weight: 500; color: var(--dsw-alias-label-tertiary); }
 .dso-lead-chat {
   flex: none; margin-left: auto; width: 28px; height: 28px; border-radius: 8px; border: 0; cursor: pointer;
