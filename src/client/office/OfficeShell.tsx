@@ -883,9 +883,12 @@ function TeamPanel({
   onOpen: (id: string) => void;
 }) {
   if (snapshot === null) return <div className="dso-empty">加载中…</div>;
-  const names = new Map(snapshot.members.map((m) => [m.id, m]));
   return (
     <>
+      <h3 className="dso-section">
+        <span>组长动态</span>
+      </h3>
+      <LeadPanel snapshot={snapshot} isRunning={isRunning} onOpen={onOpen} />
       <h3 className="dso-section">
         <span>队伍</span>
         <small>{snapshot.members.length}</small>
@@ -918,20 +921,99 @@ function TeamPanel({
           );
         })}
       </div>
-      <h3 className="dso-section">
-        <span>交流动态</span>
-        <small>{snapshot.interactions.length}</small>
-      </h3>
-      {snapshot.interactions.length === 0 ? (
-        <div className="dso-empty">还没有交流记录</div>
-      ) : (
-        <ul className="dso-logs">
-          {[...snapshot.interactions].reverse().slice(0, 60).map((item) => (
-            <InteractionItem key={item.id} item={item} names={names} />
+    </>
+  );
+}
+
+function since(at: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`;
+  return `${Math.floor(seconds / 3600)} 小时`;
+}
+
+/**
+ * 组长动态（原先在 3D 场景里组长头顶的气泡与白板）：当前动作、待办进度、最近派活 / 发话。
+ */
+function LeadPanel({
+  snapshot,
+  isRunning,
+  onOpen,
+}: {
+  snapshot: OfficeSnapshot;
+  isRunning: (m: OfficeMember) => boolean;
+  onOpen: (id: string) => void;
+}) {
+  const lead = snapshot.members.find((m) => m.role === "lead");
+  // 每秒刷新「持续多久」
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => tick((v) => v + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  if (lead === undefined) return null;
+  const running = isRunning(lead);
+  const st = statusOf(lead, running);
+  const names = new Map(snapshot.members.map((m) => [m.id, m]));
+  const recent = snapshot.interactions.filter((i) => i.from === lead.id).slice(-4).reverse();
+  const tasks = snapshot.tasks;
+  const done = tasks.filter((t) => t.status === "completed").length;
+  const order = { in_progress: 0, pending: 1, completed: 2 } as const;
+  const sorted = [...tasks].sort((a, b) => order[a.status] - order[b.status]);
+  const action = running
+    ? lead.current === undefined || lead.current.kind === "thinking"
+      ? "思考中…"
+      : lead.current.label
+    : st.text === "空闲"
+      ? "待命"
+      : st.text;
+  return (
+    <div className="dso-lead" style={{ ["--role" as string]: ROLE_COLOR.lead }}>
+      <div className={`dso-lead-now ${st.tone}`}>
+        <span className="dso-led" />
+        <span className="dso-ellipsis">{action}</span>
+        {running && lead.current && <small>{since(lead.current.since)}</small>}
+        <button type="button" className="dso-lead-chat" title="与组长对话" onClick={() => onOpen(lead.id)}>
+          💬
+        </button>
+      </div>
+      {tasks.length > 0 && (
+        <div className="dso-todo">
+          <div className="dso-todo-head">
+            <span>{snapshot.taskSource === "team" ? "共享任务" : "待办"}</span>
+            <span className="dso-todo-bar">
+              <span style={{ width: `${(done / tasks.length) * 100}%` }} />
+            </span>
+            <small>
+              {done}/{tasks.length}
+            </small>
+          </div>
+          <ul>
+            {sorted.slice(0, 6).map((task) => (
+              <li key={task.id} className={task.status}>
+                <span className="dso-check">{task.status === "completed" ? "✓" : task.status === "in_progress" ? "▶" : ""}</span>
+                <span className="dso-ellipsis">{task.subject}</span>
+                {task.ownerName && <small>@{task.ownerName}</small>}
+              </li>
+            ))}
+            {sorted.length > 6 && <li className="more">还有 {sorted.length - 6} 项…</li>}
+          </ul>
+        </div>
+      )}
+      {recent.length > 0 && (
+        <ul className="dso-said">
+          {recent.map((item) => (
+            <li key={item.id} title={item.text}>
+              <span className="dso-said-to">
+                {item.kind === "spawn" ? "招募" : "→"} {names.get(item.to)?.name ?? "?"}
+              </span>
+              <span className="dso-ellipsis">{item.preview}</span>
+              <small>{clock(item.at)}</small>
+            </li>
           ))}
         </ul>
       )}
-    </>
+    </div>
   );
 }
 

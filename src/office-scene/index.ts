@@ -1098,6 +1098,8 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   }
 
   function showSay(agent: Agent, html: string, now: number): void {
+    // 组长的动态放在左侧信息栏，3D 里不再冒气泡
+    if (agent.member.role === "lead") return;
     agent.say.innerHTML = html;
     agent.say.style.display = "";
     agent.sayUntil = now + 5;
@@ -1221,6 +1223,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
 
   function bubbleOf(agent: Agent): { text: string; cls: string } | null {
     const m = agent.member;
+    if (m.role === "lead") return null;
     switch (agent.status) {
       case "failed":
         return { text: `⚠️ 创建失败${m.error ? `：${m.error}` : ""}`, cls: "fail" };
@@ -1234,7 +1237,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
         return { text: `${CATEGORY_ICON[current.category ?? "other"]} ${current.label}`, cls: "" };
       }
       default:
-        return agent.at === agent.idleAt && !agent.moving ? { text: m.role === "lead" ? "☕ 待命" : "☕ 休息", cls: "idle" } : null;
+        return agent.at === agent.idleAt && !agent.moving ? { text: "☕ 休息", cls: "idle" } : null;
     }
   }
 
