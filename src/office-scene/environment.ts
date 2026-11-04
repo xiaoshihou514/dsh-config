@@ -410,60 +410,74 @@ export function createEnvironment(
   slab.position.set(fx, -0.37, fz);
   group.add(slab);
 
-  // 柱子：后侧、左侧整根，朝镜头两侧剖到矮墙高度
-  const pillar = (x: number, z: number, h: number) => {
-    const m = new THREE.Mesh(keep(new THREE.BoxGeometry(0.8, h, 0.8)), concrete);
-    m.position.set(x, h / 2, z);
-    m.castShadow = h > 1;
-    m.receiveShadow = true;
-    group.add(m);
-  };
-  const along = (a: number, b: number, n: number) => Array.from({ length: n + 1 }, (_, i) => a + ((b - a) * i) / n);
-  for (const x of along(foot.x0 + 0.4, foot.x1 - 0.4, 4)) pillar(x, foot.z0 + 0.4, H);
-  for (const z of along(foot.z0 + 0.4, foot.z1 - 0.4, 3).slice(1)) pillar(foot.x0 + 0.4, z, z === foot.z1 - 0.4 ? 0.5 : H);
-  for (const x of along(foot.x0 + 0.4, foot.x1 - 0.4, 4).slice(1)) pillar(x, foot.z1 - 0.4, 0.5);
-  for (const z of along(foot.z0 + 0.4, foot.z1 - 0.4, 3).slice(1, -1)) pillar(foot.x1 - 0.4, z, 0.5);
-
-  // 后侧、左侧落地玻璃幕墙（竖梃 + 顶梁），玻璃半透明能看到外面的天空
+  // 楼上还有 UPPER 层：后侧、左侧的幕墙、柱子一直往上，每层楼板按剖面图只留靠外墙的
+  // 一截（内侧是深色剖切面），朝镜头一侧的楼上部分整个剖掉，露出本层。
+  const FLOOR = 4.4;
+  const UPPER = 7;
+  const top = H + UPPER * FLOOR;
+  const STUB = 1.4;
+  const cutMat = keep(new THREE.MeshLambertMaterial({ color: "#5d5650" }));
+  const mullionMat = keep(new THREE.MeshLambertMaterial({ color: "#4d5562" }));
   const curtainMat = keep(
     new THREE.MeshBasicMaterial({ color: "#b6dcff", transparent: true, opacity: 0.2, depthWrite: false, side: THREE.DoubleSide }),
   );
-  const mullionMat = keep(new THREE.MeshLambertMaterial({ color: "#4d5562" }));
+  const pieces = new Map<THREE.Material, THREE.BufferGeometry[]>();
+  const box = (mat: THREE.Material, w: number, h: number, d: number, x: number, y: number, z: number) => {
+    const g = new THREE.BoxGeometry(w, h, d);
+    g.translate(x, y, z);
+    const list = pieces.get(mat) ?? [];
+    list.push(g);
+    pieces.set(mat, list);
+  };
+
+  // 柱子：后侧、左侧通到楼顶，朝镜头两侧剖到矮墙高度
+  const along = (a: number, b: number, n: number) => Array.from({ length: n + 1 }, (_, i) => a + ((b - a) * i) / n);
+  const pillar = (x: number, z: number, h: number) => box(concrete, 0.8, h, 0.8, x, h / 2, z);
+  for (const x of along(foot.x0 + 0.4, foot.x1 - 0.4, 4)) pillar(x, foot.z0 + 0.4, top);
+  for (const z of along(foot.z0 + 0.4, foot.z1 - 0.4, 3).slice(1)) pillar(foot.x0 + 0.4, z, z === foot.z1 - 0.4 ? 0.5 : top);
+  for (const x of along(foot.x0 + 0.4, foot.x1 - 0.4, 4).slice(1)) pillar(x, foot.z1 - 0.4, 0.5);
+  for (const z of along(foot.z0 + 0.4, foot.z1 - 0.4, 3).slice(1, -1)) pillar(foot.x1 - 0.4, z, 0.5);
+
+  // 后侧、左侧落地玻璃幕墙（通高的竖梃 + 每层横梁），玻璃半透明能看到外面的天空
   const curtain = (axis: "x" | "z", a: number, b: number, at: number) => {
     const len = b - a;
-    const glass = new THREE.Mesh(keep(new THREE.PlaneGeometry(len, H)), curtainMat);
-    if (axis === "x") glass.position.set((a + b) / 2, H / 2, at);
+    const glass = new THREE.Mesh(keep(new THREE.PlaneGeometry(len, top)), curtainMat);
+    if (axis === "x") glass.position.set((a + b) / 2, top / 2, at);
     else {
       glass.rotation.y = Math.PI / 2;
-      glass.position.set(at, H / 2, (a + b) / 2);
+      glass.position.set(at, top / 2, (a + b) / 2);
     }
     group.add(glass);
     const n = Math.round(len / 1.6);
     for (let i = 0; i <= n; i += 1) {
       const p = a + (len * i) / n;
-      const m = new THREE.Mesh(keep(new THREE.BoxGeometry(0.08, H, 0.08)), mullionMat);
-      if (axis === "x") m.position.set(p, H / 2, at);
-      else m.position.set(at, H / 2, p);
-      group.add(m);
+      if (axis === "x") box(mullionMat, 0.08, top, 0.08, p, top / 2, at);
+      else box(mullionMat, 0.08, top, 0.08, at, top / 2, p);
     }
-    for (const [y, h] of [
-      [0.06, 0.12],
-      [H - 0.15, 0.3],
-    ] as const) {
-      const beam = new THREE.Mesh(
-        keep(axis === "x" ? new THREE.BoxGeometry(len, h, 0.14) : new THREE.BoxGeometry(0.14, h, len)),
-        mullionMat,
-      );
-      if (axis === "x") beam.position.set((a + b) / 2, y, at);
-      else beam.position.set(at, y, (a + b) / 2);
-      group.add(beam);
-    }
+    const beam = (y: number, h: number) =>
+      axis === "x" ? box(mullionMat, len, h, 0.14, (a + b) / 2, y, at) : box(mullionMat, 0.14, h, len, at, y, (a + b) / 2);
+    beam(0.06, 0.12);
+    for (let k = 0; k < UPPER; k += 1) beam(H + k * FLOOR + 0.06, 0.12);
   };
   curtain("x", foot.x0, foot.x1, foot.z0 + 0.05);
   curtain("z", foot.z0, foot.z1, foot.x0 + 0.05);
 
+  // 楼上每层的楼板（本层的天花板也是这样）：靠外墙一截，内侧深色剖切面
+  for (let k = 0; k <= UPPER; k += 1) {
+    const y = H + k * FLOOR;
+    const t = k === UPPER ? 0.8 : 0.45;
+    box(concrete, fw, t, STUB, fx, y - t / 2, foot.z0 + STUB / 2);
+    box(concrete, STUB, t, fd - STUB, foot.x0 + STUB / 2, y - t / 2, foot.z0 + STUB + (fd - STUB) / 2);
+    box(cutMat, fw - STUB, t, 0.03, fx + STUB / 2, y - t / 2, foot.z0 + STUB + 0.015);
+    box(cutMat, 0.03, t, fd - STUB, foot.x0 + STUB + 0.015, y - t / 2, foot.z0 + STUB + (fd - STUB) / 2);
+    box(cutMat, STUB, t, 0.03, foot.x0 + STUB / 2, y - t / 2, foot.z1 + 0.015);
+    box(cutMat, 0.03, t, STUB, foot.x1 + 0.015, y - t / 2, foot.z0 + STUB / 2);
+  }
+  // 楼顶女儿墙
+  box(concrete, fw, 1, 0.4, fx, top + 0.5, foot.z0 + 0.2);
+  box(concrete, 0.4, 1, fd, foot.x0 + 0.2, top + 0.5, fz);
+
   // 朝镜头两侧：剖面矮墙（墙顶深色剖切面）
-  const cutMat = keep(new THREE.MeshLambertMaterial({ color: "#5d5650" }));
   for (const [w, d, x, z] of [
     [fw, 0.3, fx, foot.z1 - 0.15],
     [0.3, fd, foot.x1 - 0.15, fz],
@@ -474,6 +488,13 @@ export function createEnvironment(
     const cap = new THREE.Mesh(keep(new THREE.BoxGeometry(w, 0.02, d)), cutMat);
     cap.position.set(x, 0.51, z);
     group.add(wall, cap);
+  }
+
+  for (const [mat, list] of pieces) {
+    const m = new THREE.Mesh(keep(mergeGeometries(list)), mat);
+    m.receiveShadow = true;
+    group.add(m);
+    for (const g of list) g.dispose();
   }
 
   // 电梯厅与走廊绿植
