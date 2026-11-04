@@ -253,6 +253,15 @@ body[data-dsh-office] [class*="_centerCol"] {
   flex: none; width: 38px; border: 0; border-left: 1px solid var(--dsw-alias-border-l2); cursor: pointer;
   background: transparent; font-size: 15px; filter: grayscale(.3);
 }
+.dso-card-chat, .dso-lead-chat { position: relative; }
+.dso-dot-unread {
+  position: absolute; top: 7px; right: 6px; width: 9px; height: 9px; border-radius: 50%;
+  background: #ff3b30; box-shadow: 0 0 0 2px var(--dsw-alias-bg-layer-1), 0 0 6px rgba(255,59,48,.6);
+  animation: dso-unread-in .25s cubic-bezier(.2,1.6,.4,1);
+}
+.dso-lead-chat .dso-dot-unread { top: 2px; right: 2px; }
+@keyframes dso-unread-in { from { transform: scale(0); } to { transform: scale(1); } }
+.dso-section small.dso-unread-count { color: #fff; background: #ff3b30; }
 .dso-card-chat:hover { background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent); filter: none; }
 .dso-card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .dso-card-name { display: flex; align-items: center; gap: 6px; min-width: 0; }

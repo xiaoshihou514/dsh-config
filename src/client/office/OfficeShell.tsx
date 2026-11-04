@@ -445,6 +445,8 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const running = members.filter(isRunning).length;
   const member = members.find((m) => m.id === selected);
   const attention = useAttention(snapshot, leadId, running, chatOpen);
+  const unreadOf = useUnread(snapshot, chatOpen);
+  const unread = (id: string) => unreadOf(id) || (attention !== null && id === attention.leadId);
   useEffect(
     () => scene.current?.setAttention?.(attention?.leadId ?? null, attention?.kind),
     [attention?.leadId, attention?.kind, attention?.at, api, leadId],
@@ -453,6 +455,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
     if (leadId === null) return;
     // 打开组长对话就算看过这次汇报
     if (id === leadId && attention !== null) acknowledge(leadId, attention.at);
+    markRead(id);
     // 先立刻收起 3D、展开对话栏；打开会话（要加载历史）放到下一刻，免得点击后界面卡住不动。
     setOffice({ chatOpen: true });
     setTimeout(() => {
@@ -585,6 +588,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
             <TeamPanel
               api={api}
               attention={attention?.kind ?? null}
+              unread={unread}
               snapshot={snapshot}
               isRunning={isRunning}
               onPick={(id) => {
@@ -603,7 +607,10 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
             <AttentionBanner
               attention={attention}
               onOpen={() => openChat(attention.leadId)}
-              onDismiss={() => acknowledge(attention.leadId, attention.at)}
+              onDismiss={() => {
+                acknowledge(attention.leadId, attention.at);
+                markRead(attention.leadId);
+              }}
             />
           )}
           {mode === "office" && <div className="dso-hint">点击角色查看详情</div>}
@@ -611,6 +618,84 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
       </div>
     </div>
   );
+}
+
+// ---------------------------------------------------------------- 未读
+
+/**
+ * 未读红点：某人最近一轮结束（说完了一段话）晚于你上次打开他的对话，就算有未读。
+ * 每人记 { seen, latest }（localStorage `dsh-config:office-reads`）：latest 是见过的最近一轮结束时间
+ * （之后开了新一轮快照里就没有 lastTurn 了，所以要自己记住），seen 是上次打开对话时的 latest。
+ * 第一次见到某人时以当时为基线，不把旧消息都算成未读。
+ */
+const READS_KEY = "dsh-config:office-reads";
+type Reads = Record<string, { seen: number; latest: number }>;
+const readListeners = new Set<() => void>();
+function loadReads(): Reads {
+  try {
+    return JSON.parse(localStorage.getItem(READS_KEY) ?? "{}") as Reads;
+  } catch {
+    return {};
+  }
+}
+function saveReads(reads: Reads): void {
+  try {
+    localStorage.setItem(READS_KEY, JSON.stringify(reads));
+  } catch {
+    // 隐私模式：只在内存里
+  }
+  for (const listener of readListeners) listener();
+}
+let readsLoaded: Reads | undefined;
+/** 第一次用到时才从 localStorage 读。 */
+function reads(): Reads {
+  readsLoaded ??= loadReads();
+  return readsLoaded;
+}
+
+/** 打开某人的对话：他目前说过的都算看过了。 */
+function markRead(id: string): void {
+  const entry = reads()[id];
+  if (entry === undefined || entry.seen >= entry.latest) return;
+  readsLoaded = { ...reads(), [id]: { ...entry, seen: entry.latest } };
+  saveReads(readsLoaded);
+}
+
+function useUnread(snapshot: OfficeSnapshot | null, chatOpen: boolean): (id: string) => boolean {
+  const [, setVersion] = useState(0);
+  useEffect(() => {
+    const listener = () => setVersion((v) => v + 1);
+    readListeners.add(listener);
+    return () => {
+      readListeners.delete(listener);
+    };
+  }, []);
+  useEffect(() => {
+    if (snapshot === null) return;
+    const viewing = chatOpen ? currentSession().sessionId : undefined;
+    let next: Reads | undefined;
+    for (const m of snapshot.members) {
+      const at = m.lastTurn?.at;
+      const entry = (next ?? reads())[m.id];
+      let updated = entry;
+      if (entry === undefined) updated = { seen: at ?? 0, latest: at ?? 0 };
+      else if (at !== undefined && at > entry.latest) updated = { ...entry, latest: at };
+      // 对话正开着这个人：边说边看，不算未读
+      if (updated !== undefined && m.id === viewing && updated.seen < updated.latest) updated = { ...updated, seen: updated.latest };
+      if (updated !== entry && updated !== undefined) {
+        next ??= { ...reads() };
+        next[m.id] = updated;
+      }
+    }
+    if (next !== undefined) {
+      readsLoaded = next;
+      saveReads(next);
+    }
+  }, [snapshot, chatOpen]);
+  return (id) => {
+    const entry = reads()[id];
+    return entry !== undefined && entry.latest > entry.seen;
+  };
 }
 
 // ---------------------------------------------------------------- 醒目提醒
@@ -992,6 +1077,7 @@ function InteractionItem({ item, names }: { item: OfficeInteraction; names: Map<
 function TeamPanel({
   api,
   attention,
+  unread,
   snapshot,
   isRunning,
   onPick,
@@ -999,21 +1085,30 @@ function TeamPanel({
 }: {
   api: SceneModule | null;
   attention: "report" | "error" | null;
+  unread: (id: string) => boolean;
   snapshot: OfficeSnapshot | null;
   isRunning: (m: OfficeMember) => boolean;
   onPick: (id: string) => void;
   onOpen: (id: string) => void;
 }) {
   if (snapshot === null) return <div className="dso-empty">加载中…</div>;
+  const unreadCount = snapshot.members.filter((m) => unread(m.id)).length;
   return (
     <>
       <h3 className="dso-section">
         <span>组长动态</span>
       </h3>
-      <LeadPanel snapshot={snapshot} attention={attention} isRunning={isRunning} onOpen={onOpen} />
+      <LeadPanel
+        snapshot={snapshot}
+        attention={attention}
+        unread={snapshot.members.some((m) => m.role === "lead" && unread(m.id))}
+        isRunning={isRunning}
+        onOpen={onOpen}
+      />
       <h3 className="dso-section">
         <span>队伍</span>
         <small>{snapshot.members.length}</small>
+        {unreadCount > 0 && <small className="dso-unread-count">{unreadCount} 人未读</small>}
       </h3>
       <div className="dso-roster">
         {snapshot.members.map((m) => {
@@ -1036,8 +1131,14 @@ function TeamPanel({
                   </span>
                 </span>
               </button>
-              <button type="button" className="dso-card-chat" title="在右侧打开对话" onClick={() => onOpen(m.id)}>
+              <button
+                type="button"
+                className="dso-card-chat"
+                title={unread(m.id) ? "有新消息未读 · 打开对话" : "在右侧打开对话"}
+                onClick={() => onOpen(m.id)}
+              >
                 💬
+                {unread(m.id) && <span className="dso-dot-unread" />}
               </button>
             </div>
           );
@@ -1060,11 +1161,13 @@ function since(at: number): string {
 function LeadPanel({
   snapshot,
   attention,
+  unread,
   isRunning,
   onOpen,
 }: {
   snapshot: OfficeSnapshot;
   attention: "report" | "error" | null;
+  unread: boolean;
   isRunning: (m: OfficeMember) => boolean;
   onOpen: (id: string) => void;
 }) {
@@ -1101,8 +1204,9 @@ function LeadPanel({
         <span className="dso-led" />
         <span className="dso-ellipsis">{action}</span>
         {running && lead.current && <small>{since(lead.current.since)}</small>}
-        <button type="button" className="dso-lead-chat" title="与组长对话" onClick={() => onOpen(lead.id)}>
+        <button type="button" className="dso-lead-chat" title={unread ? "组长有新消息 · 打开对话" : "与组长对话"} onClick={() => onOpen(lead.id)}>
           💬
+          {unread && <span className="dso-dot-unread" />}
         </button>
       </div>
       {tasks.length > 0 && (
