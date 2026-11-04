@@ -10,7 +10,7 @@
 
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { canvasTexture, plant } from "./furniture.ts";
+import { canvasTexture, plant, type WallSide } from "./furniture.ts";
 
 export type DayPhase = "morning" | "noon" | "dusk" | "night";
 
@@ -28,7 +28,6 @@ interface PhaseLook {
   readonly glass: string;
   /** 幕墙玻璃。 */
   readonly curtain: string;
-  readonly curtainOpacity: number;
   /** 楼群：环境光、阳光、玻璃颜色、亮灯比例。 */
   readonly cityAmb: number;
   readonly citySun: number;
@@ -56,7 +55,6 @@ const LOOK: Record<DayPhase, PhaseLook> = {
     sunPos: [16, 11, 7],
     glass: "#cfe8ff",
     curtain: "#bfe0ff",
-    curtainOpacity: 0.22,
     cityAmb: 0.62,
     citySun: 0.5,
     cityGlass: "#9fc3e6",
@@ -74,7 +72,6 @@ const LOOK: Record<DayPhase, PhaseLook> = {
     sunPos: [9, 18, 10],
     glass: "#bfe3ff",
     curtain: "#b6dcff",
-    curtainOpacity: 0.2,
     cityAmb: 0.68,
     citySun: 0.45,
     cityGlass: "#a6cdf0",
@@ -92,7 +89,6 @@ const LOOK: Record<DayPhase, PhaseLook> = {
     sunPos: [-16, 6, 5],
     glass: "#ffc489",
     curtain: "#ffb27a",
-    curtainOpacity: 0.24,
     cityAmb: 0.5,
     citySun: 0.45,
     cityGlass: "#d99a86",
@@ -110,7 +106,6 @@ const LOOK: Record<DayPhase, PhaseLook> = {
     sunPos: [-7, 16, -9],
     glass: "#2c3a6c",
     curtain: "#2a3870",
-    curtainOpacity: 0.35,
     cityAmb: 0.32,
     citySun: 0.12,
     cityGlass: "#1d2752",
@@ -366,9 +361,30 @@ function elevatorCore(x0: number, x1: number, z0: number, z1: number, height: nu
   return group;
 }
 
+type Side = WallSide;
+const SIDES: readonly Side[] = ["back", "front", "left", "right"];
+const OUTWARD: Record<Side, readonly [number, number]> = { back: [0, -1], front: [0, 1], left: [-1, 0], right: [1, 0] };
+
+/** 一组会随镜头方向淡化的材质。 */
+interface Fader {
+  readonly mats: THREE.Material[];
+  readonly meshes: THREE.Object3D[];
+  readonly sides: readonly Side[];
+  /** 不朝镜头时的不透明度。 */
+  readonly base: number;
+  readonly glass: boolean;
+  /** 楼上的楼层：只在缩放到最远时出现。 */
+  readonly upper: boolean;
+  readonly room: boolean;
+}
+
 export interface Environment {
-  /** 房间重搭（如改名）后重新给窗玻璃上色。 */
+  /** 房间重搭（如改名）后重新给窗玻璃上色、登记要随视角淡化的墙。 */
   applyRoom(room: THREE.Object3D): void;
+  /** 每帧调用：按镜头方向淡化朝镜头的墙；缩放到最远时显示楼上各层。 */
+  update(camera: THREE.OrthographicCamera, target: THREE.Vector3, minZoom: number, dt: number): void;
+  /** 当前是否在看整栋楼（楼上各层已显示）。 */
+  readonly building: boolean;
   readonly phase: DayPhase;
   dispose(): void;
 }
@@ -395,6 +411,9 @@ export function createEnvironment(
   const fx = (foot.x0 + foot.x1) / 2;
   const fz = (foot.z0 + foot.z1) / 2;
   const H = 4.6;
+  const FLOOR = 4.4;
+  const UPPER = 7;
+  const top = H + UPPER * FLOOR;
 
   const carpet = new THREE.Mesh(
     keep(new THREE.PlaneGeometry(fw, fd)),
@@ -404,102 +423,149 @@ export function createEnvironment(
   carpet.position.set(fx, -0.01, fz);
   carpet.receiveShadow = true;
   group.add(carpet);
-
-  const concrete = keep(new THREE.MeshLambertMaterial({ color: "#e2e0db" }));
-  const slab = new THREE.Mesh(keep(new THREE.BoxGeometry(fw, 0.7, fd)), concrete);
+  const slab = new THREE.Mesh(keep(new THREE.BoxGeometry(fw, 0.7, fd)), keep(new THREE.MeshLambertMaterial({ color: "#e2e0db" })));
   slab.position.set(fx, -0.37, fz);
   group.add(slab);
 
-  // 楼上还有 UPPER 层：后侧、左侧的幕墙、柱子一直往上，每层楼板按剖面图只留靠外墙的
-  // 一截（内侧是深色剖切面），朝镜头一侧的楼上部分整个剖掉，露出本层。
-  const FLOOR = 4.4;
-  const UPPER = 7;
-  const top = H + UPPER * FLOOR;
-  const STUB = 1.4;
-  const cutMat = keep(new THREE.MeshLambertMaterial({ color: "#5d5650" }));
-  const mullionMat = keep(new THREE.MeshLambertMaterial({ color: "#4d5562" }));
-  const curtainMat = keep(
-    new THREE.MeshBasicMaterial({ color: "#b6dcff", transparent: true, opacity: 0.2, depthWrite: false, side: THREE.DoubleSide }),
-  );
-  const pieces = new Map<THREE.Material, THREE.BufferGeometry[]>();
-  const box = (mat: THREE.Material, w: number, h: number, d: number, x: number, y: number, z: number) => {
+  // ---- 大楼外壳：按（材质种类、所属外墙、是否楼上）分桶合并，每桶一份材质单独淡化
+  type Kind = "concrete" | "mullion" | "glass" | "floor";
+  const buckets = new Map<string, { kind: Kind; sides: Side[]; upper: boolean; geos: THREE.BufferGeometry[] }>();
+  const put = (kind: Kind, sides: Side[], upper: boolean, g: THREE.BufferGeometry) => {
+    const key = `${kind}|${sides.join(",")}|${upper ? 1 : 0}`;
+    let bucket = buckets.get(key);
+    if (bucket === undefined) {
+      bucket = { kind, sides, upper, geos: [] };
+      buckets.set(key, bucket);
+    }
+    bucket.geos.push(g);
+  };
+  const box = (kind: Kind, sides: Side[], upper: boolean, w: number, h: number, d: number, x: number, y: number, z: number) => {
     const g = new THREE.BoxGeometry(w, h, d);
     g.translate(x, y, z);
-    const list = pieces.get(mat) ?? [];
-    list.push(g);
-    pieces.set(mat, list);
+    put(kind, sides, upper, g);
   };
-
-  // 柱子：后侧、左侧通到楼顶，朝镜头两侧剖到矮墙高度
-  const along = (a: number, b: number, n: number) => Array.from({ length: n + 1 }, (_, i) => a + ((b - a) * i) / n);
-  const pillar = (x: number, z: number, h: number) => box(concrete, 0.8, h, 0.8, x, h / 2, z);
-  for (const x of along(foot.x0 + 0.4, foot.x1 - 0.4, 4)) pillar(x, foot.z0 + 0.4, top);
-  for (const z of along(foot.z0 + 0.4, foot.z1 - 0.4, 3).slice(1)) pillar(foot.x0 + 0.4, z, z === foot.z1 - 0.4 ? 0.5 : top);
-  for (const x of along(foot.x0 + 0.4, foot.x1 - 0.4, 4).slice(1)) pillar(x, foot.z1 - 0.4, 0.5);
-  for (const z of along(foot.z0 + 0.4, foot.z1 - 0.4, 3).slice(1, -1)) pillar(foot.x1 - 0.4, z, 0.5);
-
-  // 后侧、左侧落地玻璃幕墙（通高的竖梃 + 每层横梁），玻璃半透明能看到外面的天空
-  const curtain = (axis: "x" | "z", a: number, b: number, at: number) => {
+  const sidesAt = (x: number, z: number): Side[] => {
+    const out: Side[] = [];
+    if (z < foot.z0 + 1) out.push("back");
+    if (z > foot.z1 - 1) out.push("front");
+    if (x < foot.x0 + 1) out.push("left");
+    if (x > foot.x1 - 1) out.push("right");
+    return out;
+  };
+  /** 一段楼层高的外墙：玻璃 + 竖梃 + 底梁、顶梁。 */
+  const facade = (side: Side, y0: number, h: number, upper: boolean) => {
+    const alongX = side === "back" || side === "front";
+    const a = alongX ? foot.x0 : foot.z0;
+    const b = alongX ? foot.x1 : foot.z1;
+    const at = side === "back" ? foot.z0 + 0.05 : side === "front" ? foot.z1 - 0.05 : side === "left" ? foot.x0 + 0.05 : foot.x1 - 0.05;
     const len = b - a;
-    const glass = new THREE.Mesh(keep(new THREE.PlaneGeometry(len, top)), curtainMat);
-    if (axis === "x") glass.position.set((a + b) / 2, top / 2, at);
-    else {
-      glass.rotation.y = Math.PI / 2;
-      glass.position.set(at, top / 2, (a + b) / 2);
-    }
-    group.add(glass);
+    const glass = new THREE.PlaneGeometry(len, h);
+    if (!alongX) glass.rotateY(Math.PI / 2);
+    if (alongX) glass.translate((a + b) / 2, y0 + h / 2, at);
+    else glass.translate(at, y0 + h / 2, (a + b) / 2);
+    put("glass", [side], upper, glass);
     const n = Math.round(len / 1.6);
     for (let i = 0; i <= n; i += 1) {
       const p = a + (len * i) / n;
-      if (axis === "x") box(mullionMat, 0.08, top, 0.08, p, top / 2, at);
-      else box(mullionMat, 0.08, top, 0.08, at, top / 2, p);
+      if (alongX) box("mullion", [side], upper, 0.08, h, 0.08, p, y0 + h / 2, at);
+      else box("mullion", [side], upper, 0.08, h, 0.08, at, y0 + h / 2, p);
     }
-    const beam = (y: number, h: number) =>
-      axis === "x" ? box(mullionMat, len, h, 0.14, (a + b) / 2, y, at) : box(mullionMat, 0.14, h, len, at, y, (a + b) / 2);
-    beam(0.06, 0.12);
-    for (let k = 0; k < UPPER; k += 1) beam(H + k * FLOOR + 0.06, 0.12);
+    for (const [y, t] of [
+      [y0 + 0.06, 0.12],
+      [y0 + h - 0.12, 0.24],
+    ] as const) {
+      if (alongX) box("mullion", [side], upper, len, t, 0.14, (a + b) / 2, y, at);
+      else box("mullion", [side], upper, 0.14, t, len, at, y, (a + b) / 2);
+    }
   };
-  curtain("x", foot.x0, foot.x1, foot.z0 + 0.05);
-  curtain("z", foot.z0, foot.z1, foot.x0 + 0.05);
+  const along = (a: number, b: number, n: number) => Array.from({ length: n + 1 }, (_, i) => a + ((b - a) * i) / n);
+  const pillarSpots: [number, number][] = [];
+  for (const x of along(foot.x0 + 0.4, foot.x1 - 0.4, 4)) pillarSpots.push([x, foot.z0 + 0.4], [x, foot.z1 - 0.4]);
+  for (const z of along(foot.z0 + 0.4, foot.z1 - 0.4, 3).slice(1, -1)) pillarSpots.push([foot.x0 + 0.4, z], [foot.x1 - 0.4, z]);
+  const pillars = (y0: number, h: number, upper: boolean) => {
+    for (const [x, z] of pillarSpots) box("concrete", sidesAt(x, z), upper, 0.8, h, 0.8, x, y0 + h / 2, z);
+  };
+  // 电梯核心筒（本层的门在 elevatorCore 里，楼上只是一根实心筒）
+  const core = { x0: foot.x0 + 0.5, x1: foot.x0 + 2.6, z0: room.z0 + 5, z1: room.z0 + 12.5 };
 
-  // 楼上每层的楼板（本层的天花板也是这样）：靠外墙一截，内侧深色剖切面
-  for (let k = 0; k <= UPPER; k += 1) {
+  // 本层：四面幕墙、柱子
+  for (const side of SIDES) facade(side, 0, H, false);
+  pillars(0, H, false);
+  // 楼上各层：整块楼板（第一块就是本层的天花板）、四面幕墙、柱子、核心筒，顶上女儿墙
+  for (let k = 0; k < UPPER; k += 1) {
     const y = H + k * FLOOR;
-    const t = k === UPPER ? 0.8 : 0.45;
-    box(concrete, fw, t, STUB, fx, y - t / 2, foot.z0 + STUB / 2);
-    box(concrete, STUB, t, fd - STUB, foot.x0 + STUB / 2, y - t / 2, foot.z0 + STUB + (fd - STUB) / 2);
-    box(cutMat, fw - STUB, t, 0.03, fx + STUB / 2, y - t / 2, foot.z0 + STUB + 0.015);
-    box(cutMat, 0.03, t, fd - STUB, foot.x0 + STUB + 0.015, y - t / 2, foot.z0 + STUB + (fd - STUB) / 2);
-    box(cutMat, STUB, t, 0.03, foot.x0 + STUB / 2, y - t / 2, foot.z1 + 0.015);
-    box(cutMat, 0.03, t, STUB, foot.x1 + 0.015, y - t / 2, foot.z0 + STUB / 2);
+    box("floor", [], true, fw, 0.45, fd, fx, y + 0.225 - 0.45, fz);
+    for (const side of SIDES) facade(side, y, FLOOR, true);
+    pillars(y, FLOOR, true);
+    box("concrete", ["left"], true, core.x1 - core.x0, FLOOR, core.z1 - core.z0, (core.x0 + core.x1) / 2, y + FLOOR / 2, (core.z0 + core.z1) / 2);
   }
-  // 楼顶女儿墙
-  box(concrete, fw, 1, 0.4, fx, top + 0.5, foot.z0 + 0.2);
-  box(concrete, 0.4, 1, fd, foot.x0 + 0.2, top + 0.5, fz);
+  box("floor", [], true, fw, 0.6, fd, fx, top + 0.3 - 0.45, fz);
+  box("concrete", ["back"], true, fw, 1, 0.4, fx, top + 0.6, foot.z0 + 0.2);
+  box("concrete", ["front"], true, fw, 1, 0.4, fx, top + 0.6, foot.z1 - 0.2);
+  box("concrete", ["left"], true, 0.4, 1, fd, foot.x0 + 0.2, top + 0.6, fz);
+  box("concrete", ["right"], true, 0.4, 1, fd, foot.x1 - 0.2, top + 0.6, fz);
+  box("concrete", [], true, 4, 1.6, 3, fx + 4, top + 0.95, fz - 2);
 
-  // 朝镜头两侧：剖面矮墙（墙顶深色剖切面）
-  for (const [w, d, x, z] of [
-    [fw, 0.3, fx, foot.z1 - 0.15],
-    [0.3, fd, foot.x1 - 0.15, fz],
-  ] as const) {
-    const wall = new THREE.Mesh(keep(new THREE.BoxGeometry(w, 0.5, d)), concrete);
-    wall.position.set(x, 0.25, z);
-    wall.receiveShadow = true;
-    const cap = new THREE.Mesh(keep(new THREE.BoxGeometry(w, 0.02, d)), cutMat);
-    cap.position.set(x, 0.51, z);
-    group.add(wall, cap);
-  }
-
-  for (const [mat, list] of pieces) {
-    const m = new THREE.Mesh(keep(mergeGeometries(list)), mat);
-    m.receiveShadow = true;
+  const faders: Fader[] = [];
+  const glassMats: THREE.MeshBasicMaterial[] = [];
+  for (const bucket of buckets.values()) {
+    const glass = bucket.kind === "glass";
+    const mat: THREE.Material = glass
+      ? new THREE.MeshBasicMaterial({ color: "#b6dcff", transparent: true, opacity: 0.3, depthWrite: false, side: THREE.DoubleSide })
+      : new THREE.MeshLambertMaterial({
+          color: bucket.kind === "mullion" ? "#4d5562" : bucket.kind === "floor" ? "#d9d6d0" : "#e2e0db",
+          transparent: true,
+        });
+    keep(mat);
+    if (glass) glassMats.push(mat as THREE.MeshBasicMaterial);
+    const m = new THREE.Mesh(keep(mergeGeometries(bucket.geos)), mat);
+    m.receiveShadow = !glass;
+    for (const g of bucket.geos) g.dispose();
     group.add(m);
-    for (const g of list) g.dispose();
+    faders.push({
+      mats: [mat],
+      meshes: [m],
+      sides: bucket.sides,
+      base: glass ? (bucket.upper ? 0.72 : 0.3) : 1,
+      glass,
+      upper: bucket.upper,
+      room: false,
+    });
   }
 
-  // 电梯厅与走廊绿植
-  group.add(elevatorCore(foot.x0 + 0.5, foot.x0 + 2.6, room.z0 + 5, room.z0 + 12.5, H));
+  // 电梯厅（随左侧外墙淡化）与走廊绿植
+  const elevators = elevatorCore(core.x0, core.x1, core.z0, core.z1, H);
+  elevators.userData.side = "left";
+  group.add(elevators);
   group.add(plant(foot.x0 + 1.3, foot.z0 + 1.4, 1.3), plant(foot.x1 - 1.4, foot.z0 + 1.4, 1.2), plant(foot.x0 + 1.3, foot.z1 - 1.3, 1.1));
+
+  /** 把带 userData.side 的子树材质换成独立副本并登记淡化。 */
+  const adopt = (root: THREE.Object3D, isRoom: boolean) => {
+    // 同一份材质可能被几面墙共用，按（墙、材质）各复制一份
+    const clones = new Map<string, THREE.Material>();
+    root.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      let side: Side | undefined;
+      for (let p: THREE.Object3D | null = mesh; p !== null && side === undefined; p = p === root ? null : p.parent)
+        side = p.userData.side as Side | undefined;
+      if (side === undefined) return;
+      const orig = mesh.material as THREE.Material;
+      const key = `${side}|${orig.uuid}`;
+      let clone = clones.get(key);
+      if (clone === undefined) {
+        clone = orig.clone();
+        clone.transparent = true;
+        clones.set(key, clone);
+        faders.push({ mats: [clone], meshes: [], sides: [side], base: orig.opacity, glass: false, upper: false, room: isRoom });
+      }
+      mesh.material = clone;
+      faders.find((f) => f.mats[0] === clone)!.meshes.push(mesh);
+    });
+    return [...clones.values()];
+  };
+  for (const m of adopt(elevators, false)) keep(m);
+  let roomClones: THREE.Material[] = [];
 
   // 城市楼群
   const cityMat = keep(
@@ -552,8 +618,7 @@ export function createEnvironment(
     lights.sun.position.set(...look.sunPos);
     lamp.intensity = look.lamp;
     lamp2.intensity = look.lamp * 0.7;
-    curtainMat.color.set(look.curtain);
-    curtainMat.opacity = look.curtainOpacity;
+    for (const m of glassMats) m.color.set(look.curtain);
     const u = cityMat.uniforms;
     (u.uGlass!.value as THREE.Color).set(look.cityGlass);
     (u.uHaze!.value as THREE.Color).set(look.haze);
@@ -568,10 +633,55 @@ export function createEnvironment(
   check();
   const timer = setInterval(check, 60_000);
 
+  // ---- 视角相关的淡化
+  const facing: Record<Side, number> = { back: 0, front: 0, left: 0, right: 0 };
+  let upperShown = 0;
+  const smooth = (a: number, b: number, x: number) => {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
+
   return {
     applyRoom(target) {
+      for (let i = faders.length - 1; i >= 0; i -= 1) if (faders[i]!.room) faders.splice(i, 1);
+      for (const m of roomClones) m.dispose();
       roomRef = target;
+      roomClones = adopt(target, true);
       if (current !== null) paintGlass(target, LOOK[current].glass);
+    },
+    update(camera, target, minZoom, dt) {
+      let dx = camera.position.x - target.x;
+      let dz = camera.position.z - target.z;
+      const len = Math.hypot(dx, dz) || 1;
+      dx /= len;
+      dz /= len;
+      const k = Math.min(1, dt * 8);
+      for (const side of SIDES) {
+        const [nx, nz] = OUTWARD[side];
+        facing[side] += (smooth(0.2, 0.55, nx * dx + nz * dz) - facing[side]) * k;
+      }
+      // 缩放到最远（再往外滚一点就到底）时显示整栋楼
+      const want = camera.zoom <= minZoom * 1.12 ? 1 : 0;
+      upperShown += (want - upperShown) * Math.min(1, dt * 6);
+      if (Math.abs(want - upperShown) < 0.002) upperShown = want;
+      const b = upperShown;
+      for (const f of faders) {
+        let face = 0;
+        for (const side of f.sides) face = Math.max(face, facing[side]);
+        // 朝镜头的墙：看整栋楼时半透明，能隐约看到里面；拉近时几乎透明
+        const faced = f.glass ? 0.04 + 0.2 * b : 0.06 + 0.3 * b;
+        let alpha = f.base + (faced - f.base) * face;
+        if (f.upper) alpha *= b;
+        const visible = alpha > 0.01;
+        for (const m of f.meshes) m.visible = visible;
+        for (const mat of f.mats) {
+          mat.opacity = alpha;
+          if (!f.glass) mat.depthWrite = alpha > 0.95;
+        }
+      }
+    },
+    get building() {
+      return upperShown > 0.5;
     },
     get phase() {
       return current ?? phaseAt(new Date());
@@ -579,6 +689,7 @@ export function createEnvironment(
     dispose() {
       clearInterval(timer);
       for (const d of disposables) d.dispose();
+      for (const m of roomClones) m.dispose();
       group.removeFromParent();
       lamp.removeFromParent();
       lamp2.removeFromParent();

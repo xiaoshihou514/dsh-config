@@ -1292,6 +1292,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     const t = clock.elapsedTime;
     frame += 1;
     controls.update();
+    if (mode === "office") env.update(camera, controls.target, controls.minZoom, dt);
 
     if (mode === "office") {
       for (const agent of agents.values()) {
@@ -1444,7 +1445,10 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     for (const agent of agents.values()) {
       // 头顶信息只在悬停或选中时显示
       const id = agent.member.id;
-      const show = id === hovered || id === selected || agent.labelHover || (id === lastHovered && t < lastHoveredUntil);
+      // 看整栋楼时人在楼板下面，不显示
+      const show =
+        !env.building &&
+        (id === hovered || id === selected || agent.labelHover || (id === lastHovered && t < lastHoveredUntil));
       agent.label.style.display = show ? "" : "none";
       if (!show) {
         if (agent.sayUntil > 0 && t > agent.sayUntil) {

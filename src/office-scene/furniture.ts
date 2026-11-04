@@ -12,6 +12,8 @@ export const FURNITURE_VOXEL = 0.1;
 const F = FURNITURE_VOXEL;
 
 /** 办公室尺寸（世界单位）。 */
+export type WallSide = "back" | "front" | "left" | "right";
+
 export const ROOM = { x0: -12, x1: 12, z0: -9, z1: 9, wallHeight: 4 } as const;
 export const DESK_TOP = 0.85;
 export const SEAT_HEIGHT = 0.5;
@@ -86,98 +88,87 @@ export function buildRoom(projectName: string): THREE.Group {
 
   const wallMat = new THREE.MeshLambertMaterial({ color: "#efe8dc" });
   const trimMat = new THREE.MeshLambertMaterial({ color: "#c9b79c" });
-  // 前墙、右墙按剖面图的方式只留一截矮墙（不挡视线），墙顶是深色剖切面
-  const cutMat = new THREE.MeshLambertMaterial({ color: "#5d5650" });
-  const stubH = 0.32;
-  for (const [w, d, x, z] of [
-    [width + 0.6, 0.3, 0, ROOM.z1 + 0.15],
-    [0.3, depth, ROOM.x1 + 0.15, 0],
-  ] as const) {
-    const stub = new THREE.Mesh(new THREE.BoxGeometry(w, stubH, d), wallMat);
-    stub.position.set(x, stubH / 2, z);
-    stub.receiveShadow = true;
-    const cap = new THREE.Mesh(new THREE.BoxGeometry(w, 0.02, d), cutMat);
-    cap.position.set(x, stubH + 0.01, z);
-    room.add(stub, cap);
-  }
-  // 后墙（带窗）
-  const back = new THREE.Group();
   const wallT = 0.3;
-  const segments: [number, number][] = [];
-  const windows: [number, number][] = [
+  const H = ROOM.wallHeight;
+
+  /**
+   * 一面墙：在局部坐标里沿 +x 铺开、室内朝 +z，墙体在 z∈[-wallT, 0]；
+   * windows / door 是局部 x 区间。外层按朝向旋转摆放，userData.side 供环境按镜头方向淡化。
+   */
+  const buildWall = (side: WallSide, a0: number, a1: number, windows: [number, number][], door?: [number, number]) => {
+    const group = new THREE.Group();
+    group.userData.side = side;
+    const holes = [...windows, ...(door ? [door] : [])].sort((p, q) => p[0] - q[0]);
+    let cursor = a0;
+    const solid = (a: number, b: number, y0: number, y1: number) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(b - a, y1 - y0, wallT), wallMat);
+      m.position.set((a + b) / 2, (y0 + y1) / 2, -wallT / 2);
+      m.receiveShadow = true;
+      group.add(m);
+    };
+    for (const [a, b] of holes) {
+      if (a > cursor) solid(cursor, a, 0, H);
+      cursor = b;
+    }
+    if (a1 > cursor) solid(cursor, a1, 0, H);
+    for (const [a, b] of windows) {
+      solid(a, b, 0, 1.1);
+      solid(a, b, H - 0.6, H);
+      const glass = new THREE.Mesh(new THREE.PlaneGeometry(b - a, H - 1.7), new THREE.MeshBasicMaterial({ color: "#bfe3ff" }));
+      glass.position.set((a + b) / 2, 1.1 + (H - 1.7) / 2, -wallT + 0.02);
+      glass.userData.glass = true;
+      const frame = new Voxels();
+      const cols = Math.round((b - a) / F);
+      const rows = Math.round((H - 1.7) / F);
+      for (let x = 0; x <= cols; x += 1)
+        for (let y = 0; y <= rows; y += 1)
+          if (x === 0 || x === cols || y === 0 || y === rows || x === Math.round(cols / 2) || y === Math.round(rows / 2))
+            frame.set(x, y, 0, "#f7f4ee");
+      const frameMesh = mesh(frame);
+      frameMesh.castShadow = false;
+      frameMesh.position.set(a, 1.1, -0.02);
+      const sill = new THREE.Mesh(new THREE.BoxGeometry(b - a + 0.2, 0.08, 0.3), trimMat);
+      sill.position.set((a + b) / 2, 1.1, 0.1);
+      group.add(glass, frameMesh, sill);
+    }
+    if (door) {
+      const [a, b] = door;
+      solid(a, b, 2.6, H);
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(b - a - 0.1, 2.6, 0.08), new THREE.MeshLambertMaterial({ color: "#9b7350" }));
+      panel.position.set((a + b) / 2, 1.3, -0.2);
+      const knob = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.08), new THREE.MeshLambertMaterial({ color: "#e3b546" }));
+      knob.position.set(a + 0.35, 1.2, -0.12);
+      group.add(panel, knob);
+    }
+    const skirting = new THREE.Mesh(new THREE.BoxGeometry(a1 - a0, 0.16, 0.06), trimMat);
+    skirting.position.set((a0 + a1) / 2, 0.08, 0.03);
+    group.add(skirting);
+    room.add(group);
+    return group;
+  };
+  // 四面墙：后墙、左墙（带门）、前墙、右墙。朝镜头的墙由环境按视角淡成几乎透明。
+  const back = buildWall("back", ROOM.x0 - wallT, ROOM.x1 + wallT, [
     [-9, -5.5],
     [-3.5, 0],
     [6, 10],
-  ];
-  let cursor: number = ROOM.x0;
-  for (const [a, b] of windows) {
-    segments.push([cursor, a]);
-    cursor = b;
-  }
-  segments.push([cursor, ROOM.x1]);
-  for (const [a, b] of segments) {
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(b - a, ROOM.wallHeight, wallT), wallMat);
-    wall.position.set((a + b) / 2, ROOM.wallHeight / 2, ROOM.z0 - wallT / 2);
-    wall.receiveShadow = true;
-    back.add(wall);
-  }
-  for (const [a, b] of windows) {
-    const lower = new THREE.Mesh(new THREE.BoxGeometry(b - a, 1.1, wallT), wallMat);
-    lower.position.set((a + b) / 2, 0.55, ROOM.z0 - wallT / 2);
-    const upper = new THREE.Mesh(new THREE.BoxGeometry(b - a, 0.6, wallT), wallMat);
-    upper.position.set((a + b) / 2, ROOM.wallHeight - 0.3, ROOM.z0 - wallT / 2);
-    const glass = new THREE.Mesh(
-      new THREE.PlaneGeometry(b - a, ROOM.wallHeight - 1.7),
-      new THREE.MeshBasicMaterial({ color: "#bfe3ff" }),
-    );
-    glass.position.set((a + b) / 2, 1.1 + (ROOM.wallHeight - 1.7) / 2, ROOM.z0 - wallT + 0.02);
-    glass.userData.glass = true;
-    const frame = new Voxels();
-    const cols = Math.round((b - a) / F);
-    const rows = Math.round((ROOM.wallHeight - 1.7) / F);
-    for (let x = 0; x <= cols; x += 1)
-      for (let y = 0; y <= rows; y += 1)
-        if (x === 0 || x === cols || y === 0 || y === rows || x === Math.round(cols / 2) || y === Math.round(rows / 2))
-          frame.set(x, y, 0, "#f7f4ee");
-    const frameMesh = mesh(frame);
-    frameMesh.castShadow = false;
-    frameMesh.position.set(a, 1.1, ROOM.z0 - 0.02);
-    const sill = new THREE.Mesh(new THREE.BoxGeometry(b - a + 0.2, 0.08, 0.3), trimMat);
-    sill.position.set((a + b) / 2, 1.1, ROOM.z0 + 0.1);
-    back.add(lower, upper, glass, frameMesh, sill);
-  }
-  room.add(back);
-
-  // 左墙（带门、白板）
-  const left = new THREE.Group();
-  const doorZ: [number, number] = [5, 7];
-  for (const [a, b] of [
-    [ROOM.z0, doorZ[0]],
-    [doorZ[1], ROOM.z1],
-  ] as const) {
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(wallT, ROOM.wallHeight, b - a), wallMat);
-    wall.position.set(ROOM.x0 - wallT / 2, ROOM.wallHeight / 2, (a + b) / 2);
-    wall.receiveShadow = true;
-    left.add(wall);
-  }
-  const lintel = new THREE.Mesh(new THREE.BoxGeometry(wallT, ROOM.wallHeight - 2.6, doorZ[1] - doorZ[0]), wallMat);
-  lintel.position.set(ROOM.x0 - wallT / 2, 2.6 + (ROOM.wallHeight - 2.6) / 2, (doorZ[0] + doorZ[1]) / 2);
-  const door = new THREE.Mesh(
-    new THREE.BoxGeometry(0.08, 2.6, doorZ[1] - doorZ[0] - 0.1),
-    new THREE.MeshLambertMaterial({ color: "#9b7350" }),
-  );
-  door.position.set(ROOM.x0 - 0.2, 1.3, (doorZ[0] + doorZ[1]) / 2);
-  const knob = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.08), new THREE.MeshLambertMaterial({ color: "#e3b546" }));
-  knob.position.set(ROOM.x0 - 0.12, 1.2, doorZ[1] - 0.35);
-  left.add(lintel, door, knob);
-  room.add(left);
-
-  // 踢脚线
-  const skirtingBack = new THREE.Mesh(new THREE.BoxGeometry(width, 0.16, 0.06), trimMat);
-  skirtingBack.position.set(0, 0.08, ROOM.z0 + 0.03);
-  const skirtingLeft = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.16, depth), trimMat);
-  skirtingLeft.position.set(ROOM.x0 + 0.03, 0.08, 0);
-  room.add(skirtingBack, skirtingLeft);
+  ]);
+  back.position.set(0, 0, ROOM.z0);
+  const front = buildWall("front", -ROOM.x1 - wallT, -ROOM.x0 + wallT, [
+    [-10, -6],
+    [-3, 1],
+    [5, 9],
+  ]);
+  front.rotation.y = Math.PI;
+  front.position.set(0, 0, ROOM.z1);
+  const left = buildWall("left", -ROOM.z1, -ROOM.z0, [[-3, 1]], [-7, -5]);
+  left.rotation.y = Math.PI / 2;
+  left.position.set(ROOM.x0, 0, 0);
+  const right = buildWall("right", ROOM.z0, ROOM.z1, [
+    [-6, -2],
+    [2, 6],
+  ]);
+  right.rotation.y = -Math.PI / 2;
+  right.position.set(ROOM.x1, 0, 0);
 
   // 项目名招牌
   const signTexture = canvasTexture(512, 96, (g) => {
@@ -192,8 +183,8 @@ export function buildRoom(projectName: string): THREE.Group {
     g.fillText(projectName, 256, 46, 490);
   });
   const sign = new THREE.Mesh(new THREE.PlaneGeometry(4, 0.75), new THREE.MeshBasicMaterial({ map: signTexture }));
-  sign.position.set(3, 3.35, ROOM.z0 + 0.03);
-  room.add(sign);
+  sign.position.set(3, 3.35, 0.03);
+  back.add(sign);
 
   // 挂钟
   const clock = new THREE.Group();
@@ -207,9 +198,9 @@ export function buildRoom(projectName: string): THREE.Group {
   const hand2 = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.03, 0.02), new THREE.MeshBasicMaterial({ color: "#333" }));
   hand2.position.set(0.08, 0, 0.04);
   clock.add(clockFace, hand, hand2);
-  clock.position.set(-1.75, 3.35, ROOM.z0 + 0.06);
+  clock.position.set(-1.75, 3.35, 0.06);
   clock.userData.hands = [hand, hand2];
-  room.add(clock);
+  back.add(clock);
   room.userData.clock = clock;
   return room;
 }
