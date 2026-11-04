@@ -122,6 +122,8 @@ export interface OfficeSnapshot {
   readonly leadId: string;
   readonly title?: string | undefined;
   readonly cwd?: string | undefined;
+  /** 项目显示名（浏览器按工作区标题填入）；缺省用文件夹名。 */
+  readonly projectName?: string | undefined;
   readonly generatedAt: number;
   readonly members: readonly OfficeMember[];
   readonly interactions: readonly OfficeInteraction[];

@@ -1,18 +1,17 @@
 /**
  * 智能体办公室（办公室模式）。
  *
- * 挂在 `shell.overlay`：开启时覆盖窗口左侧大部分区域，只把原生中央列最右边一栏
- * 留给原生对话界面（中央列靠左内边距把对话挤到右侧）。点成员「打开对话」只切换
- * 当前会话，办公室不退出。开关与正在看的团队持久化，刷新后直接回到办公室。
- *
- * 布局：左栏成员 / 详情 / 交流，中间 3D 场景，顶部 HUD；右侧是原生对话。
+ * 挂在 `shell.overlay`。默认铺满窗口：左栏成员 / 详情 / 交流，中间 3D 场景，顶部 HUD。
+ * 点成员「打开对话」：切换当前会话，覆盖层收成左侧成员栏，3D 场景隐藏，右边是原生
+ * 对话（中央列靠左内边距让出成员栏）；Esc 或「回到办公室」收起对话。开关与正在看的
+ * 团队持久化，刷新后直接回到办公室。
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ROLE_COLOR, ROLE_LABEL, TIER_LABEL, VENDOR_LABEL } from "../../office/classify.ts";
 import type { OfficeInteraction, OfficeMember, OfficeSnapshot, RoleKind, Tier, Vendor } from "../../office/types.ts";
 import { USER_ID } from "../../office/types.ts";
-import { CHAT_MAX, CHAT_MIN, currentSession, getOffice, setOffice, useOffice } from "./store.ts";
+import { currentSession, setOffice, useOffice } from "./store.ts";
 import { CSS } from "./styles.ts";
 
 type Selector<T> = (selector: (state: any) => T) => T;
@@ -43,6 +42,10 @@ export interface OfficeHost {
   /** 让中央列显示对话（而不是其他全局面板）。 */
   showConversation(): void;
   listWorkspaces(): { workspaceId: string; path: string; title: string }[];
+  /** 工作区列表变化（改名、新增）时通知。 */
+  subscribeWorkspaces(listener: () => void): () => void;
+  /** 给项目（文件夹对应的工作区）改名；文件夹还不是工作区时先注册。 */
+  renameProject(path: string, title: string): Promise<void>;
   pickDirectory(): Promise<string | null>;
   createTeam(path: string): Promise<string>;
 }
@@ -127,6 +130,56 @@ interface TeamEntry {
   readonly cwd?: string;
   readonly members: number;
   readonly lastActiveAt?: number;
+}
+
+/**
+ * 项目显示名：文件夹对应工作区的标题（原生侧边栏里也能改），没有时用文件夹名。
+ * 工作区列表变化（改名）时重新渲染。
+ */
+function useProjectName(): (cwd: string | undefined) => string {
+  const [, setVersion] = useState(0);
+  useEffect(() => officeHost.current?.subscribeWorkspaces(() => setVersion((v) => v + 1)), []);
+  const titles = new Map((officeHost.current?.listWorkspaces() ?? []).map((w) => [w.path, w.title]));
+  return (cwd) => {
+    const title = cwd === undefined ? undefined : titles.get(cwd)?.trim();
+    return title !== undefined && title.length > 0 ? title : projectName(cwd);
+  };
+}
+
+/** 行内改名：Enter 保存、Esc 取消、失焦保存。 */
+function RenameInput({ initial, onDone }: { initial: string; onDone: (value: string | null) => void }) {
+  const [value, setValue] = useState(initial);
+  const ref = useRef<HTMLInputElement>(null);
+  const done = useRef(false);
+  useEffect(() => {
+    ref.current?.focus();
+    ref.current?.select();
+  }, []);
+  const finish = (result: string | null) => {
+    if (done.current) return;
+    done.current = true;
+    onDone(result);
+  };
+  return (
+    <input
+      ref={ref}
+      className="dso-rename"
+      value={value}
+      maxLength={60}
+      placeholder="项目名称"
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => setValue(event.target.value)}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (event.key === "Enter") finish(value.trim());
+        if (event.key === "Escape") {
+          event.preventDefault();
+          finish(null);
+        }
+      }}
+      onBlur={() => finish(value.trim())}
+    />
+  );
 }
 
 function projectName(cwd: string | undefined): string {
@@ -216,28 +269,33 @@ function useLive(
 
 // ---------------------------------------------------------------- 覆盖层
 
+/** 对话展开时左侧成员栏宽度。 */
+const SIDE_W = 340;
+
 /**
- * 覆盖层几何：盖到原生中央列右边减去对话栏宽度为止；同时给中央列加左内边距，
- * 把原生对话挤进右侧一栏。
+ * 覆盖层几何。对话收起：铺满窗口（3D 办公室）。对话展开：只占左侧成员栏宽度，
+ * 并给原生中央列加左内边距，让原生对话从成员栏右边开始、占满其余区域。
  */
-function useGeometry(on: boolean, chat: number): number | null {
-  const [right, setRight] = useState<number | null>(null);
+function useGeometry(on: boolean, chatOpen: boolean): void {
   useLayoutEffect(() => {
     const body = document.body;
-    if (!on) {
+    const clear = () => {
       body.removeAttribute("data-dsh-office");
-      body.style.removeProperty("--dsh-office-chat");
+      body.style.removeProperty("--dsh-office-pad");
+    };
+    if (!on || !chatOpen) {
+      clear();
       return;
     }
     body.setAttribute("data-dsh-office", "");
-    body.style.setProperty("--dsh-office-chat", `${chat}px`);
     let raf = 0;
     const measure = () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
+        // 先去掉内边距再量中央列的左边位置
         const col = document.querySelector<HTMLElement>('[class*="_centerCol"]');
-        const r = col?.getBoundingClientRect();
-        setRight(r ? Math.max(320, r.right - chat) : Math.max(320, window.innerWidth - chat));
+        const left = col?.getBoundingClientRect().left ?? 0;
+        body.style.setProperty("--dsh-office-pad", `${Math.max(0, Math.round(SIDE_W - left))}px`);
       });
     };
     measure();
@@ -249,58 +307,37 @@ function useGeometry(on: boolean, chat: number): number | null {
       cancelAnimationFrame(raf);
       observer.disconnect();
       window.removeEventListener("resize", measure);
-      body.removeAttribute("data-dsh-office");
-      body.style.removeProperty("--dsh-office-chat");
+      clear();
     };
-  }, [on, chat]);
-  return right;
+  }, [on, chatOpen]);
 }
 
 export function OfficeOverlay(props: { useSessions?: Selector<unknown>; useSessionStatus?: Selector<unknown> }) {
-  const { on, chat } = useOffice();
+  const { on, chatOpen } = useOffice();
   useEffect(ensureCss, []);
-  const width = useGeometry(on, chat);
-  if (!on || width === null) return null;
+  useGeometry(on, chatOpen);
+  // Esc：对话展开时回到 3D 办公室（别的组件已处理的 Esc 不抢）。
+  useEffect(() => {
+    if (!on || !chatOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      setOffice({ chatOpen: false });
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [on, chatOpen]);
+  if (!on) return null;
   return (
-    <div className="dso-root" style={{ width }}>
+    <div className={`dso-root${chatOpen ? " chat" : ""}`} style={chatOpen ? { width: SIDE_W } : { right: 0 }}>
       <Office {...props} />
-      <Splitter />
     </div>
-  );
-}
-
-/** 覆盖层右缘：拖动调整右侧对话栏宽度。 */
-function Splitter() {
-  return (
-    <div
-      className="dso-splitter"
-      title="拖动调整对话栏宽度"
-      onPointerDown={(event) => {
-        event.preventDefault();
-        const startX = event.clientX;
-        const startChat = getOffice().chat;
-        const target = event.currentTarget;
-        target.setPointerCapture(event.pointerId);
-        document.body.setAttribute("data-dsh-office-dragging", "");
-        const move = (e: PointerEvent) => {
-          setOffice({ chat: Math.min(CHAT_MAX, Math.max(CHAT_MIN, startChat - (e.clientX - startX))) });
-        };
-        const up = () => {
-          target.removeEventListener("pointermove", move);
-          target.removeEventListener("pointerup", up);
-          document.body.removeAttribute("data-dsh-office-dragging");
-        };
-        target.addEventListener("pointermove", move);
-        target.addEventListener("pointerup", up);
-      }}
-    />
   );
 }
 
 // ---------------------------------------------------------------- 主体
 
 function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unknown>; useSessionStatus?: Selector<unknown> }) {
-  const { lead: storedLead } = useOffice();
+  const { lead: storedLead, chatOpen } = useOffice();
   const { teams, error: teamsError, reload: reloadTeams } = useTeams();
   const [snapshot, setSnapshot] = useState<OfficeSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -391,8 +428,10 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
     };
   }, [leadId]);
 
+  const nameOf = useProjectName();
+  const displayName = snapshot === null ? undefined : nameOf(snapshot.cwd);
   useEffect(() => {
-    if (snapshot !== null) scene.current?.update(snapshot, live);
+    if (snapshot !== null) scene.current?.update({ ...snapshot, projectName: displayName }, live);
   });
   useEffect(() => scene.current?.select(selected), [selected]);
   useEffect(() => scene.current?.setMode(mode), [mode, api, leadId]);
@@ -403,7 +442,9 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const member = members.find((m) => m.id === selected);
   const openChat = (id: string) => {
     if (leadId === null) return;
+    officeHost.current?.showConversation();
     officeHost.current?.openSession(leadId, id);
+    setOffice({ chatOpen: true });
   };
   const pickTeam = (id: string) => {
     setOffice({ lead: id });
@@ -430,7 +471,27 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
           : null;
 
   return (
-    <div ref={rootRef} className="dso-office">
+    <div ref={rootRef} className={`dso-office${chatOpen ? " chat" : ""}`}>
+      {chatOpen && (
+        <header className="dso-chathead">
+          <button type="button" className="dso-btn primary dso-backoffice" onClick={() => setOffice({ chatOpen: false })}>
+            <OfficeIcon size={14} />
+            回到办公室
+            <kbd>Esc</kbd>
+          </button>
+          <ProjectPicker
+            teams={teams}
+            teamsError={teamsError}
+            leadId={leadId}
+            current={snapshot}
+            onPick={pickTeam}
+            onCreated={(id) => {
+              pickTeam(id);
+              reloadTeams();
+            }}
+          />
+        </header>
+      )}
       <header className="dso-hud">
         <div className="dso-logo">
           <span className="dso-logo-mark">
@@ -480,7 +541,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
         >
           {fullscreen ? "⤡" : "⤢"}
         </button>
-        <button type="button" className="dso-btn ghost" title="回到原生对话界面" onClick={() => setOffice({ on: false })}>
+        <button type="button" className="dso-btn ghost" title="回到原生对话界面" onClick={() => setOffice({ on: false, chatOpen: false })}>
           ← 返回对话界面
         </button>
       </header>
@@ -558,6 +619,8 @@ function ProjectPicker({
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [showPrompt, setShowPrompt] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+  const nameOf = useProjectName();
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -598,7 +661,7 @@ function ProjectPicker({
       <button type="button" className={`dso-project${open ? " open" : ""}`} onClick={() => setOpen(!open)} aria-expanded={open}>
         <span className="dso-project-flag" />
         <span className="dso-project-text">
-          <b>{leadId === null ? "选择项目" : projectName(path)}</b>
+          <b>{leadId === null ? "选择项目" : nameOf(path)}</b>
           {path && <small>{path}</small>}
         </span>
         <span className="dso-caret">▾</span>
@@ -616,25 +679,60 @@ function ProjectPicker({
               <div className="dso-empty">还没有组建过团队</div>
             ) : (
               teams.map((team) => (
-                <button
+                <div
                   key={team.leadId}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   className={`dso-team-card${team.leadId === leadId ? " on" : ""}`}
                   onClick={() => {
+                    if (editing !== null) return;
                     onPick(team.leadId);
                     setOpen(false);
                   }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && editing === null) {
+                      onPick(team.leadId);
+                      setOpen(false);
+                    }
+                  }}
                 >
-                  <span className="dso-team-badge">{projectName(team.cwd).slice(0, 1).toUpperCase()}</span>
+                  <span className="dso-team-badge">{nameOf(team.cwd).slice(0, 1).toUpperCase()}</span>
                   <span className="dso-team-text">
-                    <b>{projectName(team.cwd)}</b>
+                    {editing === team.leadId && team.cwd !== undefined ? (
+                      <RenameInput
+                        initial={nameOf(team.cwd)}
+                        onDone={(value) => {
+                          setEditing(null);
+                          if (value === null || host === undefined || team.cwd === undefined) return;
+                          // 清空 = 恢复成文件夹名
+                          void host
+                            .renameProject(team.cwd, value.length > 0 ? value : projectName(team.cwd))
+                            .catch((reason) => setFailure(`改名失败：${String(reason)}`));
+                        }}
+                      />
+                    ) : (
+                      <b>{nameOf(team.cwd)}</b>
+                    )}
                     <small>{team.cwd}</small>
                   </span>
+                  {host !== undefined && team.cwd !== undefined && editing !== team.leadId && (
+                    <button
+                      type="button"
+                      className="dso-edit"
+                      title="给项目命名"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setEditing(team.leadId);
+                      }}
+                    >
+                      ✎
+                    </button>
+                  )}
                   <span className="dso-team-meta">
                     <span className="dso-pill">{team.members} 人</span>
                     <small>{agoShort(team.lastActiveAt)}</small>
                   </span>
-                </button>
+                </div>
               ))
             )}
           </div>
@@ -653,7 +751,7 @@ function ProjectPicker({
                 <div key={w.workspaceId} className="dso-team-card new">
                   <span className="dso-team-badge ghost">＋</span>
                   <span className="dso-team-text">
-                    <b>{w.title || projectName(w.path)}</b>
+                    <b>{nameOf(w.path)}</b>
                     <small>{w.path}</small>
                   </span>
                   <button type="button" className="dso-btn primary sm" disabled={busy !== null} onClick={() => void create(w.path)}>

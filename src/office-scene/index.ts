@@ -1147,9 +1147,12 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
 
   function update(snapshot: OfficeSnapshot, live: Readonly<Record<string, boolean>>): void {
     const now = clock.elapsedTime;
-    if (room === undefined) {
-      const project = snapshot.cwd?.split(/[\\/]/).filter(Boolean).at(-1) ?? "项目";
+    // 项目名变了（改名）就重搭房间（招牌在墙上）
+    const project = snapshot.projectName ?? snapshot.cwd?.split(/[\\/]/).filter(Boolean).at(-1) ?? "项目";
+    if (room === undefined || room.userData.project !== project) {
+      room?.removeFromParent();
       room = buildRoom(`${project} 项目组`);
+      room.userData.project = project;
       office.add(room);
     }
     const ids = new Set(snapshot.members.map((m) => m.id));

@@ -79,8 +79,12 @@ export function apply(ctx: Context): void {
         pickDirectory(): Promise<string | null>;
       };
       workspaces: {
-        list: { getSnapshot(): { items: readonly { workspaceId: string; path: string; title: string }[] } };
+        list: {
+          getSnapshot(): { items: readonly { workspaceId: string; path: string; title: string }[] };
+          subscribe(listener: () => void): () => void;
+        };
         create(input: { path: string }): Promise<{ workspaceId: string; path: string }>;
+        rename(workspaceId: string, title: string): Promise<unknown>;
       };
       sessions: {
         using<T>(
@@ -108,6 +112,12 @@ export function apply(ctx: Context): void {
       listWorkspaces: () =>
         services.workspaces.list.getSnapshot().items.map(({ workspaceId, path, title }) => ({ workspaceId, path, title })),
       pickDirectory: () => ui.pickDirectory(),
+      subscribeWorkspaces: (listener) => services.workspaces.list.subscribe(listener),
+      async renameProject(path, title) {
+        const existing = services.workspaces.list.getSnapshot().items.find((w) => w.path === path);
+        const ws = existing ?? (await services.workspaces.create({ path }));
+        await services.workspaces.rename(ws.workspaceId, title);
+      },
       async createTeam(path) {
         const existing = services.workspaces.list.getSnapshot().items.find((w) => w.path === path);
         const ws = existing ?? (await services.workspaces.create({ path }));

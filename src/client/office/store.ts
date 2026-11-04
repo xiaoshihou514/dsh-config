@@ -1,6 +1,6 @@
 /**
- * 办公室模式的持久状态（localStorage）：是否开启、正在看的团队、右侧原生对话栏宽度。
- * 刷新后按记录直接回到办公室。
+ * 办公室模式的状态：是否开启、正在看的团队持久化在 localStorage，刷新后直接回到办公室；
+ * 「对话展开」只在内存里（刷新后回到 3D 办公室）。
  */
 
 import { useSyncExternalStore } from "react";
@@ -8,13 +8,12 @@ import { useSyncExternalStore } from "react";
 export interface OfficeState {
   readonly on: boolean;
   readonly lead: string | null;
-  readonly chat: number;
+  /** 原生对话是否展开（展开时收起 3D 场景，只留左侧成员栏）。 */
+  readonly chatOpen: boolean;
 }
 
 const KEY = "dsh-config:office";
-const DEFAULT: OfficeState = { on: false, lead: null, chat: 480 };
-export const CHAT_MIN = 360;
-export const CHAT_MAX = 960;
+const DEFAULT: OfficeState = { on: false, lead: null, chatOpen: false };
 
 function read(): OfficeState {
   try {
@@ -24,7 +23,7 @@ function read(): OfficeState {
     return {
       on: v.on === true,
       lead: typeof v.lead === "string" ? v.lead : null,
-      chat: typeof v.chat === "number" ? Math.min(CHAT_MAX, Math.max(CHAT_MIN, v.chat)) : DEFAULT.chat,
+      chatOpen: false,
     };
   } catch {
     return DEFAULT;
@@ -41,7 +40,7 @@ export function getOffice(): OfficeState {
 export function setOffice(patch: Partial<OfficeState>): void {
   state = { ...state, ...patch };
   try {
-    localStorage.setItem(KEY, JSON.stringify(state));
+    localStorage.setItem(KEY, JSON.stringify({ on: state.on, lead: state.lead }));
   } catch {
     // 隐私模式等：只在内存里记
   }

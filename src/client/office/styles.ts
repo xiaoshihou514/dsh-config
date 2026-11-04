@@ -5,13 +5,11 @@
  */
 
 export const CSS = String.raw`
-/* ---- 办公室模式下原生布局：中央列把对话挤到最右一栏 ---- */
+/* ---- 对话展开时原生布局：中央列让出左侧成员栏 ---- */
 body[data-dsh-office] [class*="_centerCol"] {
-  padding-left: max(0px, calc(100% - var(--dsh-office-chat, 480px))) !important;
+  padding-left: var(--dsh-office-pad, 0px) !important;
   box-sizing: border-box !important;
 }
-body[data-dsh-office-dragging] { cursor: col-resize !important; user-select: none !important; }
-body[data-dsh-office-dragging] iframe, body[data-dsh-office-dragging] canvas { pointer-events: none; }
 
 /* ---- 侧边栏开关 ---- */
 .dso-side-toggle {
@@ -35,16 +33,20 @@ body[data-dsh-office-dragging] iframe, body[data-dsh-office-dragging] canvas { p
   background: var(--dsw-alias-bg-base);
   box-shadow: 4px 0 18px rgba(0,0,0,.12);
 }
-.dso-splitter {
-  position: absolute; top: 0; bottom: 0; right: -4px; width: 8px; cursor: col-resize; z-index: 5;
+.dso-root.chat { box-shadow: 2px 0 12px rgba(0,0,0,.08); border-right: 1px solid var(--dsw-alias-border-l2); }
+.dso-office.chat .dso-hud, .dso-office.chat .dso-stage { display: none; }
+.dso-office.chat .dso-side { width: 100%; border-right: 0; }
+.dso-chathead {
+  flex: none; display: flex; flex-direction: column; gap: 8px; padding: 12px 12px 10px;
+  background: var(--dsw-alias-bg-layer-2); border-bottom: 1px solid var(--dsw-alias-border-l2);
 }
-.dso-splitter::after {
-  content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px;
-  background: var(--dsw-alias-border-l2); transition: background .15s;
+.dso-chathead .dso-project { max-width: none; width: 100%; }
+.dso-backoffice { width: 100%; height: 36px; font-size: 13px; }
+.dso-backoffice kbd {
+  margin-left: auto; padding: 0 6px; border-radius: 5px; font: inherit; font-size: 10px; line-height: 18px;
+  background: rgba(255,255,255,.22); box-shadow: inset 0 -1px 0 rgba(0,0,0,.15);
 }
-.dso-splitter:hover::after, body[data-dsh-office-dragging] .dso-splitter::after {
-  background: var(--dsw-alias-state-business-primary);
-}
+.dso-chathead .dso-picker { width: 420px; }
 .dso-office { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
 /* ---- 顶部 HUD ---- */
@@ -146,6 +148,17 @@ body[data-dsh-office-dragging] iframe, body[data-dsh-office-dragging] canvas { p
 .dso-team-card.new { cursor: default; }
 .dso-team-card.new:hover { transform: none; }
 .dso-team-card.add { justify-content: center; border-style: dashed; color: var(--dsw-alias-state-business-primary); font-weight: 600; }
+.dso-edit {
+  flex: none; width: 26px; height: 26px; border-radius: 7px; border: 1px solid transparent; cursor: pointer;
+  background: transparent; color: var(--dsw-alias-label-tertiary); font-size: 13px; opacity: 0; transition: opacity .12s;
+}
+.dso-team-card:hover .dso-edit, .dso-edit:focus-visible { opacity: 1; }
+.dso-edit:hover { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); }
+.dso-rename {
+  width: 100%; box-sizing: border-box; height: 24px; padding: 0 7px; border-radius: 7px; outline: none;
+  border: 1px solid #f2b632; background: var(--dsw-alias-bg-layer-2); color: inherit; font: inherit; font-size: 13px; font-weight: 700;
+  box-shadow: 0 0 0 3px rgba(242,182,50,.2);
+}
 .dso-team-badge {
   flex: none; width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
   font-weight: 800; font-size: 15px; color: #3a2a08;
