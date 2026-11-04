@@ -14,7 +14,7 @@ const F = FURNITURE_VOXEL;
 /** 办公室尺寸（世界单位）。 */
 export type WallSide = "back" | "front" | "left" | "right";
 
-export const ROOM = { x0: -12, x1: 12, z0: -9, z1: 9, wallHeight: 4 } as const;
+export const ROOM = { x0: -10, x1: 10, z0: -9, z1: 7, wallHeight: 4 } as const;
 export const DESK_TOP = 0.85;
 export const SEAT_HEIGHT = 0.5;
 
@@ -77,12 +77,15 @@ export function buildRoom(projectName: string): THREE.Group {
   const room = new THREE.Group();
   const width = ROOM.x1 - ROOM.x0;
   const depth = ROOM.z1 - ROOM.z0;
+  const cx = (ROOM.x0 + ROOM.x1) / 2;
+  const cz = (ROOM.z0 + ROOM.z1) / 2;
 
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(width, depth),
     new THREE.MeshLambertMaterial({ map: floorTexture() }),
   );
   floor.rotation.x = -Math.PI / 2;
+  floor.position.set(cx, 0, cz);
   floor.receiveShadow = true;
   room.add(floor);
 
@@ -93,7 +96,7 @@ export function buildRoom(projectName: string): THREE.Group {
 
   /**
    * 一面墙：在局部坐标里沿 +x 铺开、室内朝 +z，墙体在 z∈[-wallT, 0]；
-   * windows / door 是局部 x 区间。外层按朝向旋转摆放，userData.side 供环境按镜头方向淡化。
+   * windows / door 是局部 x 区间。外层按朝向旋转摆放。
    */
   const buildWall = (side: WallSide, a0: number, a1: number, windows: [number, number][], door?: [number, number]) => {
     const group = new THREE.Group();
@@ -146,29 +149,37 @@ export function buildRoom(projectName: string): THREE.Group {
     room.add(group);
     return group;
   };
-  // 四面墙：后墙、左墙（带门）、前墙、右墙。朝镜头的墙由环境按视角淡成几乎透明。
+  // 后墙、左墙（带门）是整面墙；朝镜头的前墙、右墙按剖面图只留一截矮墙（墙顶深色剖切面）。
   const back = buildWall("back", ROOM.x0 - wallT, ROOM.x1 + wallT, [
-    [-9, -5.5],
+    [-7.5, -4.5],
     [-3.5, 0],
-    [6, 10],
+    [5.2, 8.8],
   ]);
   back.position.set(0, 0, ROOM.z0);
-  const front = buildWall("front", -ROOM.x1 - wallT, -ROOM.x0 + wallT, [
-    [-10, -6],
-    [-3, 1],
-    [5, 9],
-  ]);
-  front.rotation.y = Math.PI;
-  front.position.set(0, 0, ROOM.z1);
-  const left = buildWall("left", -ROOM.z1, -ROOM.z0, [[-3, 1]], [-7, -5]);
+  // 大门在左墙靠前（z 3.6~5.6，正对主过道）
+  const left = buildWall("left", -ROOM.z1, -ROOM.z0, [[-2, 1.5]], [-5.6, -3.6]);
   left.rotation.y = Math.PI / 2;
   left.position.set(ROOM.x0, 0, 0);
-  const right = buildWall("right", ROOM.z0, ROOM.z1, [
-    [-6, -2],
-    [2, 6],
-  ]);
-  right.rotation.y = -Math.PI / 2;
-  right.position.set(ROOM.x1, 0, 0);
+  const cutMat = new THREE.MeshLambertMaterial({ color: "#5d5650" });
+  const stubH = 0.32;
+  for (const [w, d, x, z] of [
+    [width + wallT * 2, wallT, cx, ROOM.z1 + wallT / 2],
+    [wallT, depth, ROOM.x1 + wallT / 2, cz],
+  ] as const) {
+    const stub = new THREE.Mesh(new THREE.BoxGeometry(w, stubH, d), wallMat);
+    stub.position.set(x, stubH / 2, z);
+    stub.receiveShadow = true;
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(w, 0.02, d), cutMat);
+    cap.position.set(x, stubH + 0.01, z);
+    room.add(stub, cap);
+  }
+  // 地板厚度（房间像一块悬在天空里的模型底座）
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(width + wallT * 2, 0.5, depth + wallT * 2),
+    new THREE.MeshLambertMaterial({ color: "#8a6a4c" }),
+  );
+  base.position.set(cx, -0.251, cz);
+  room.add(base);
 
   // 项目名招牌
   const signTexture = canvasTexture(512, 96, (g) => {
@@ -198,7 +209,7 @@ export function buildRoom(projectName: string): THREE.Group {
   const hand2 = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.03, 0.02), new THREE.MeshBasicMaterial({ color: "#333" }));
   hand2.position.set(0.08, 0, 0.04);
   clock.add(clockFace, hand, hand2);
-  clock.position.set(-1.75, 3.35, 0.06);
+  clock.position.set(0.5, 3.35, 0.06);
   clock.userData.hands = [hand, hand2];
   back.add(clock);
   room.userData.clock = clock;
@@ -234,8 +245,8 @@ export function buildDecor(center: readonly [number, number]): THREE.Group {
     return y % 7 === 6 && x % 3 === 0 ? null : colors[(x * 7 + Math.floor(y / 7)) % colors.length]!;
   });
   const shelfMesh = mesh(shelf);
-  shelfMesh.position.set(9.6, 0, ROOM.z0 + 0.05);
-  group.add(shelfMesh, plant(11.3, ROOM.z0 + 0.6, 1.2), plant(6.4, ROOM.z0 + 0.6, 1));
+  shelfMesh.position.set(ROOM.x0 + 0.25, 0, ROOM.z0 + 0.05);
+  group.add(shelfMesh, plant(ROOM.x0 + 2.3, ROOM.z0 + 0.6, 1.2));
   return group;
 }
 
@@ -421,23 +432,28 @@ export function plant(x: number, z: number, size = 1): THREE.Mesh {
   return m;
 }
 
+/** 休息区：靠后墙右侧、离圆桌不远；沙发背靠后墙，坐着的人面朝镜头。 */
+export const LOUNGE = { sofa: [6.5, -8.25] as const, table: [6.5, -6.4] as const };
 export function buildLounge(): THREE.Group {
   const group = new THREE.Group();
+  const [sx, sz] = LOUNGE.sofa;
+  const [tx, tz] = LOUNGE.table;
   // 圆形小地毯
-  const rug = new THREE.Mesh(new THREE.CircleGeometry(2.6, 24), new THREE.MeshLambertMaterial({ color: "#7fb3a6" }));
+  const rug = new THREE.Mesh(new THREE.CircleGeometry(2.1, 24), new THREE.MeshLambertMaterial({ color: "#7fb3a6" }));
   rug.rotation.x = -Math.PI / 2;
-  rug.position.set(8, 0.01, 6);
+  rug.position.set(tx, 0.01, tz - 0.4);
   rug.receiveShadow = true;
   group.add(rug);
 
-  // 沙发（靠前墙方向，面朝 -z）
+  // 沙发：靠背在 -z（贴后墙），面朝 +z
   const sofa = new Voxels();
   sofa.box(-14, 0, 0, 14, 4, 7, "#4f6fb0");
   sofa.box(-14, 5, 5, 14, 9, 7, "#4f6fb0");
   sofa.box(-14, 5, 0, -12, 7, 7, "#45619c").box(12, 5, 0, 14, 7, 7, "#45619c");
   sofa.box(-11, 5, 0, -1, 5, 4, "#6a88c6").box(1, 5, 0, 11, 5, 4, "#6a88c6");
   const sofaMesh = mesh(sofa);
-  sofaMesh.position.set(8, 0, 7.7);
+  sofaMesh.rotation.y = Math.PI;
+  sofaMesh.position.set(sx, 0, sz + 0.4);
   group.add(sofaMesh);
 
   // 茶几
@@ -446,10 +462,10 @@ export function buildLounge(): THREE.Group {
   table.box(5, 0, -3, 5, 2, -3, WOOD_DARK).box(-5, 0, 3, -5, 2, 3, WOOD_DARK);
   table.box(-1, 4, -1, 0, 5, 0, "#ffffff").box(2, 4, 1, 3, 4, 2, "#f2b632");
   const tableMesh = mesh(table);
-  tableMesh.position.set(8, 0, 5.6);
+  tableMesh.position.set(tx, 0, tz);
   group.add(tableMesh);
 
-  // 咖啡机 + 柜台（靠右墙）
+  // 咖啡机 + 柜台（右后角，在休息区后面不挡人）
   const counter = new Voxels();
   counter.box(0, 0, -15, 6, 9, 15, "#d9d2c5");
   counter.box(0, 9, -15, 6, 9, 15, "#8a8f99");
@@ -459,9 +475,9 @@ export function buildLounge(): THREE.Group {
   counter.box(1, 10, 2, 5, 18, 7, "#5bc0eb");
   counter.box(1, 18, 3, 5, 18, 6, "#dfe6ee");
   const counterMesh = mesh(counter);
-  counterMesh.position.set(ROOM.x1 - 0.7, 0, 4.8);
+  counterMesh.position.set(ROOM.x1 - 0.7, 0, -7.4);
   group.add(counterMesh);
 
-  group.add(plant(4.3, 8.3, 1.3), plant(11.4, 8.4, 1.1));
+  group.add(plant(4.5, ROOM.z0 + 0.6, 1.2), plant(8.6, ROOM.z0 + 0.6, 1.1), plant(ROOM.x1 - 0.7, ROOM.z1 - 0.7, 1.2));
   return group;
 }

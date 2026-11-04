@@ -23,7 +23,7 @@ import { USER_ID } from "../office/types.ts";
 import type { CharacterRig } from "./anime.ts";
 import { buildCharacter } from "./sprite-character.ts";
 import {
-  DESK_TOP,
+  LOUNGE,
   ROOM,
   SEAT_HEIGHT,
   buildDesk,
@@ -235,27 +235,39 @@ const LEAD_IDLE: Spot = {
   ],
 };
 
-const DOOR: Spot = { x: ROOM.x0 + 0.6, z: 6, facing: Math.PI / 2, approach: [[-10.5, AISLE], [ROOM.x0 + 0.6, 6]] };
+const DOOR: Spot = { x: ROOM.x0 + 0.6, z: 4.6, facing: Math.PI / 2, approach: [[ROOM.x0 + 1.5, AISLE], [ROOM.x0 + 0.6, 4.6]] };
 
-const TABLE: P2 = [8, 5.6];
+const TABLE: P2 = [LOUNGE.table[0], LOUNGE.table[1]];
 function faceTo(x: number, z: number, target: P2): number {
   return Math.atan2(target[0] - x, target[1] - z);
 }
 
+/**
+ * 休息区在后墙右侧、离圆桌不远：从主过道沿 x=4.6 往里走。沙发背靠后墙，坐下的人面朝 +z（朝镜头）；
+ * 茶几左右两侧站着喝咖啡的人面朝茶几。
+ */
+const LOUNGE_X = 4.6;
+const SOFA_Z = LOUNGE.sofa[1] + 0.15;
+const SOFA_PATH_Z = LOUNGE.table[1] - 0.95;
 const LOUNGE_SPOTS: readonly Spot[] = [
-  ...[6.9, 8, 9.1].map(
-    (x): Spot => ({ x, z: 7.95, facing: Math.PI, seat: "sofa", approach: [[6.2, AISLE], [6.2, 7.1], [x, 7.1], [x, 7.95]] }),
+  ...[5.65, 6.5, 7.35].map(
+    (x): Spot => ({
+      x,
+      z: SOFA_Z,
+      facing: 0,
+      seat: "sofa",
+      approach: [[LOUNGE_X, AISLE], [LOUNGE_X, SOFA_PATH_Z], [x, SOFA_PATH_Z], [x, SOFA_Z]],
+    }),
   ),
+  // 站着的人只在茶几左右两侧（侧身对镜头），不站在沙发前面挡人、也不背对镜头
   ...(
     [
-      [5.7, 5.4],
-      [10.3, 5.4],
-      [6.6, 3.8],
-      [9.4, 3.8],
-      [5.6, 4.0],
-      [10.4, 4.0],
+      [5.0, -6.3],
+      [8.0, -6.3],
+      [4.95, -5.4],
+      [8.05, -5.4],
     ] as const
-  ).map(([x, z]): Spot => ({ x, z, facing: faceTo(x, z, TABLE), approach: [[x, AISLE], [x, z]] })),
+  ).map(([x, z]): Spot => ({ x, z, facing: faceTo(x, z, TABLE), approach: [[LOUNGE_X, AISLE], [LOUNGE_X, -4.7], [x, -4.7], [x, z]] })),
 ];
 
 function route(from: Spot, to: Spot): P2[] {
@@ -706,7 +718,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   // ---- 办公室
   const office = new THREE.Scene();
   // 房间外的环境按本地时间切换早晨 / 正午 / 傍晚 / 夜晚
-  const env = createEnvironment(office, container, lights(office, 17), RING_CENTER, ROOM);
+  const env = createEnvironment(office, container, lights(office, 17), RING_CENTER);
   // 休息区、书架等装饰不影响信息：首帧之后空闲时再搭，先让人物和工位出来。
   const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
     .requestIdleCallback;
@@ -722,6 +734,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   const flights: Flight[] = [];
   let initialized = false;
   let selected: string | null = null;
+  let focusPulse = -10;
   /** 鼠标悬停的角色（头顶信息只在悬停或选中时显示）。 */
   let hovered: string | null = null;
   /** 刚离开的角色：头顶信息再保留一会儿，好让鼠标移到名牌上点击。 */
@@ -791,10 +804,10 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   }
 
   let mode: "office" | "gallery" = "office";
-  // 办公室视角默认略偏左地正对后墙，房间像舞台一样填满画面（缩放由「填满房间」的下限决定）
-  const officeView = { target: new THREE.Vector3(-0.5, 0.6, -0.5), zoom: 0.5, polar: 0.98, azimuth: 0.15 };
+  // 办公室是固定机位（不能旋转 / 平移 / 缩放），按画布大小自动把整个房间框进画面
+  const OFFICE_ANGLE = { polar: 1.0, azimuth: 0.62 };
   const galleryView = { target: new THREE.Vector3(0, 1.4, 0.4), zoom: 1.25, polar: 1.22, azimuth: 0 };
-  function applyView(view: typeof officeView): void {
+  function applyView(view: typeof galleryView): void {
     controls.target.copy(view.target);
     const r = 60;
     camera.position.set(
@@ -806,7 +819,42 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     camera.updateProjectionMatrix();
     controls.update();
   }
-  applyView(officeView);
+  /** 房间（含墙厚、底座、墙顶上方留给头顶信息的空间）的八个角，投到画面里求外接框。 */
+  const FIT_BOX = new THREE.Box3(new THREE.Vector3(ROOM.x0 - 0.3, -0.5, ROOM.z0 - 0.3), new THREE.Vector3(ROOM.x1 + 0.3, ROOM.wallHeight + 0.6, ROOM.z1 + 0.3));
+  function fitOffice(): void {
+    const center = FIT_BOX.getCenter(new THREE.Vector3());
+    applyView({ target: center, zoom: 1, ...OFFICE_ANGLE });
+    camera.updateMatrixWorld();
+    const inv = camera.matrixWorldInverse;
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    for (let i = 0; i < 8; i += 1) {
+      const p = new THREE.Vector3(
+        i & 1 ? FIT_BOX.max.x : FIT_BOX.min.x,
+        i & 2 ? FIT_BOX.max.y : FIT_BOX.min.y,
+        i & 4 ? FIT_BOX.max.z : FIT_BOX.min.z,
+      ).applyMatrix4(inv);
+      x0 = Math.min(x0, p.x);
+      x1 = Math.max(x1, p.x);
+      y0 = Math.min(y0, p.y);
+      y1 = Math.max(y1, p.y);
+    }
+    // 把外接框中心挪到画面中心，再按宽高取较小的缩放（留一点边）
+    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+    const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+    const shift = right.multiplyScalar((x0 + x1) / 2).add(up.multiplyScalar((y0 + y1) / 2));
+    controls.target.add(shift);
+    camera.position.add(shift);
+    camera.zoom = Math.min((camera.right - camera.left) / (x1 - x0), (camera.top - camera.bottom) / (y1 - y0)) * 0.96;
+    camera.updateProjectionMatrix();
+  }
+  function setOfficeControls(on: boolean): void {
+    controls.enableRotate = on;
+    controls.enablePan = on;
+    controls.enableZoom = on;
+  }
 
   function resize(): void {
     const w = Math.max(1, container.clientWidth);
@@ -819,193 +867,12 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     camera.top = view / 2;
     camera.bottom = -view / 2;
     camera.updateProjectionMatrix();
+    if (mode === "office") fitOffice();
   }
+  setOfficeControls(false);
   resize();
   const observer = new ResizeObserver(resize);
   observer.observe(container);
-
-  // ---- 两种视角：
-  // 办公室内：可旋转、缩放、平移，但画面始终被房间填满（缩小、平移都有下限，看不到房间外）；
-  // 大楼外观：在办公室里缩到底再往外滚，镜头退到固定机位看整栋楼，不能旋转（透明层多，转起来卡）；
-  // 往里滚或点一下画面回到办公室。
-  let building = false;
-  let savedView = { ...officeView, target: officeView.target.clone() };
-  const BUILDING_VIEW = { target: new THREE.Vector3(-1.5, 9, -0.75), zoom: 0.3, polar: 1.05, azimuth: 0.62 };
-  /**
-   * 画面要被房间填满：画面上沿两角的视线在墙顶高度、下沿两角的视线在地面高度都要落在房间内
-   * （含墙厚）。视线越过远处的墙顶就会看到房间外，所以上沿按墙顶算；下沿看到的是地板。
-   * 远处（背对镜头）的墙不透明，近处的墙已淡化，所以这样就看不到房间外面。
-   */
-  const FILL = { x0: ROOM.x0 - 0.3, x1: ROOM.x1 + 0.3, z0: ROOM.z0 - 0.3, z1: ROOM.z1 + 0.3, top: ROOM.wallHeight };
-  const fwd = new THREE.Vector3();
-  const rightV = new THREE.Vector3();
-  const upV = new THREE.Vector3();
-  const w = new THREE.Vector3();
-  /** 每个角：缩放为 1 时相对「中心视线与墙顶平面交点」的水平偏移（a 是换到地面平面的固定偏移，b 随 1/zoom 缩放）。 */
-  const cornerTerms: { ax: number; az: number; bx: number; bz: number }[] = [];
-  function measureCorners(): void {
-    camera.updateMatrixWorld();
-    camera.getWorldDirection(fwd);
-    rightV.setFromMatrixColumn(camera.matrixWorld, 0);
-    upV.setFromMatrixColumn(camera.matrixWorld, 1);
-    const hw = (camera.right - camera.left) / 2;
-    const hh = (camera.top - camera.bottom) / 2;
-    cornerTerms.length = 0;
-    for (const [u, v] of [
-      [-1, -1],
-      [1, -1],
-      [-1, 1],
-      [1, 1],
-    ] as const) {
-      w.copy(rightV).multiplyScalar(u * hw).addScaledVector(upV, v * hh);
-      w.addScaledVector(fwd, -w.y / fwd.y);
-      // 下沿两角用地面平面：从墙顶平面沿视线再往下走 top 高度
-      const drop = v < 0 ? -FILL.top / fwd.y : 0;
-      cornerTerms.push({ ax: fwd.x * drop, az: fwd.z * drop, bx: w.x, bz: w.z });
-    }
-  }
-  function spans(zoom: number): { x: [number, number]; z: [number, number] } {
-    const x: [number, number] = [Infinity, -Infinity];
-    const z: [number, number] = [Infinity, -Infinity];
-    for (const c of cornerTerms) {
-      const px = c.ax + c.bx / zoom;
-      const pz = c.az + c.bz / zoom;
-      x[0] = Math.min(x[0], px);
-      x[1] = Math.max(x[1], px);
-      z[0] = Math.min(z[0], pz);
-      z[1] = Math.max(z[1], pz);
-    }
-    return { x, z };
-  }
-  /** 办公室视角：缩放不低于填满房间的下限，平移不出房间。 */
-  function keepInside(): void {
-    measureCorners();
-    const fits = (zoom: number) => {
-      const sp = spans(zoom);
-      return sp.x[1] - sp.x[0] <= FILL.x1 - FILL.x0 && sp.z[1] - sp.z[0] <= FILL.z1 - FILL.z0;
-    };
-    let lo = 0.2;
-    let hi = 8;
-    for (let i = 0; i < 24; i += 1) {
-      const mid = (lo + hi) / 2;
-      if (fits(mid)) hi = mid;
-      else lo = mid;
-    }
-    controls.minZoom = hi;
-    if (camera.zoom < hi) {
-      camera.zoom = hi;
-      camera.updateProjectionMatrix();
-    }
-    const sp = spans(camera.zoom);
-    const t = (FILL.top - camera.position.y) / fwd.y;
-    const cx = camera.position.x + fwd.x * t;
-    const cz = camera.position.z + fwd.z * t;
-    const clamp = (v: number, lo2: number, hi2: number) => (lo2 > hi2 ? (lo2 + hi2) / 2 : Math.min(hi2, Math.max(lo2, v)));
-    const nx = clamp(cx, FILL.x0 - sp.x[0], FILL.x1 - sp.x[1]);
-    const nz = clamp(cz, FILL.z0 - sp.z[0], FILL.z1 - sp.z[1]);
-    if (Math.abs(nx - cx) > 1e-4 || Math.abs(nz - cz) > 1e-4) {
-      controls.target.x += nx - cx;
-      controls.target.z += nz - cz;
-      camera.position.x += nx - cx;
-      camera.position.z += nz - cz;
-    }
-  }
-
-  /** 视角过渡动画（目标点、缩放、极角、方位角一起插值）。 */
-  let viewAnim: {
-    from: typeof officeView;
-    to: typeof officeView;
-    start: number;
-    done?: () => void;
-  } | null = null;
-  function currentView(): typeof officeView {
-    const offset = camera.position.clone().sub(controls.target);
-    const sph = new THREE.Spherical().setFromVector3(offset);
-    return { target: controls.target.clone(), zoom: camera.zoom, polar: sph.phi, azimuth: sph.theta };
-  }
-  function animateView(to: typeof officeView, done?: () => void): void {
-    viewAnim = { from: currentView(), to, start: performance.now(), ...(done ? { done } : {}) };
-  }
-  function stepViewAnim(): void {
-    if (viewAnim === null) return;
-    const k = Math.min(1, (performance.now() - viewAnim.start) / 700);
-    const e = k < 0.5 ? 4 * k * k * k : 1 - (-2 * k + 2) ** 3 / 2;
-    const { from, to } = viewAnim;
-    let da = to.azimuth - from.azimuth;
-    da = Math.atan2(Math.sin(da), Math.cos(da));
-    applyViewRaw({
-      target: from.target.clone().lerp(to.target, e),
-      // 缩放按对数插值，远近变化更均匀
-      zoom: Math.exp(Math.log(from.zoom) + (Math.log(to.zoom) - Math.log(from.zoom)) * e),
-      polar: from.polar + (to.polar - from.polar) * e,
-      azimuth: from.azimuth + da * e,
-    });
-    if (k >= 1) {
-      const done = viewAnim.done;
-      viewAnim = null;
-      done?.();
-    }
-  }
-  function applyViewRaw(view: typeof officeView): void {
-    controls.target.copy(view.target);
-    const r = 60;
-    camera.position.set(
-      view.target.x + r * Math.sin(view.polar) * Math.sin(view.azimuth),
-      view.target.y + r * Math.cos(view.polar),
-      view.target.z + r * Math.sin(view.polar) * Math.cos(view.azimuth),
-    );
-    camera.zoom = view.zoom;
-    camera.updateProjectionMatrix();
-  }
-  const buildingHint = document.createElement("div");
-  buildingHint.className = "dso-ghint";
-  buildingHint.textContent = "大楼外观 · 向内滚动或点击画面回到办公室";
-  buildingHint.style.display = "none";
-  container.appendChild(buildingHint);
-  function enterBuilding(): void {
-    if (building || mode !== "office") return;
-    building = true;
-    savedView = currentView();
-    controls.enabled = false;
-    controls.minZoom = 0.05;
-    hovered = null;
-    buildingHint.style.display = "";
-    animateView({ ...BUILDING_VIEW, zoom: (camera.top - camera.bottom) / 70 });
-  }
-  let exiting = false;
-  function exitBuilding(done?: () => void): void {
-    if (!building || exiting) return;
-    exiting = true;
-    buildingHint.style.display = "none";
-    animateView(savedView, () => {
-      exiting = false;
-      building = false;
-      controls.enabled = true;
-      done?.();
-    });
-  }
-  let wheelPush = 0;
-  const onWheel = (event: WheelEvent) => {
-    if (mode !== "office") return;
-    if (building) {
-      // 退到大楼外观的过渡还没走完也可以直接往回滚
-      if (event.deltaY < 0) {
-        event.preventDefault();
-        exitBuilding();
-      }
-      return;
-    }
-    if (viewAnim !== null) return;
-    // 已缩到房间填满的下限还在往外滚：攒够一点再退到大楼外观，免得一滚到底就跳出去
-    if (event.deltaY > 0 && camera.zoom <= controls.minZoom * 1.001) {
-      wheelPush += event.deltaY;
-      if (wheelPush > 240) {
-        wheelPush = 0;
-        enterBuilding();
-      }
-    } else wheelPush = 0;
-  };
-  renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
 
   // ---- 点选
   const raycaster = new THREE.Raycaster();
@@ -1019,10 +886,6 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     const moved = Math.hypot(event.clientX - downAt[0], event.clientY - downAt[1]);
     downAt = null;
     if (moved > 5) return;
-    if (building) {
-      exitBuilding();
-      return;
-    }
     const rect = renderer.domElement.getBoundingClientRect();
     pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
     raycaster.setFromCamera(pointer, camera);
@@ -1479,10 +1342,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     const dt = Math.min(0.05, clock.getDelta());
     const t = clock.elapsedTime;
     frame += 1;
-    controls.update();
-    if (viewAnim !== null) stepViewAnim();
-    else if (mode === "office" && !building) keepInside();
-    if (mode === "office") env.update(camera, controls.target, building, dt);
+    if (mode !== "office") controls.update();
 
     if (mode === "office") {
       for (const agent of agents.values()) {
@@ -1573,7 +1433,9 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       if (sel !== undefined) {
         ring.position.x = sel.rig.root.position.x;
         ring.position.z = sel.rig.root.position.z;
-        ring.scale.setScalar(1 + Math.sin(t * 4) * 0.06);
+        // 「定位」时光环先放大再收回，闪几下
+        const pulse = t - focusPulse < 1.6 ? Math.abs(Math.sin((t - focusPulse) * 6)) * (1.6 - (t - focusPulse)) * 0.9 : 0;
+        ring.scale.setScalar(1 + Math.sin(t * 4) * 0.06 + pulse);
         (ring.material as THREE.MeshBasicMaterial).color.set(ROLE_COLOR[sel.member.roleKind]);
       }
       // 挂钟
@@ -1635,10 +1497,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     for (const agent of agents.values()) {
       // 头顶信息只在悬停或选中时显示
       const id = agent.member.id;
-      // 看整栋楼时人在楼板下面，不显示
-      const show =
-        !env.building &&
-        (id === hovered || id === selected || agent.labelHover || (id === lastHovered && t < lastHoveredUntil));
+      const show = id === hovered || id === selected || agent.labelHover || (id === lastHovered && t < lastHoveredUntil);
       agent.label.style.display = show ? "" : "none";
       if (!show) {
         if (agent.sayUntil > 0 && t > agent.sayUntil) {
@@ -1679,21 +1538,6 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   };
   raf = requestAnimationFrame(loop);
 
-  // 聚焦动画
-  let focusAnim: { from: THREE.Vector3; to: THREE.Vector3; z0: number; z1: number; start: number } | null = null;
-  const focusTick = () => {
-    if (focusAnim === null) return;
-    const k = Math.min(1, (performance.now() - focusAnim.start) / 600);
-    const e = 1 - (1 - k) ** 3;
-    const delta = focusAnim.from.clone().lerp(focusAnim.to, e).sub(controls.target);
-    controls.target.add(delta);
-    camera.position.add(delta);
-    camera.zoom = focusAnim.z0 + (focusAnim.z1 - focusAnim.z0) * e;
-    camera.updateProjectionMatrix();
-    if (k < 1) requestAnimationFrame(focusTick);
-    else focusAnim = null;
-  };
-
   return {
     update,
     select(id) {
@@ -1702,19 +1546,9 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     focus(id) {
       const agent = agents.get(id);
       if (agent === undefined || mode !== "office") return;
-      if (building) {
-        exitBuilding(() => this.focus(id));
-        return;
-      }
-      const p = agent.rig.root.position;
-      focusAnim = {
-        from: controls.target.clone(),
-        to: new THREE.Vector3(p.x, DESK_TOP, p.z),
-        z0: camera.zoom,
-        z1: Math.max(camera.zoom, 1.9),
-        start: performance.now(),
-      };
-      requestAnimationFrame(focusTick);
+      // 固定机位不动镜头：选中光环放大闪几下，标出这个人在哪
+      selected = id;
+      focusPulse = clock.elapsedTime;
     },
     setPaused(next) {
       if (paused === next) return;
@@ -1729,21 +1563,11 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       galleryHint.style.display = next === "gallery" ? "" : "none";
       if (next === "gallery") {
         gallery ??= buildGallery();
-        // 在大楼外观时进图鉴：回来时直接回到办公室里
-        const view = building ? savedView : currentView();
-        if (building) {
-          building = false;
-          exiting = false;
-          viewAnim = null;
-          controls.enabled = true;
-          buildingHint.style.display = "none";
-        }
-        Object.assign(officeView, { zoom: view.zoom, polar: view.polar, azimuth: view.azimuth });
-        officeView.target.copy(view.target);
-        controls.minZoom = 0.5;
+        setOfficeControls(true);
         applyView(galleryView);
       } else {
-        applyView(officeView);
+        setOfficeControls(false);
+        fitOffice();
       }
       labels.style.display = next === "office" ? "" : "none";
       galleryLabels.style.display = next === "gallery" ? "" : "none";
@@ -1757,8 +1581,6 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       renderer.domElement.removeEventListener("pointerup", onUp);
       renderer.domElement.removeEventListener("pointermove", onMove);
       renderer.domElement.removeEventListener("pointerleave", onLeave);
-      renderer.domElement.removeEventListener("wheel", onWheel);
-      buildingHint.remove();
       env.dispose();
       document.removeEventListener("keydown", onKey, true);
       panel.remove();

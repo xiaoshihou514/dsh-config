@@ -590,7 +590,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
         <main className="dso-stage">
           <div ref={sceneHost} className="dso-scene" />
           {notice && <div className="dso-notice">{notice}</div>}
-          {mode === "office" && <div className="dso-hint">拖动旋转 · 右键平移 · 滚轮缩放（缩到底继续滚看大楼外观） · 点击角色查看</div>}
+          {mode === "office" && <div className="dso-hint">点击角色查看详情</div>}
         </main>
       </div>
     </div>
@@ -1157,7 +1157,7 @@ function MemberPanel({
           💬 打开对话
         </button>
         <button type="button" className="dso-btn" onClick={onFocus}>
-          ◎ 镜头对准
+          ◎ 在场景中定位
         </button>
       </div>
       <div className="dso-statgrid">
