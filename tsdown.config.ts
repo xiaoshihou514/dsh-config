@@ -12,7 +12,7 @@ export default defineConfig([
       "inject-once": "src/inject-once.ts",
       "overflow-recovery": "src/overflow-recovery.ts",
       "session-activity": "src/session-activity.ts",
-      bilibili: "src/bilibili/index.ts",
+      "agent-office": "src/agent-office.ts",
     },
     dts: true,
     fixedExtension: false,
@@ -20,6 +20,18 @@ export default defineConfig([
     outDir: "lib",
     platform: "node",
     splitting: false,
+  },
+  {
+    // 办公室 3D 场景：浏览器 ESM，由宿主路由按需提供，不进主 client bundle。
+    entry: { "office-scene": "src/office-scene/index.ts" },
+    outDir: "lib",
+    format: "esm",
+    platform: "browser",
+    dts: false,
+    clean: false,
+    splitting: false,
+    minify: true,
+    noExternal: () => true,
   },
   {
     entry: { client: "src/client/index.ts" },

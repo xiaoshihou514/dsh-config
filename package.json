@@ -31,16 +31,16 @@
       "types": "./lib/overflow-recovery.d.ts",
       "default": "./lib/overflow-recovery.js"
     },
-    "./bilibili": {
-      "types": "./lib/bilibili.d.ts",
-      "default": "./lib/bilibili.js"
-    },
     "./client": {
       "types": "./lib/client.d.ts",
       "default": "./lib/client.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
+    "./agent-office": {
+      "types": "./lib/agent-office.d.ts",
+      "default": "./lib/agent-office.js"
+    },
     "./session-activity": {
       "types": "./lib/session-activity.d.ts",
       "default": "./lib/session-activity.js"
@@ -56,7 +56,6 @@
     "build": "tsdown",
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "smoke:bilibili": "node scripts/bilibili-smoke.mjs",
     "prepare": "pnpm run build"
   },
   "dsh": {
@@ -68,7 +67,9 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-slots",
         "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-sidebar"
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-workspace"
       ]
     }
   },
@@ -105,8 +106,10 @@
     "@types/node": "^22.20.0",
     "@types/react": "^18.3.1",
     "@types/react-dom": "~18.3.7",
+    "@types/three": "0.170.0",
     "react": "^18.2.0",
     "react-dom": "^18.3.1",
+    "three": "0.170.0",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"

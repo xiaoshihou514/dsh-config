@@ -15,13 +15,14 @@ import type {} from "@deepseek-ai/dsh-client-ui-plugin-manager/client";
 import { UsageTrigger } from "./UsageTrigger.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
 import { TurnNotify } from "./TurnNotify.tsx";
+import { OfficeAction } from "./OfficeAction.tsx";
 
 export const inject = ["slots"];
 
 /** 行配置条目的 key = `<包名>#<行 id>`（行 id 即 cordis.patch.yml 声明的行）。 */
 const ROW_KEY = (rowId: string): `dsh-config#${string}` => `dsh-config#${rowId}`;
 
-console.log("[dsh-config] client bundle 2026-10-27-2（总览并入指标卡）");
+console.log("[dsh-config] client bundle 2026-11-03-1（智能体办公室）");
 
 export function apply(ctx: Context): void {
   // 侧边栏「用量」入口（设置上方）：root 列表槽位，owner 传 wide。
@@ -39,4 +40,23 @@ export function apply(ctx: Context): void {
     { name: "plugins.row.config", key: ROW_KEY("dsh-config-inject-once") },
     InjectOnceCard,
   ));
+  // 智能体办公室：会话头部按钮（团队插件启用时显示）。打开成员会话需要工作区服务。
+  ctx.inject(["uiWorkspace"], (scoped) => {
+    const workspace = (scoped as unknown as {
+      uiWorkspace: { openSession(target: unknown): void };
+    }).uiWorkspace;
+    const openMember = (leadId: string, memberId: string) => {
+      if (memberId === leadId) workspace.openSession(leadId);
+      else workspace.openSession({ parentSessionId: leadId, childSessionId: memberId, mode: "continuable" });
+    };
+    scoped.slots.inject("conversation.session.header.actions", () => scoped.slots.register(
+      {
+        name: "conversation.session.header.actions",
+        id: "dsh-config-agent-office",
+        order: -19,
+        inject: () => ({ openMember }),
+      } as never,
+      OfficeAction as never,
+    ));
+  });
 }
