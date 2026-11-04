@@ -34,6 +34,7 @@ import {
 } from "./furniture.ts";
 import { drawScreen, type ScreenMode } from "./screens.ts";
 import { createEnvironment } from "./environment.ts";
+import { NavGrid } from "./nav.ts";
 import { Voxels, voxelMaterial } from "./voxel.ts";
 import { buildRoleProp } from "./props.ts";
 
@@ -142,6 +143,15 @@ export const SCENE_VERSION = "2026-11-03-1";
 // ---------------------------------------------------------------- 布局
 
 type P2 = readonly [number, number];
+
+/** 座位的入口：椅子从椅背一侧进出，沙发从正前方，站位就是本身（再由寻路就近挪到空地）。 */
+function entryHint(spot: Spot): P2 {
+  const dx = Math.sin(spot.facing);
+  const dz = Math.cos(spot.facing);
+  if (spot.seat === "chair") return [spot.x - dx * 0.8, spot.z - dz * 0.8];
+  if (spot.seat === "sofa") return [spot.x + dx * 0.8, spot.z + dz * 0.8];
+  return [spot.x, spot.z];
+}
 
 interface Spot {
   readonly x: number;
@@ -385,6 +395,8 @@ class Agent {
   attention: "report" | "error" | null = null;
   /** 有提醒时站的位置（组长：桌前）。 */
   callAt: Spot | undefined;
+  /** 当前步速（起步加速、到站减速）。 */
+  speed = 0;
 
   constructor(
     member: OfficeMember,
@@ -763,14 +775,72 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   // 休息区、书架等装饰不影响信息：首帧之后空闲时再搭，先让人物和工位出来。
   const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
     .requestIdleCallback;
+  /** 圆桌区陈设与休息区（寻路障碍）。 */
+  const decorGroups: THREE.Group[] = [];
   const addDecor = () => {
     if (disposed) return;
-    office.add(buildDecor(RING_CENTER), buildLounge());
+    decorGroups.push(buildDecor(RING_CENTER), buildLounge());
+    office.add(...decorGroups);
+    navDirty = true;
   };
   if (idle !== undefined) idle(addDecor, { timeout: 600 });
   else setTimeout(addDecor, 200);
   let room: THREE.Group | undefined;
   const agents = new Map<string, Agent>();
+
+  // ---- 寻路：家具变化（工位增减、陈设搭好）后重建格子
+  const nav = new NavGrid(ROOM);
+  let navDirty = true;
+  const entries = new Map<Spot, P2>();
+  const navBox = new THREE.Box3();
+  function rebuildNav(): void {
+    navDirty = false;
+    entries.clear();
+    const rects: { x0: number; x1: number; z0: number; z1: number }[] = [];
+    const push = (obj: THREE.Object3D) => {
+      navBox.setFromObject(obj);
+      // 地毯之类贴地的、挂在墙上高处的不挡路
+      if (navBox.isEmpty() || navBox.max.y - navBox.min.y < 0.2 || navBox.min.y > 1.2) return;
+      rects.push({ x0: navBox.min.x, x1: navBox.max.x, z0: navBox.min.z, z1: navBox.max.z });
+    };
+    for (const agent of agents.values()) push(agent.desk.group);
+    for (const group of decorGroups) for (const child of group.children) push(child);
+    for (const solid of env.solids) push(solid);
+    nav.setObstacles(rects);
+  }
+  /** 障碍变了：重建格子，正在走的人按新格子重新规划剩下的路。 */
+  function refreshNav(): void {
+    rebuildNav();
+    for (const agent of agents.values()) if (agent.moving) agent.path = plan(agent, agent.at);
+  }
+  function entryOf(spot: Spot): P2 {
+    let e = entries.get(spot);
+    if (e === undefined) {
+      const [x, z] = entryHint(spot);
+      e = nav.nearestFree(x, z);
+      entries.set(spot, e);
+    }
+    return e;
+  }
+  /** 从当前位置走到目标点位：先出座位到入口，A* 到目标入口，再走进座位。寻不到路时退回预设路线。 */
+  function plan(agent: Agent, to: Spot): P2[] {
+    if (navDirty) refreshNav();
+    const pos = agent.rig.root.position;
+    const here: P2 = [pos.x, pos.z];
+    const out: P2[] = [];
+    let start = here;
+    // 还坐在 / 站在原点位上：从它的入口出去（椅子从椅背那边离开）
+    if (!agent.moving && Math.hypot(pos.x - agent.at.x, pos.z - agent.at.z) < 0.3 && agent.at.seat !== undefined) {
+      start = entryOf(agent.at);
+      out.push(start);
+    }
+    const goal = entryOf(to);
+    const mid = nav.find(start, goal);
+    if (mid === null) return route(agent.at, to);
+    out.push(...mid);
+    if (Math.hypot(goal[0] - to.x, goal[1] - to.z) > 0.02) out.push([to.x, to.z]);
+    return out;
+  }
   const seen = new Set<string>();
   const flights: Flight[] = [];
   let initialized = false;
@@ -1346,6 +1416,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       if (!ids.has(id)) {
         agent.dispose();
         agents.delete(id);
+        navDirty = true;
       }
     let teammateIndex = 0;
     snapshot.members.forEach((member) => {
@@ -1361,6 +1432,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
         if (member.role === "lead") agent.callAt = LEAD_CALL;
         agent.inactiveSince = status === "inactive" && !fresh ? -100 : now;
         agents.set(member.id, agent);
+        navDirty = true;
       } else if (
         agent.member.vendor !== member.vendor ||
         agent.member.tier !== member.tier ||
@@ -1372,6 +1444,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
         agent = new Agent(member, deskAt, idleAt, at, office, labels, (id) => options.onSelect(id));
         if (member.role === "lead") agent.callAt = LEAD_CALL;
         agents.set(member.id, agent);
+        navDirty = true;
       }
       if (agent.status !== "inactive" && status === "inactive") agent.inactiveSince = now;
       agent.status = status;
@@ -1436,11 +1509,13 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     if (mode !== "office") controls.update();
 
     if (mode === "office") {
+      if (navDirty) refreshNav();
       for (const agent of agents.values()) {
         // 路径规划
         const want = agent.wanted(t);
-        if (!agent.moving && want !== agent.at) {
-          agent.path = route(agent.at, want);
+        // 目标变了就从当前位置重新寻路（走到一半也会掉头）
+        if (want !== agent.at) {
+          agent.path = plan(agent, want);
           agent.at = want;
           agent.moving = true;
         }
@@ -1448,21 +1523,53 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
           const target = agent.path[0];
           if (target === undefined) {
             agent.moving = false;
+            agent.speed = 0;
           } else {
             const pos = agent.rig.root.position;
             const dx = target[0] - pos.x;
             const dz = target[1] - pos.z;
             const dist = Math.hypot(dx, dz);
-            const step = 2.4 * dt;
+            // 剩余路程：到站前减速，起步时加速
+            let remain = dist;
+            for (let k = 1; k < agent.path.length; k += 1)
+              remain += Math.hypot(agent.path[k]![0] - agent.path[k - 1]![0], agent.path[k]![1] - agent.path[k - 1]![1]);
+            agent.speed = Math.min(2.4, agent.speed + 7 * dt, Math.sqrt(2 * 7 * remain) + 0.3);
+            const step = agent.speed * dt;
             if (dist <= step) {
               pos.x = target[0];
               pos.z = target[1];
               agent.path.shift();
-              if (agent.path.length === 0) agent.moving = false;
+              if (agent.path.length === 0) {
+                agent.moving = false;
+                agent.speed = 0;
+              }
             } else {
               pos.x += (dx / dist) * step;
               pos.z += (dz / dist) * step;
               agent.heading = Math.atan2(dx, dz);
+              // 互相避让：离别人太近就往旁边（偏右）让一点，让完仍在空地上才挪
+              if (remain > 0.6) {
+                let ax = 0;
+                let az = 0;
+                for (const other of agents.values()) {
+                  if (other === agent) continue;
+                  const ox = pos.x - other.rig.root.position.x;
+                  const oz = pos.z - other.rig.root.position.z;
+                  const d = Math.hypot(ox, oz);
+                  if (d > 0.6 || d < 1e-4) continue;
+                  const k = (0.6 - d) / 0.6;
+                  ax += (ox / d) * k + (dz / dist) * k * 0.6;
+                  az += (oz / d) * k - (dx / dist) * k * 0.6;
+                }
+                if (ax !== 0 || az !== 0) {
+                  const nx = pos.x + ax * dt * 1.6;
+                  const nz = pos.z + az * dt * 1.6;
+                  if (nav.isFree(nx, nz)) {
+                    pos.x = nx;
+                    pos.z = nz;
+                  }
+                }
+              }
             }
           }
         }

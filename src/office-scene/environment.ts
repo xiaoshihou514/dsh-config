@@ -231,6 +231,8 @@ export interface Environment {
   /** 房间重搭（如改名）后给窗户贴上当前时段的景色。 */
   applyRoom(room: THREE.Object3D): void;
   readonly phase: DayPhase;
+  /** 地上会挡路的灯具（落地灯），寻路时当障碍。 */
+  readonly solids: readonly THREE.Object3D[];
   dispose(): void;
 }
 
@@ -250,13 +252,14 @@ export function createEnvironment(
   lamp2.position.set(lounge[0], 2.6, lounge[1]);
   scene.add(lamp2);
   // 壁灯（后墙、左墙，避开窗户、书架、招牌）与沙发旁的落地灯；傍晚起开灯
+  const standing = floorLamp(lounge[0] + 2.1, room.z0 + 0.55);
   const fixtures: Fixture[] = [
     sconce(-8.8, 2.75, room.z0, 0),
     sconce(-4.0, 2.75, room.z0, 0),
     sconce(9.3, 2.75, room.z0, 0),
     sconce(room.x0, 2.75, -6.0, Math.PI / 2),
     sconce(room.x0, 2.75, -3.2, Math.PI / 2),
-    floorLamp(lounge[0] + 2.1, room.z0 + 0.55),
+    standing,
   ];
   for (const f of fixtures) scene.add(f.group);
   const lamp3 = new THREE.PointLight("#ffe2b0", 0, 14, 1.4);
@@ -321,6 +324,7 @@ export function createEnvironment(
     get phase() {
       return current ?? phaseAt(new Date());
     },
+    solids: [standing.group],
     dispose() {
       clearInterval(timer);
       for (const t of textures.values()) t.dispose();
