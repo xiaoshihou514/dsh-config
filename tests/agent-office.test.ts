@@ -65,7 +65,7 @@ describe("团队快照推导", () => {
     expect(snap.members[0]!.busy).toBe(true);
     expect(snap.members[0]!.current).toMatchObject({ kind: "waiting", label: "等待组员进展" });
     expect(snap.members[1]!.busy).toBe(false);
-    expect(snap.members[1]!.activity.find((a) => a.tool === "bash")).toMatchObject({ label: "运行测试", failed: true });
+    expect(member.activity.find((a) => a.tool === "bash")).toMatchObject({ label: "运行测试", failed: true });
     expect(snap.interactions.map((i) => [i.kind, i.from, i.to, i.preview])).toEqual([
       ["instruction", "user", "L", "组建团队"],
       ["message", "B", "L", "报告完成"],
@@ -73,5 +73,22 @@ describe("团队快照推导", () => {
     ]);
     expect(snap.taskSource).toBe("todo");
     expect(snap.tasks[0]).toMatchObject({ subject: "摸底", status: "in_progress" });
+  });
+});
+
+describe("成员手动指定", () => {
+  it("覆盖岗位 / 人设 / 档位，组长岗位固定，并保留自动识别结果", async () => {
+    const { applyOverrides } = await import("../src/agent-office.ts");
+    seq = 0;
+    const lead = digestSession("L", [
+      ev("request/header", { header: { config: { provider: "zai-coding-cn", model: "glm-5.3" } } }),
+      ev("team/member", { member: { id: "B", name: "helper", description: "", phase: "active" } }),
+    ]);
+    const snap = assembleSnapshot({ leadId: "L", lead, members: new Map(), loaded: new Set(), now: 0 });
+    const out = applyOverrides(snap, { B: { role: "qa", vendor: "kimi" }, L: { role: "qa", tier: "fast" } });
+    expect(out.members[1]).toMatchObject({ roleKind: "qa", vendor: "kimi", detected: { roleKind: "general", vendor: "other" } });
+    expect(out.members[1]!.overridden).toEqual({ role: true, vendor: true, tier: false });
+    expect(out.members[0]).toMatchObject({ roleKind: "lead", tier: "fast" });
+    expect(out.members[0]!.overridden?.role).toBe(false);
   });
 });

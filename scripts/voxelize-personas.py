@@ -5,6 +5,9 @@
 
 用法：python3 -I scripts/voxelize-personas.py [参考图目录] [--debug 输出目录]
 
+参考图目录里没有的厂商，回退到 assets/personas/<厂商>.png（未知模型由
+scripts/draw-unknown-persona.py 生成）。
+
 - 网格大小统一取 DeepSeek 图的像素块（CELL px），各图只自动对齐相位。
 - 背景：从边框向内泛洪近背景色的格子；脚下阴影按「底部浅色」剔除。
 - 三视图：面积足够大的块按 x 排序为正、侧、背（粘连时在最稀疏的列切开）；
@@ -182,6 +185,9 @@ def main():
     for vendor in VENDORS:
         path = root / f"{vendor}.png"
         if not path.exists():
+            # 仓库自带的人设（目前只有未知模型）：人设目录里没有时用这张。
+            path = Path(__file__).resolve().parents[1] / "assets" / "personas" / f"{vendor}.png"
+        if not path.exists():
             continue
         g, views = extract(path)
         top = min(p[0] for v in views for p in v)
@@ -200,7 +206,8 @@ def main():
                         img.putpixel((x + c, r), tuple(int(v) for v in color))
             x += len(gr[0])
         q = img.quantize(colors=64, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
-        pal = q.getpalette()[: 64 * 3]
+        pal = (q.getpalette() or [])[: 64 * 3]
+        pal += [0] * (64 * 3 - len(pal))  # 颜色少于 64 种的图（如自绘人设）补齐
         palette = ["#%02x%02x%02x" % tuple(pal[i * 3 : i * 3 + 3]) for i in range(64)]
         encoded = []
         x = 0

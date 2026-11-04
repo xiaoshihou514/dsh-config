@@ -45,11 +45,23 @@ function jitter(x: number, y: number, z: number): number {
   return (((h >>> 0) % 1000) / 1000 - 0.5) * 0.07;
 }
 
-export class Voxels {
-  readonly cells = new Map<string, string>();
+/** 体素坐标打包成整数键（每轴 ±1023 内）：比字符串键快一个数量级。 */
+const OFF = 1024;
+export function voxelKey(x: number, y: number, z: number): number {
+  return (x + OFF) + (y + OFF) * 2048 + (z + OFF) * 4194304;
+}
+export function unpackKey(key: number): [number, number, number] {
+  const x = (key % 2048) - OFF;
+  const y = (Math.floor(key / 2048) % 2048) - OFF;
+  const z = Math.floor(key / 4194304) - OFF;
+  return [x, y, z];
+}
 
-  private static key(x: number, y: number, z: number): string {
-    return `${x},${y},${z}`;
+export class Voxels {
+  readonly cells = new Map<number, string>();
+
+  private static key(x: number, y: number, z: number): number {
+    return voxelKey(x, y, z);
   }
 
   set(x: number, y: number, z: number, color: string | null): this {
@@ -96,7 +108,7 @@ export class Voxels {
   /** 左右镜像（x → -x）复制当前全部体素。 */
   mirrorX(): this {
     for (const [key, color] of [...this.cells]) {
-      const [x, y, z] = key.split(",").map(Number) as [number, number, number];
+      const [x, y, z] = unpackKey(key);
       if (!this.has(-x, y, z)) this.set(-x, y, z, color);
     }
     return this;
@@ -128,7 +140,7 @@ export class Voxels {
     const indices: number[] = [];
     const tmp = new THREE.Color();
     for (const [key, color] of this.cells) {
-      const [x, y, z] = key.split(",").map(Number) as [number, number, number];
+      const [x, y, z] = unpackKey(key);
       const cell = parse(color);
       const j = flat ? 0 : jitter(x, y, z);
       for (let f = 0; f < FACES.length; f += 1) {

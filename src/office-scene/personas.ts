@@ -23,7 +23,9 @@
  * - qwen：蓝紫波浪长发及踝、侧前麻花辫、藏青贝雷帽配白毛边与星徽流苏；
  *   白色旗袍 + 蓝腰封、藏青金纹长袍敞开、蓝色绑带鞋。
  * - 未知模型（other）：神秘旅人——深紫兜帽斗篷、薄荷银发、金瞳，提着发青光
- *   的问号提灯，身边漂浮「？」。
+ *   的提灯，身边漂浮「？」。三视图由 scripts/draw-unknown-persona.py 绘制
+ *   （assets/personas/other.png），与其他各家走同一条像素画体素流程；这里的
+ *   调色只给网格兜底角色用。
  */
 
 import type { Vendor } from "../office/types.ts";

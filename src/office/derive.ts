@@ -555,7 +555,6 @@ export function assembleSnapshot(input: AssembleInput): OfficeSnapshot {
         received: 0,
         outputTokens: 0,
       },
-      activity: digest?.activity ?? [],
     };
   };
 

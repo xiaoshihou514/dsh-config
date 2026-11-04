@@ -21,8 +21,16 @@ const WOOD_DARK = "#8a6240";
 const METAL = "#9aa3ad";
 const DARK = "#2a2d36";
 
-function mesh(v: Voxels, scale = F): THREE.Mesh {
-  const m = new THREE.Mesh(v.geometry(scale), voxelMaterial());
+const meshCache = new Map<string, THREE.BufferGeometry>();
+
+/** 体素 → 网格；给了 key 时几何体按 key 缓存（工位等重复件只网格化一次）。 */
+function mesh(v: Voxels | (() => Voxels), scale = F, key?: string): THREE.Mesh {
+  let g = key === undefined ? undefined : meshCache.get(key);
+  if (g === undefined) {
+    g = (typeof v === "function" ? v() : v).geometry(scale);
+    if (key !== undefined) meshCache.set(key, g);
+  }
+  const m = new THREE.Mesh(g, voxelMaterial());
   m.castShadow = true;
   m.receiveShadow = true;
   return m;
@@ -198,59 +206,27 @@ export function buildRoom(projectName: string): THREE.Group {
   return room;
 }
 
-// ---------------------------------------------------------------- 组长办公室
+// ---------------------------------------------------------------- 圆桌区与陈设
 
-export const LEAD_OFFICE = { x0: 4, z1: -2.5, doorX: [5, 6.5] as const };
-
-export function buildLeadOffice(): THREE.Group {
+/** 圆桌区地毯（组长坐圆心）+ 后墙书架、盆栽。 */
+export function buildDecor(center: readonly [number, number]): THREE.Group {
   const group = new THREE.Group();
-  const glassMat = new THREE.MeshLambertMaterial({ color: "#cfe8ff", transparent: true, opacity: 0.28, depthWrite: false });
-  const frameMat = new THREE.MeshLambertMaterial({ color: "#7d8796" });
-  const height = 2.6;
-  const addPanel = (x: number, z: number, w: number, d: number) => {
-    const glass = new THREE.Mesh(new THREE.BoxGeometry(w, height, d), glassMat);
-    glass.position.set(x, height / 2, z);
-    const top = new THREE.Mesh(new THREE.BoxGeometry(w + 0.04, 0.08, d + 0.04), frameMat);
-    top.position.set(x, height, z);
-    const bottom = new THREE.Mesh(new THREE.BoxGeometry(w + 0.04, 0.1, d + 0.04), frameMat);
-    bottom.position.set(x, 0.05, z);
-    group.add(glass, top, bottom);
-  };
-  // 左侧隔断
-  addPanel(LEAD_OFFICE.x0, (ROOM.z0 + LEAD_OFFICE.z1) / 2, 0.06, LEAD_OFFICE.z1 - ROOM.z0);
-  // 前侧隔断（留门）
-  addPanel((LEAD_OFFICE.x0 + LEAD_OFFICE.doorX[0]) / 2, LEAD_OFFICE.z1, LEAD_OFFICE.doorX[0] - LEAD_OFFICE.x0, 0.06);
-  addPanel((LEAD_OFFICE.doorX[1] + ROOM.x1) / 2, LEAD_OFFICE.z1, ROOM.x1 - LEAD_OFFICE.doorX[1], 0.06);
-  // 门牌
-  const plate = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.4, 0.32),
-    new THREE.MeshBasicMaterial({
-      map: canvasTexture(256, 60, (g) => {
-        g.fillStyle = "#f2b632";
-        g.fillRect(0, 0, 256, 60);
-        g.fillStyle = "#3a2a08";
-        g.font = "bold 34px system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif";
-        g.textAlign = "center";
-        g.textBaseline = "middle";
-        g.fillText("组长办公室", 128, 32);
-      }),
-    }),
-  );
-  plate.position.set(8.5, 2.3, LEAD_OFFICE.z1 + 0.05);
-  group.add(plate);
-
-  // 地毯
-  const rug = new THREE.Mesh(new THREE.PlaneGeometry(5, 4), new THREE.MeshLambertMaterial({ color: "#a8463c" }));
+  const [cx, cz] = center;
+  const rug = new THREE.Mesh(new THREE.CircleGeometry(5.2, 48), new THREE.MeshLambertMaterial({ color: "#b98a64" }));
   rug.rotation.x = -Math.PI / 2;
-  rug.position.set(8.2, 0.01, -5.6);
+  rug.position.set(cx, 0.008, cz);
   rug.receiveShadow = true;
-  const rugInner = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 3.4), new THREE.MeshLambertMaterial({ color: "#c96a4e" }));
-  rugInner.rotation.x = -Math.PI / 2;
-  rugInner.position.set(8.2, 0.015, -5.6);
-  rugInner.receiveShadow = true;
-  group.add(rug, rugInner);
+  const inner = new THREE.Mesh(new THREE.RingGeometry(2.3, 2.55, 48), new THREE.MeshLambertMaterial({ color: "#e3b546" }));
+  inner.rotation.x = -Math.PI / 2;
+  inner.position.set(cx, 0.012, cz);
+  inner.receiveShadow = true;
+  const core = new THREE.Mesh(new THREE.CircleGeometry(2.3, 48), new THREE.MeshLambertMaterial({ color: "#a8463c" }));
+  core.rotation.x = -Math.PI / 2;
+  core.position.set(cx, 0.012, cz);
+  core.receiveShadow = true;
+  group.add(rug, inner, core);
 
-  // 书架
+  // 书架（后墙右侧）
   const shelf = new Voxels();
   shelf.box(0, 0, 0, 14, 22, 3, (x, y, z) => {
     if (x === 0 || x === 14 || y === 0 || y === 22 || y % 7 === 0 || z === 0) return WOOD_DARK;
@@ -259,22 +235,9 @@ export function buildLeadOffice(): THREE.Group {
     return y % 7 === 6 && x % 3 === 0 ? null : colors[(x * 7 + Math.floor(y / 7)) % colors.length]!;
   });
   const shelfMesh = mesh(shelf);
-  shelfMesh.position.set(10, 0, ROOM.z0 + 0.05);
-  group.add(shelfMesh);
-
-  group.add(plant(11.2, -3.2, 1.2));
-  // 地球仪
-  const globe = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), new THREE.MeshLambertMaterial({ color: "#4f9fe0" }));
-  globe.position.set(9.2, DESK_TOP + 0.28, -5.5);
-  globe.castShadow = true;
-  const globeStand = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.07, 0.14, 8), new THREE.MeshLambertMaterial({ color: GOLD() }));
-  globeStand.position.set(9.2, DESK_TOP + 0.07, -5.5);
-  group.add(globe, globeStand);
+  shelfMesh.position.set(9.6, 0, ROOM.z0 + 0.05);
+  group.add(shelfMesh, plant(11.3, ROOM.z0 + 0.6, 1.2), plant(6.4, ROOM.z0 + 0.6, 1));
   return group;
-}
-
-function GOLD(): string {
-  return "#e3b546";
 }
 
 // ---------------------------------------------------------------- 工位
@@ -297,7 +260,7 @@ export interface DeskParts {
 export function buildDesk(role: RoleKind, big = false): DeskParts {
   const group = new THREE.Group();
   const roleColor = ROLE_COLOR[role];
-  const deskW = big ? 30 : 20;
+  const deskW = big ? 24 : 20;
   const deskD = big ? 12 : 10;
   const top = Math.round(DESK_TOP / F);
   const deskZ0 = 5; // 桌子后沿（相对椅子中心，体素）
@@ -392,8 +355,9 @@ export function buildDesk(role: RoleKind, big = false): DeskParts {
       break;
   }
 
-  group.add(mesh(desk), mesh(chair));
-  if (deco.size > 0) group.add(mesh(deco));
+  const k = `${role}:${big}`;
+  group.add(mesh(desk, F, `desk:${k}`), mesh(chair, F, `chair:${big}`));
+  if (deco.size > 0) group.add(mesh(deco, F, `deco:${k}`));
 
   if (role === "backend" || role === "devops") {
     const tall = role === "devops" ? 1.6 : 1.2;

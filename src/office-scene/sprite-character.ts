@@ -22,9 +22,9 @@ import * as THREE from "three";
 import { ROLE_COLOR } from "../office/classify.ts";
 import type { RoleKind, Tier, Vendor } from "../office/types.ts";
 import { buildCharacter as buildMeshCharacter, type CharacterRig } from "./anime.ts";
-import { PROP_HAND, PROP_VOXEL, buildHalo, buildRoleProp, buildSparkle } from "./props.ts";
+import { PROP_HAND, PROP_VOXEL, buildHalo, buildQuestion, buildRoleProp, buildSparkle } from "./props.ts";
 import { SPRITES, SPRITE_ALPHABET, type SpriteSheet } from "./sprites.generated.ts";
-import { Voxels, voxelMaterial } from "./voxel.ts";
+import { Voxels, unpackKey, voxelKey, voxelMaterial } from "./voxel.ts";
 
 export const VOXEL = 0.0425;
 
@@ -63,7 +63,7 @@ function isSkin(hex: string): boolean {
 
 /** 某厂商的基础造型（与岗位、档位无关）：各关节部件的表面体素颜色。 */
 interface Base {
-  readonly cells: { head: Map<string, string>; upper: Map<string, string>; lower: Map<string, string>; legL: Map<string, string>; legR: Map<string, string> };
+  readonly cells: { head: Map<number, string>; upper: Map<number, string>; lower: Map<number, string>; legL: Map<number, string>; legR: Map<number, string> };
   readonly height: number;
   readonly width: number;
   readonly neck: number;
@@ -74,6 +74,8 @@ interface Base {
   readonly frontZ: Map<string, number>;
   readonly front: Grid;
   readonly cxF: number;
+  /** 侧视图该行的深度中心（相对脚中心，+z 朝前）。 */
+  readonly zCenter: (y: number) => number;
 }
 
 interface Model {
@@ -83,7 +85,186 @@ interface Model {
   readonly hip: number;
   readonly hem: number;
   readonly legX: number;
+  /** 肩关节（体素坐标），左右对称取 ±x。 */
+  readonly shoulder: [number, number, number];
+  readonly armL: Voxels;
+  readonly armR: Voxels;
+  /** 躯干半宽（体素）：蒙皮权重里「身体两侧」从这里往外算。 */
+  readonly torsoHalf: number;
+  readonly zCenter: (y: number) => number;
+  /** 手心（相对肩关节）。 */
   readonly hand: [number, number, number];
+  readonly face: FaceDecals | undefined;
+}
+
+// ---------------------------------------------------------------- 表情
+
+export type EyeState = "open" | "closed" | "happy" | "half";
+export type MouthState = "none" | "open" | "smile" | "small";
+
+/**
+ * 每家正视图里眼睛与嘴的位置（行 / 列，按 sprites.generated.ts 的正视图网格，手工标注）：
+ * L / R = [上行, 下行, 左列, 右列]；M = [行, 列]（嘴的左上角）。
+ */
+const FACE_SPEC: Record<string, { L: [number, number, number, number]; R: [number, number, number, number]; M: [number, number] }> = {
+  deepseek: { L: [18, 20, 11, 14], R: [18, 20, 20, 24], M: [23, 17] },
+  claude: { L: [15, 16, 13, 16], R: [14, 15, 21, 24], M: [19, 19] },
+  grok: { L: [17, 18, 13, 16], R: [16, 18, 21, 25], M: [20, 19] },
+  glm: { L: [15, 17, 12, 14], R: [15, 17, 19, 21], M: [20, 16] },
+  kimi: { L: [17, 18, 14, 17], R: [16, 17, 22, 25], M: [20, 19] },
+  gpt: { L: [18, 19, 15, 18], R: [18, 19, 24, 27], M: [21, 20] },
+  gemini: { L: [17, 19, 13, 17], R: [17, 18, 22, 25], M: [21, 20] },
+  qwen: { L: [16, 17, 15, 17], R: [16, 17, 22, 25], M: [21, 19] },
+  other: { L: [17, 20, 11, 15], R: [17, 20, 21, 25], M: [24, 17] },
+};
+
+/** 手臂位置微调（体素）：dx 肩宽、dz 前后（负 = 往后）、dy 上下（正 = 往上）。按渲染结果逐家调。 */
+const ARM_TWEAK: Partial<Record<string, { dx: number; dz: number; dy?: number }>> = {
+  claude: { dx: 0, dz: -2, dy: 2 },
+};
+
+/** 一种表情 = 正脸上若干像素的覆盖色：[x, y, z(前表面), 颜色]。 */
+type Decal = [number, number, number, string][];
+interface FaceDecals {
+  readonly eyes: Record<Exclude<EyeState, "open">, Decal>;
+  readonly mouth: Record<Exclude<MouthState, "none">, Decal>;
+}
+
+function lum(hex: string): number {
+  const c = new THREE.Color(hex);
+  return (c.r + c.g + c.b) / 3;
+}
+
+function buildFace(vendor: string, base: Base): FaceDecals | undefined {
+  const spec = FACE_SPEC[vendor];
+  if (spec === undefined) return undefined;
+  const { front: F, cxF, height: H } = base;
+  const at = (row: number, col: number): [number, number, number] => {
+    const x = col - cxF;
+    const y = H - 1 - row;
+    return [x, y, base.frontZ.get(`${x},${y}`) ?? 0];
+  };
+  // 肤色：两眼下方一行最常见的偏肤色像素；睫毛色：眼睛范围内最暗的像素（再压暗）。
+  const counts = new Map<string, number>();
+  for (let r = Math.min(spec.L[1], spec.R[1]) + 1; r <= Math.min(spec.L[1], spec.R[1]) + 3; r += 1)
+    for (let c = spec.L[2]; c <= spec.R[3]; c += 1) {
+      const k = F[r]?.[c];
+      if (k != null && lum(k) > 0.72) counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+  const skin = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "#f8e6de";
+  let lash = "#2a2230";
+  let darkest = Infinity;
+  for (const e of [spec.L, spec.R])
+    for (let r = e[0]; r <= e[1]; r += 1)
+      for (let c = e[2]; c <= e[3]; c += 1) {
+        const k = F[r]?.[c];
+        if (k != null && lum(k) < darkest) {
+          darkest = lum(k);
+          lash = k;
+        }
+      }
+  if (darkest > 0.35) lash = `#${new THREE.Color(lash).multiplyScalar(0.45).getHexString()}`;
+  const eyeDecal = (draw: (e: [number, number, number, number], set: (r: number, c: number, color: string) => void) => void): Decal => {
+    const map = new Map<string, [number, number, string]>();
+    const set = (r: number, c: number, color: string) => map.set(`${r},${c}`, [r, c, color]);
+    for (const e of [spec.L, spec.R]) {
+      for (let r = e[0]; r <= e[1]; r += 1) for (let c = e[2]; c <= e[3]; c += 1) set(r, c, skin);
+      draw(e, set);
+    }
+    return [...map.values()].map(([r, c, color]) => [...at(r, c), color]);
+  };
+  const [mr, mc] = spec.M;
+  // 嘴色从肤色推算：暖褐粉（加深肤色、压低蓝绿），不用红紫色。
+  const tone = (k: number, warm: number) => {
+    const c = new THREE.Color(skin);
+    return `#${new THREE.Color(Math.min(1, c.r * k * (1 + warm)), c.g * k * 0.92, c.b * k * 0.86).getHexString()}`;
+  };
+  const inner = tone(0.58, 0.08);
+  const lower = tone(0.82, 0.06);
+  const lip = tone(0.7, 0.05);
+  const mouthDecal = (pixels: [number, number, string][]): Decal => pixels.map(([dr, dc, color]) => [...at(mr + dr, mc + dc), color]);
+  return {
+    eyes: {
+      closed: eyeDecal((e, set) => {
+        for (let c = e[2]; c <= e[3]; c += 1) set(e[1], c, lash);
+      }),
+      happy: eyeDecal((e, set) => {
+        for (let c = e[2]; c <= e[3]; c += 1) set(c === e[2] || c === e[3] ? e[1] : e[1] - 1, c, lash);
+      }),
+      half: eyeDecal((e, set) => {
+        // 只盖上半，留下眼睛下半
+        const mid = Math.floor((e[0] + e[1]) / 2);
+        for (let r = mid + 1; r <= e[1]; r += 1) for (let c = e[2]; c <= e[3]; c += 1) set(r, c, F[r]?.[c] ?? skin);
+        for (let c = e[2]; c <= e[3]; c += 1) set(mid, c, lash);
+      }),
+    },
+    mouth: {
+      open: mouthDecal([
+        [0, 0, inner],
+        [0, 1, inner],
+        [1, 0, lower],
+        [1, 1, lower],
+      ]),
+      small: mouthDecal([
+        [0, 0, lip],
+        [0, 1, lip],
+      ]),
+      smile: mouthDecal([
+        [0, -1, lip],
+        [1, 0, lip],
+        [0, 1, lip],
+      ]),
+    },
+  };
+}
+
+function decalGeometry(decal: Decal, pivot: readonly [number, number, number]): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const c = new THREE.Color();
+  for (const [x, y, z, color] of decal) {
+    c.set(color);
+    const zf = (z + 0.5 - pivot[2]) * VOXEL + 0.0015;
+    const x0 = (x - 0.5 - pivot[0]) * VOXEL;
+    const x1 = (x + 0.5 - pivot[0]) * VOXEL;
+    const y0 = (y - pivot[1]) * VOXEL;
+    const y1 = (y + 1 - pivot[1]) * VOXEL;
+    positions.push(x0, y0, zf, x1, y0, zf, x1, y1, zf, x0, y0, zf, x1, y1, zf, x0, y1, zf);
+    for (let i = 0; i < 6; i += 1) colors.push(c.r, c.g, c.b);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  return g;
+}
+
+/**
+ * 袖子颜色：立绘里肩膀到肘部一带（左右两侧）最常见的颜色，排除肤色与发色
+ * （发色取头顶几行最常见的三种）；取不到时用脖子下方正中的上衣色。
+ */
+function sleeveColor(base: Base, shoulderX: number, shoulderY: number): string {
+  const { front: F, cxF, height: H } = base;
+  const hair = new Map<string, number>();
+  for (let row = 0; row < 8; row += 1) for (const k of F[row] ?? []) if (k != null) hair.set(k, (hair.get(k) ?? 0) + 1);
+  const hairSet = new Set([...hair].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k]) => k));
+  const near = (a: string, b: string) => new THREE.Color(a).sub(new THREE.Color(b)).toArray().every((v) => Math.abs(v) < 0.12);
+  const counts = new Map<string, number>();
+  for (let y = shoulderY - 1; y >= shoulderY - 7; y -= 1)
+    for (const sx of [-shoulderX, shoulderX])
+      for (let dx = -1; dx <= 1; dx += 1) {
+        const k = F[H - 1 - y]?.[sx + dx + cxF];
+        if (k == null || isSkin(k) || [...hairSet].some((h) => near(h, k))) continue;
+        counts.set(k, (counts.get(k) ?? 0) + 1);
+      }
+  const best = [...counts].sort((a, b) => b[1] - a[1])[0];
+  if (best !== undefined && best[1] >= 3) return best[0];
+  const center = new Map<string, number>();
+  for (let row = H - base.neck + 2; row <= H - base.neck + 8; row += 1)
+    for (let c = cxF - 4; c <= cxF + 4; c += 1) {
+      const k = F[row]?.[c];
+      if (k != null && !isSkin(k)) center.set(k, (center.get(k) ?? 0) + 1);
+    }
+  return [...center].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "#6a7080";
 }
 
 const baseCache = new Map<string, Base>();
@@ -225,7 +406,7 @@ function buildBase(vendor: string): Base {
     return adjusted ?? fb() ?? side ?? "#888888";
   };
 
-  const cells = { head: new Map<string, string>(), upper: new Map<string, string>(), lower: new Map<string, string>(), legL: new Map<string, string>(), legR: new Map<string, string>() };
+  const cells = { head: new Map<number, string>(), upper: new Map<number, string>(), lower: new Map<number, string>(), legL: new Map<number, string>(), legR: new Map<number, string>() };
   const frontZ = new Map<string, number>();
   for (let z = zMin; z <= zMax; z += 1)
     for (let y = 0; y < ny; y += 1)
@@ -237,12 +418,16 @@ function buildBase(vendor: string): Base {
           !solid(x + 1, y, z) || !solid(x - 1, y, z) || !solid(x, y + 1, z) || !solid(x, y - 1, z) || !solid(x, y, z + 1) || !solid(x, y, z - 1);
         if (!surface) continue;
         const part = y >= neck ? cells.head : y >= hip ? cells.upper : y < hem ? (x < 0 ? cells.legL : cells.legR) : cells.lower;
-        part.set(`${x},${y},${z}`, colorAt(x, y, z));
+        part.set(voxelKey(x, y, z), colorAt(x, y, z));
       }
 
+  const zCenter = (y: number) => {
+    const row = Math.min(H - 1, Math.max(0, H - 1 - y));
+    return (sideFront[row]! - sideBack[row]!) / 2;
+  };
   const legCols = F[H - 1]!.flatMap((c, i) => (c === null ? [] : [Math.abs(i - cxF)]));
   const legX = legCols.length === 0 ? 2 : Math.max(1, Math.round(Math.max(...legCols) / 2));
-  const base: Base = { cells, height: H, width: W, neck, hip, hem, legX, frontZ, front: F, cxF };
+  const base: Base = { cells, height: H, width: W, neck, hip, hem, legX, frontZ, front: F, cxF, zCenter };
   baseCache.set(vendor, base);
   return base;
 }
@@ -255,7 +440,7 @@ function buildModel(vendor: string, role: RoleKind, fast: boolean): Model {
   if (hit !== undefined) return hit;
   const base = buildBase(vendor);
   const { height: H, width: W, front: F, cxF } = base;
-  const toVoxels = (m: Map<string, string>) => {
+  const toVoxels = (m: Map<number, string>) => {
     const v = new Voxels();
     for (const [k, c] of m) v.cells.set(k, c);
     return v;
@@ -268,18 +453,6 @@ function buildModel(vendor: string, role: RoleKind, fast: boolean): Model {
     legR: toVoxels(base.cells.legR),
   };
   const frontAt = (x: number, y: number) => base.frontZ.get(`${x},${y}`) ?? -Infinity;
-
-  // 手：正视图中段 +x 侧最外的皮肤像素。
-  let hand: [number, number, number] = [Math.round(W * 0.3), Math.round(H * 0.38), 1];
-  let best = -Infinity;
-  for (let row = Math.round(H * 0.4); row < Math.round(H * 0.78); row += 1)
-    F[row]!.forEach((color, c) => {
-      const x = c - cxF;
-      if (color !== null && x > 0 && isSkin(color) && x > best) {
-        best = x;
-        hand = [x, H - 1 - row, Math.max(0, frontAt(x, H - 1 - row))];
-      }
-    });
 
   // 岗位胸章
   const badgeY = Math.round(H * 0.47);
@@ -299,7 +472,54 @@ function buildModel(vendor: string, role: RoleKind, fast: boolean): Model {
     if (Number.isFinite(zf)) for (const [dx, dy] of zig) parts.head.set(bx + dx, by + dy, zf + 1, "#ffd23f");
   }
 
-  const model: Model = { parts, height: H, neck: base.neck, hip: base.hip, hem: base.hem, legX: base.legX, hand };
+  // 手臂：从肩膀自然下垂，袖子取立绘上衣色，袖口提亮，手用脸部肤色。
+  const shoulderY = base.neck - 3;
+  const shoulderX = Math.max(4, Math.round(W * 0.17));
+  const sleeve = sleeveColor(base, shoulderX, shoulderY);
+  const face = buildFace(vendor, base);
+  const skin = (FACE_SPEC[vendor] && face?.eyes.closed.find(([, , , c]) => lum(c) > 0.72)?.[3]) ?? "#f8e6de";
+  const cuff = lum(sleeve) < 0.5 ? `#${new THREE.Color(sleeve).lerp(new THREE.Color("#ffffff"), 0.75).getHexString()}` : "#ffffff";
+  const L = Math.max(9, Math.round(H * 0.2));
+  // 肩宽：按脸宽（手工标注的两眼外沿）定——Q 版比例里肩宽约等于脸宽；各家可再微调。
+  // 前后：只看肩膀那几行躯干的前沿（不取下面裙摆、蝴蝶结、发束的最前），往里 1.5 格。
+  const spec = FACE_SPEC[vendor];
+  const tweak = ARM_TWEAK[vendor] ?? { dx: 0, dz: 0 };
+  const sy = shoulderY + (tweak.dy ?? 0);
+  const faceHalf = spec !== undefined ? (spec.R[3] - spec.L[2] + 1) / 2 + 1 : Math.round(W * 0.17) + 1;
+  const sx = Math.max(5, Math.round(faceHalf + tweak.dx));
+  const torsoHalf = sx - 1;
+  let zs = -Infinity;
+  for (let y = sy - 2; y <= sy; y += 1)
+    for (let dx = -2; dx <= 0; dx += 1) zs = Math.max(zs, frontAt(sx + dx, y));
+  zs = Number.isFinite(zs) ? Math.round(zs - 1.5 + tweak.dz) : 0;
+  /** 一侧手臂；inward = 指向身体中线的 x 方向（右臂 -1，左臂 +1）。 */
+  const makeArm = (inward: 1 | -1) => {
+    const arm = new Voxels();
+    // 泡泡袖肩头 + 往身体里接的一段（读作肩膀）
+    arm.box(-2, -3, -2, 2, 1, 2, (x, y, z) => (Math.abs(x) + Math.abs(z) + Math.max(0, y) > 4 ? null : sleeve));
+    arm.box(inward * 1, -2, -1, inward * 4, 1, 1, (x, y) => (Math.abs(x) === 4 && y === 1 ? null : sleeve));
+    arm.box(-1, -L + 4, -1, 1, -3, 1, sleeve);
+    arm.box(-2, -L + 3, -2, 2, -L + 3, 2, (x, _y, z) => (Math.abs(x) === 2 && Math.abs(z) === 2 ? null : cuff));
+    arm.box(-1, -L, -1, 1, -L + 2, 1, skin);
+    arm.set(inward, -L + 1, 2, skin); // 拇指朝内
+    return arm;
+  };
+  const shoulder: [number, number, number] = [sx, sy, zs];
+  const model: Model = {
+    parts,
+    height: H,
+    neck: base.neck,
+    hip: base.hip,
+    hem: base.hem,
+    legX: base.legX,
+    shoulder,
+    armL: makeArm(1),
+    armR: makeArm(-1),
+    torsoHalf,
+    zCenter: base.zCenter,
+    hand: [0, -L + 1, 0],
+    face,
+  };
   modelCache.set(key, model);
   return model;
 }
@@ -307,14 +527,14 @@ function buildModel(vendor: string, role: RoleKind, fast: boolean): Model {
 const geometryCache = new Map<string, THREE.BufferGeometry>();
 function geometry(
   key: string,
-  voxels: Voxels,
+  voxels: Voxels | Decal,
   pivot: readonly [number, number, number],
   size = VOXEL,
   flat = true,
 ): THREE.BufferGeometry {
   let g = geometryCache.get(key);
   if (g === undefined) {
-    g = voxels.geometry(size, pivot, flat);
+    g = Array.isArray(voxels) ? decalGeometry(voxels, pivot) : voxels.geometry(size, pivot, flat);
     geometryCache.set(key, g);
   }
   return g;
@@ -339,6 +559,46 @@ function joint(parent: THREE.Object3D, at: readonly [number, number, number], pa
   return g;
 }
 
+const smooth = (a: number, b: number, v: number) => {
+  const t = Math.min(1, Math.max(0, (v - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * 蒙皮权重（按顶点位置算，相邻体素共用的顶点权重一致，不会裂开）：
+ * - 脖子以上：头。
+ * - 脖子以下的背后与身体两侧（长发所在）：从髋到脖子逐渐过渡到头。
+ * - 胸前衣服：上身；髋部上下 3 格内上身 / 下身平滑过渡。
+ */
+function skinnedGeometry(key: string, model: Model): THREE.BufferGeometry {
+  const hit = geometryCache.get(key);
+  if (hit !== undefined) return hit;
+  const all = new Voxels();
+  for (const part of [model.parts.head, model.parts.upper, model.parts.lower])
+    for (const [k, c] of part.cells) all.cells.set(k, c);
+  const g = all.geometry(VOXEL, [0, 0, 0], true);
+  const pos = g.getAttribute("position");
+  const indices = new Uint16Array(pos.count * 4);
+  const weights = new Float32Array(pos.count * 4);
+  const { hip, neck, torsoHalf, zCenter } = model;
+  for (let i = 0; i < pos.count; i += 1) {
+    const x = pos.getX(i) / VOXEL;
+    const y = pos.getY(i) / VOXEL;
+    const z = pos.getZ(i) / VOXEL;
+    const back = Math.min(1, Math.max(0, (zCenter(Math.floor(y)) - z + 1) / 3));
+    const side = Math.min(1, Math.max(0, (Math.abs(x) - torsoHalf) / 3));
+    const hairy = Math.max(back, side);
+    const headW = Math.max(smooth(neck - 1.5, neck + 0.5, y), hairy * smooth(hip, neck, y));
+    const s = smooth(hip - 3, hip + 3, y);
+    indices.set([0, 1, 2, 0], i * 4);
+    weights.set([(1 - headW) * (1 - s), (1 - headW) * s, headW, 0], i * 4);
+  }
+  g.setAttribute("skinIndex", new THREE.Uint16BufferAttribute(indices, 4));
+  g.setAttribute("skinWeight", new THREE.Float32BufferAttribute(weights, 4));
+  geometryCache.set(key, g);
+  return g;
+}
+
 export function hasSprite(vendor: Vendor): boolean {
   return SPRITES[vendor] !== undefined;
 }
@@ -357,15 +617,26 @@ export function buildCharacter(vendor: Vendor, tier: Tier, role: RoleKind): Char
   root.add(body);
   const origin: [number, number, number] = [0, 0, 0];
 
+  // 头 / 上身 / 下身合成一张蒙皮网格，三根骨骼驱动：长发顺着权重过渡跟头部走，任何角度都没有接缝。
   const hipAt: [number, number, number] = [0, model.hip, 0];
-  const lower = joint(body, hipAt, origin);
-  lower.add(mesh(geometry(`${key}:lower`, model.parts.lower, hipAt), meshes));
-  const upper = joint(body, hipAt, origin);
-  upper.add(mesh(geometry(`${key}:upper`, model.parts.upper, hipAt), meshes));
-
   const neckAt: [number, number, number] = [0, model.neck, 0];
-  const head = joint(upper, neckAt, hipAt);
-  head.add(mesh(geometry(`${key}:head`, model.parts.head, neckAt), meshes));
+  const lower = new THREE.Bone();
+  lower.position.set(0, model.hip * VOXEL, 0);
+  const upper = new THREE.Bone();
+  upper.position.set(0, model.hip * VOXEL, 0);
+  const head = new THREE.Bone();
+  head.position.set(0, (model.neck - model.hip) * VOXEL, 0);
+  upper.add(head);
+  body.add(lower, upper);
+  const skinned = new THREE.SkinnedMesh(skinnedGeometry(`${key}:body`, model), flatMaterial);
+  skinned.castShadow = true;
+  skinned.receiveShadow = true;
+  skinned.userData.material = flatMaterial;
+  skinned.frustumCulled = false;
+  body.add(skinned);
+  root.updateMatrixWorld(true);
+  skinned.bind(new THREE.Skeleton([lower, upper, head]));
+  meshes.push(skinned);
 
   const legs = ([-1, 1] as const).map((s) => {
     const at: [number, number, number] = [s * model.legX, model.hem, 0];
@@ -375,11 +646,45 @@ export function buildCharacter(vendor: Vendor, tier: Tier, role: RoleKind): Char
     return leg;
   });
 
+  // 手臂：肩关节为枢轴，挂在上身下。
+  const arms = ([-1, 1] as const).map((s) => {
+    const at: [number, number, number] = [s * model.shoulder[0], model.shoulder[1], model.shoulder[2]];
+    const arm = joint(upper, at, hipAt);
+    arm.add(mesh(geometry(`${key}:arm${s}`, s < 0 ? model.armL : model.armR, [0, 0, 0]), meshes));
+    return arm;
+  });
+  const [armL, armR] = arms as [THREE.Group, THREE.Group];
+
   // 岗位道具：握持点对准右手
   const prop = mesh(geometry(`prop:${role}`, buildRoleProp(role), PROP_HAND, PROP_VOXEL, false), meshes, voxelMaterial());
-  prop.position.set(model.hand[0] * VOXEL, (model.hand[1] - model.hip) * VOXEL, (model.hand[2] + 1) * VOXEL);
-  prop.scale.setScalar(0.85);
-  upper.add(prop);
+  prop.position.set(model.hand[0] * VOXEL, model.hand[1] * VOXEL, (model.hand[2] + 1.5) * VOXEL);
+  prop.scale.setScalar(0.8);
+  armR.add(prop);
+
+  // 表情贴片：眼睛 / 嘴各一组，按状态切换显隐。
+  let setFace: CharacterRig["setFace"];
+  if (model.face !== undefined) {
+    const face = model.face;
+    const eyes = new Map<string, THREE.Mesh>();
+    const mouths = new Map<string, THREE.Mesh>();
+    const decalMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+    for (const [name, decal] of Object.entries(face.eyes)) {
+      const m = new THREE.Mesh(geometry(`${key}:eyes:${name}`, decal, neckAt), decalMaterial);
+      m.visible = false;
+      head.add(m);
+      eyes.set(name, m);
+    }
+    for (const [name, decal] of Object.entries(face.mouth)) {
+      const m = new THREE.Mesh(geometry(`${key}:mouth:${name}`, decal, neckAt), decalMaterial);
+      m.visible = false;
+      head.add(m);
+      mouths.set(name, m);
+    }
+    setFace = (eyeState, mouthState) => {
+      for (const [name, m] of eyes) m.visible = name === eyeState;
+      for (const [name, m] of mouths) m.visible = name === mouthState;
+    };
+  }
 
   const height = (model.height + 1) * VOXEL;
   let halo: THREE.Object3D | undefined;
@@ -395,6 +700,21 @@ export function buildCharacter(vendor: Vendor, tier: Tier, role: RoleKind): Char
   }
 
   let sparkles: THREE.Group | undefined;
+  if (vendor === "other") {
+    // 未知模型：身边漂浮的「？」
+    sparkles = new THREE.Group();
+    for (let i = 0; i < 3; i += 1) {
+      const m = new THREE.Mesh(
+        geometry("question", buildQuestion(), [0, 0, 0], PROP_VOXEL),
+        new THREE.MeshLambertMaterial({ vertexColors: true, emissive: new THREE.Color("#1f7a72") }),
+      );
+      m.userData.phase = (i / 3) * Math.PI * 2;
+      m.scale.setScalar(0.8);
+      sparkles.add(m);
+    }
+    sparkles.position.y = height * 0.72;
+    body.add(sparkles);
+  }
   if (vendor === "gemini") {
     sparkles = new THREE.Group();
     ["#8fd3ff", "#f3a6ff", "#ffe08a"].forEach((color, i) => {
@@ -414,8 +734,8 @@ export function buildCharacter(vendor: Vendor, tier: Tier, role: RoleKind): Char
     root,
     body,
     head,
-    armL: empty(),
-    armR: empty(),
+    armL,
+    armR,
     legL: legs[0]!,
     legR: legs[1]!,
     heldR: prop,
@@ -423,6 +743,7 @@ export function buildCharacter(vendor: Vendor, tier: Tier, role: RoleKind): Char
     sparkles,
     upper,
     lower,
+    setFace,
     meshes,
     height: height * scale,
     hipHeight: model.hip * VOXEL * scale,

@@ -24,11 +24,10 @@ import type { CharacterRig } from "./anime.ts";
 import { buildCharacter } from "./sprite-character.ts";
 import {
   DESK_TOP,
-  LEAD_OFFICE,
   ROOM,
   SEAT_HEIGHT,
   buildDesk,
-  buildLeadOffice,
+  buildDecor,
   buildLounge,
   buildRoom,
   buildWhiteboard,
@@ -36,7 +35,8 @@ import {
   type Whiteboard,
 } from "./furniture.ts";
 import { drawScreen, drawWhiteboard, type ScreenMode } from "./screens.ts";
-import { Voxels } from "./voxel.ts";
+import { Voxels, voxelMaterial } from "./voxel.ts";
+import { buildRoleProp } from "./props.ts";
 
 export interface SceneOptions {
   readonly onSelect: (id: string | null) => void;
@@ -48,6 +48,87 @@ export interface OfficeScene {
   focus(id: string): void;
   setMode(mode: "office" | "gallery"): void;
   dispose(): void;
+}
+
+// ---------------------------------------------------------------- 头像
+
+let portraitRenderer: THREE.WebGLRenderer | undefined;
+const portraitCache = new Map<string, string>();
+
+function snapshotRenderer(): THREE.WebGLRenderer {
+  if (portraitRenderer === undefined) {
+    portraitRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    portraitRenderer.setPixelRatio(1);
+    portraitRenderer.outputColorSpace = THREE.SRGBColorSpace;
+    portraitRenderer.setClearColor(0x000000, 0);
+  }
+  return portraitRenderer;
+}
+
+function lit(scene: THREE.Scene): void {
+  scene.add(new THREE.HemisphereLight("#ffffff", "#c8bca8", 2.2));
+  const sun = new THREE.DirectionalLight("#fff4e0", 1.6);
+  sun.position.set(3, 5, 6);
+  scene.add(sun);
+}
+
+/** 角色头像：头部特写，略侧 20°。返回 data URL（按人设 × 档位 × 岗位缓存）。 */
+export function portrait(vendor: Vendor, tier: Tier, role: RoleKind, size = 160): string {
+  const key = `${vendor}:${tier}:${role}:${size}`;
+  const hit = portraitCache.get(key);
+  if (hit !== undefined) return hit;
+  const renderer = snapshotRenderer();
+  renderer.setSize(size, size, false);
+  const scene = new THREE.Scene();
+  lit(scene);
+  const rig = buildCharacter(vendor, tier, role);
+  rig.setFace?.("open", "none");
+  if (rig.halo) rig.halo.visible = false;
+  if (rig.heldR) rig.heldR.visible = false;
+  if (rig.sparkles) rig.sparkles.visible = false;
+  rig.armL.rotation.z = -0.3;
+  rig.armR.rotation.z = 0.3;
+  rig.root.rotation.y = 0.35;
+  scene.add(rig.root);
+  const h = rig.height;
+  const cy = h * 0.74;
+  const half = h * 0.22;
+  const camera = new THREE.OrthographicCamera(-half, half, half, -half, 0.1, 50);
+  camera.position.set(0, cy + 1.2, 10);
+  camera.lookAt(0, cy, 0);
+  renderer.render(scene, camera);
+  const url = renderer.domElement.toDataURL("image/png");
+  portraitCache.set(key, url);
+  return url;
+}
+
+/** 岗位道具小图标（右下角角标用）。 */
+export function propIcon(role: RoleKind, size = 64): string {
+  const key = `prop:${role}:${size}`;
+  const hit = portraitCache.get(key);
+  if (hit !== undefined) return hit;
+  const renderer = snapshotRenderer();
+  renderer.setSize(size, size, false);
+  const scene = new THREE.Scene();
+  lit(scene);
+  const geometry = buildRoleProp(role).geometry(0.1);
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox!;
+  const center = box.getCenter(new THREE.Vector3());
+  const span = Math.max(box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z) * 0.62;
+  const prop = new THREE.Mesh(geometry, voxelMaterial());
+  prop.position.copy(center).multiplyScalar(-1);
+  const holder = new THREE.Group();
+  holder.add(prop);
+  holder.rotation.set(0.25, -0.5, 0);
+  scene.add(holder);
+  const camera = new THREE.OrthographicCamera(-span, span, span, -span, 0.1, 50);
+  camera.position.set(0, 0, 10);
+  camera.lookAt(0, 0, 0);
+  renderer.render(scene, camera);
+  const url = renderer.domElement.toDataURL("image/png");
+  portraitCache.set(key, url);
+  return url;
 }
 
 export const SCENE_VERSION = "2026-11-03-1";
@@ -66,40 +147,90 @@ interface Spot {
   readonly seat?: "chair" | "sofa";
 }
 
-const AISLE = 2.6;
-const DESK_COLS = [-8.5, -5, -1.5, 2] as const;
-const DESK_ROWS = [-5.2, -0.2] as const;
+/** 圆桌布局：组长坐圆心，组员面朝圆心围一圈；前方（+z）留出进出的缺口。 */
+export const RING_CENTER: P2 = [-1.5, -2];
+const AISLE = 4.6;
+const R1 = 4.4; // 第一圈座位半径
+const R2 = 7.6; // 第二圈（超过 8 人时）
+const WALK = 5.6; // 两圈之间的走道半径
+const GAP = (30 * Math.PI) / 180; // 前方缺口半角
+const RING1_SLOTS = 8;
+const RING2_SPAN = (100 * Math.PI) / 180; // 第二圈只铺前半圈，避免撞后墙
+
+/** 圆上一点；angle 0 = 正前方（+z），顺时针看为 +x。 */
+function onRing(r: number, angle: number): P2 {
+  return [RING_CENTER[0] + Math.sin(angle) * r, RING_CENTER[1] + Math.cos(angle) * r];
+}
+
+/** 沿圆弧从 a 走到 b 的折线点（不含起点）。 */
+function arc(r: number, a: number, b: number): P2[] {
+  const steps = Math.max(1, Math.ceil(Math.abs(b - a) / 0.3));
+  const out: P2[] = [];
+  for (let i = 1; i <= steps; i += 1) out.push(onRing(r, a + ((b - a) * i) / steps));
+  return out;
+}
+
+const ENTRY: P2[] = [
+  [RING_CENTER[0], AISLE],
+  onRing(WALK, 0),
+];
 
 function deskSpot(index: number): Spot {
-  const col = index % DESK_COLS.length;
-  const row = Math.floor(index / DESK_COLS.length) % DESK_ROWS.length;
-  const x = DESK_COLS[col]!;
-  const z = DESK_ROWS[row]!;
-  const lane = x + 1.75;
-  return { x, z, facing: 0, seat: "chair", approach: [[lane, AISLE], [lane, z], [x, z]] };
+  let angle: number;
+  let r: number;
+  if (index < RING1_SLOTS) {
+    // 从后排（面朝镜头）往前排填：不挡住圆心的组长。
+    const order = [3, 4, 2, 5, 1, 6, 0, 7];
+    angle = GAP + ((Math.PI * 2 - GAP * 2) * order[index]!) / (RING1_SLOTS - 1);
+    r = R1;
+  } else {
+    const k = index - RING1_SLOTS;
+    const slots = 9;
+    const j = k % slots;
+    // 左右交替往外铺：GAP+、-GAP-、……
+    const step = (RING2_SPAN - GAP) / Math.ceil(slots / 2);
+    const n = Math.floor(j / 2);
+    angle = (j % 2 === 0 ? 1 : -1) * (GAP + step * (n + 0.5));
+    r = R2;
+  }
+  const [x, z] = onRing(r, angle);
+  const facing = Math.atan2(RING_CENTER[0] - x, RING_CENTER[1] - z);
+  const a = angle > Math.PI ? angle - Math.PI * 2 : angle;
+  let approach: P2[];
+  if (r === R1) {
+    // 走道弧线 → 从椅背方向径向走到座位
+    approach = [...ENTRY, ...arc(WALK, 0, a), [x, z]];
+  } else {
+    // 第二圈座位在桌子外侧：从桌子旁绕出去
+    const side = Math.sign(a) * 0.32;
+    approach = [...ENTRY, ...arc(WALK, 0, a + side), onRing(r + 0.9, a + side), ...arc(r + 0.9, a + side, a), [x, z]];
+  }
+  return { x, z, facing, seat: "chair", approach };
 }
 
 const LEAD_DESK: Spot = {
-  x: 8.2,
-  z: -6.6,
+  x: RING_CENTER[0],
+  z: RING_CENTER[1],
   facing: 0,
   seat: "chair",
   approach: [
-    [5.75, AISLE],
-    [5.75, -1.8],
-    [5.75, -6.6],
-    [8.2, -6.6],
+    ...ENTRY,
+    [RING_CENTER[0], RING_CENTER[1] + 2.6],
+    [RING_CENTER[0] + 1.6, RING_CENTER[1] + 2.0],
+    [RING_CENTER[0] + 1.6, RING_CENTER[1] - 0.3],
+    RING_CENTER,
   ],
 };
 
 const LEAD_IDLE: Spot = {
-  x: 5.3,
-  z: -3.7,
-  facing: 0.5,
+  x: RING_CENTER[0] + 1.35,
+  z: RING_CENTER[1] - 1.0,
+  facing: 0.6,
   approach: [
-    [5.75, AISLE],
-    [5.75, -1.8],
-    [5.3, -3.7],
+    ...ENTRY,
+    [RING_CENTER[0], RING_CENTER[1] + 2.6],
+    [RING_CENTER[0] + 1.6, RING_CENTER[1] + 2.0],
+    [RING_CENTER[0] + 1.35, RING_CENTER[1] - 1.0],
   ],
 };
 
@@ -210,6 +341,8 @@ class Agent {
   readonly say: HTMLDivElement;
   sayUntil = 0;
   gray = false;
+  /** 固定表情（图鉴细看时用）；缺省按状态自动。 */
+  face: [Eyes, Mouth] | undefined;
 
   constructor(
     member: OfficeMember,
@@ -290,26 +423,48 @@ function setGray(agent: Agent, gray: boolean): void {
     mesh.material = gray ? grayMaterial : ((mesh.userData.material as THREE.Material | undefined) ?? mesh.material);
 }
 
-/** 每帧重置关节后按状态摆姿势。 */
+type Eyes = "open" | "closed" | "happy" | "half";
+type Mouth = "none" | "open" | "smile" | "small";
+
+/** 周期 period 秒里、相位 offset 起的 len 秒为真（用于偶发动作：眨眼、喝水、挥手……）。 */
+function every(t: number, period: number, len: number, offset: number): number {
+  const k = (((t + offset) % period) + period) % period;
+  return k < len ? k / len : -1;
+}
+
+/** 两只手臂（左手 x<0：向外为 -z 旋转；右手向外为 +z）。 */
+function arms(rig: CharacterRig, l: [number, number, number], r: [number, number, number]): void {
+  rig.armL.rotation.set(l[0], l[1], l[2]);
+  rig.armR.rotation.set(r[0], r[1], r[2]);
+}
+
+/** 每帧重置关节后按状态摆姿势、换表情。 */
 function pose(agent: Agent, t: number, dt: number): void {
   const rig = agent.rig;
   const flagship = rig.tier === "flagship";
   for (const part of [rig.head, rig.armL, rig.armR, rig.legL, rig.legR, rig.body]) part.rotation.set(0, 0, 0);
   rig.skirt?.rotation.set(0, 0, 0);
+  rig.upper?.rotation.set(0, 0, 0);
+  rig.lower?.rotation.set(0, 0, 0);
   rig.body.position.set(0, 0, 0);
-  const seed = agent.member.id.length * 1.37;
+  const seed = (agent.member.id.length * 1.37 + agent.member.id.charCodeAt(0) * 0.11) % 10;
+  let eyes: Eyes = "open";
+  let mouth: Mouth = "none";
 
   const seated = !agent.moving && agent.at.seat !== undefined;
   if (rig.heldL) rig.heldL.visible = !seated;
-  if (rig.heldR) rig.heldR.visible = !seated;
+  if (rig.heldR) rig.heldR.visible = true;
+  if (rig.lower) rig.lower.scale.y = seated ? 0.55 : 1;
 
   if (agent.moving) {
     const w = t * 10;
     rig.legL.rotation.x = Math.sin(w) * 0.6;
     rig.legR.rotation.x = -Math.sin(w) * 0.6;
-    rig.armL.rotation.x = -Math.sin(w) * 0.45;
-    rig.armR.rotation.x = Math.sin(w) * 0.45;
+    // 手臂略往后收、小幅摆动、稍外张：肩在身体前沿，以竖直为中心摆看起来手总在前面。
+    arms(rig, [0.18 - Math.sin(w) * 0.32, 0, -0.26], [0.18 + Math.sin(w) * 0.32, 0, 0.26]);
     rig.body.position.y = Math.abs(Math.sin(w)) * 0.035;
+    if (rig.upper) rig.upper.rotation.z = Math.sin(w) * 0.04;
+    rig.head.rotation.y = Math.sin(t * 0.9 + seed) * 0.15;
   } else if (seated) {
     const lift = flagship ? 0 : 0.18;
     rig.body.position.y = SEAT_HEIGHT + lift - rig.hipHeight;
@@ -321,81 +476,120 @@ function pose(agent: Agent, t: number, dt: number): void {
     const current = agent.member.current;
     if (agent.status === "failed") {
       rig.head.rotation.x = 0.45;
-      rig.armL.rotation.x = -0.3;
-      rig.armR.rotation.x = -0.3;
+      arms(rig, [-0.25, 0, 0.1], [-0.25, 0, -0.1]);
+      if (rig.upper) rig.upper.rotation.x = 0.2;
+      eyes = "half";
+      mouth = "small";
     } else if (atDesk && agent.status === "running") {
       const kind = current?.kind ?? "thinking";
+      const category = current?.category;
       if (kind === "waiting") {
-        rig.body.rotation.x = -0.08;
-        rig.armL.rotation.set(-1.15, 0, -0.75);
-        rig.armR.rotation.set(-1.15, 0, 0.75);
-        rig.head.rotation.y = Math.sin(t * 0.8 + seed) * 0.4;
+        // 抱臂等待：偶尔低头看表、叹气
+        const watch = every(t, 8, 1.4, seed);
+        if (watch >= 0) {
+          arms(rig, [-1.6, 0, 0.55], [-1.25, 0, -0.9]);
+          rig.head.rotation.x = 0.3;
+        } else {
+          arms(rig, [-1.25, 0, 0.95], [-1.3, 0, -0.95]);
+          rig.head.rotation.y = Math.sin(t * 0.8 + seed) * 0.4;
+        }
+        rig.body.rotation.x = -0.06;
         rig.legR.rotation.x = -Math.PI / 2 + Math.max(0, Math.sin(t * 6)) * 0.15;
+        if (every(t, 7, 0.8, seed + 2) >= 0) eyes = "closed";
       } else if (kind === "thinking") {
-        rig.armL.rotation.x = -1.4;
-        rig.armR.rotation.set(-2.5, 0, 0.45);
+        // 托腮思考
+        arms(rig, [-1.25, 0, 0.6], [-2.35 + Math.sin(t * 1.2) * 0.05, 0, -0.7]);
         rig.head.rotation.z = 0.15 + Math.sin(t * 0.9 + seed) * 0.05;
-        rig.head.rotation.x = -0.1;
-      } else if (current?.category === "team") {
-        rig.armL.rotation.x = -1.4;
-        rig.armR.rotation.set(-2.6 + Math.sin(t * 7) * 0.3, 0, -0.2);
+        rig.head.rotation.x = -0.12;
+        if (rig.upper) rig.upper.rotation.z = 0.05;
+        eyes = "half";
+        mouth = every(t, 5, 1.2, seed) >= 0 ? "small" : "none";
+      } else if (category === "team") {
+        // 边说边比划
+        arms(rig, [-1.2, 0, 0.3], [-1.75 + Math.sin(t * 5) * 0.3, 0, 0.15 + Math.sin(t * 3 + seed) * 0.2]);
         rig.head.rotation.y = Math.sin(t * 2 + seed) * 0.2;
+        rig.head.rotation.x = Math.sin(t * 4) * 0.04;
+        mouth = Math.floor(t * 6 + seed) % 2 === 0 ? "open" : "small";
+        if (every(t, 4, 1.5, seed) >= 0) eyes = "happy";
+      } else if (category === "plan" || category === "edit") {
+        // 写写画画：右手小幅打圈
+        arms(rig, [-1.3, 0, 0.45], [-1.42 + Math.sin(t * 6) * 0.08, 0, -0.25 + Math.cos(t * 6) * 0.08]);
+        rig.head.rotation.x = 0.15;
+        if (rig.upper) rig.upper.rotation.x = 0.06;
+        if (category === "plan") mouth = "smile";
+      } else if (category === "read" || category === "search" || category === "web") {
+        // 阅读：手扶桌面，右手偶尔滚动，缓慢点头
+        arms(rig, [-1.1, 0, 0.35], [-1.15 + (every(t, 3, 0.4, seed) >= 0 ? 0.12 : 0), 0, -0.3]);
+        rig.head.rotation.x = 0.12 + Math.sin(t * 0.7) * 0.05;
+        rig.head.rotation.y = Math.sin(t * 0.5 + seed) * 0.08;
+        if (every(t, 6, 2, seed) >= 0) eyes = "half";
       } else {
-        const speed = current?.category === "read" || current?.category === "search" ? 4 : 18;
-        rig.armL.rotation.x = -1.42 + Math.sin(t * speed + seed) * 0.07;
-        rig.armR.rotation.x = -1.42 + Math.sin(t * speed + seed + 1.7) * 0.07;
-        rig.head.rotation.x = 0.1 + (speed === 4 ? Math.sin(t * 0.7) * 0.05 : 0);
+        // 打字（命令行更快）
+        const speed = category === "shell" ? 22 : 16;
+        arms(rig, [-1.35 + Math.sin(t * speed + seed) * 0.12, 0, 0.35], [-1.35 + Math.sin(t * speed + seed + Math.PI) * 0.12, 0, -0.35]);
+        rig.head.rotation.x = 0.1 + Math.sin(t * 2.3) * 0.02;
+        if (rig.upper) rig.upper.rotation.x = 0.07;
+      }
+    } else if (atDesk) {
+      // 工位空闲：手放腿上，偶尔伸懒腰打哈欠
+      const stretch = every(t, 14, 1.8, seed);
+      if (stretch >= 0) {
+        arms(rig, [-3.0, 0, -0.35], [-3.0, 0, 0.35]);
+        rig.head.rotation.x = -0.25;
+        eyes = "closed";
+        mouth = "open";
+      } else {
+        arms(rig, [-0.85, 0, 0.25], [-0.85, 0, -0.25]);
+        rig.head.rotation.z = Math.sin(t * 0.6 + seed) * 0.08;
       }
     } else {
-      // 坐着放松（沙发 / 工位空闲）
-      rig.armL.rotation.set(-0.5, 0, 0.15);
-      rig.armR.rotation.set(-0.5, 0, -0.15);
-      rig.head.rotation.z = Math.sin(t * 0.6 + seed) * 0.08;
+      // 沙发 / 休息区：手放腿上，隔一会儿抿一口咖啡
+      const sip = every(t, 9, 1.8, seed);
+      if (sip >= 0) {
+        arms(rig, [-0.85, 0, 0.25], [-2.3, 0, -0.55]);
+        rig.head.rotation.x = -0.1;
+        eyes = "happy";
+      } else {
+        arms(rig, [-0.85, 0, 0.25], [-0.95, 0, -0.2]);
+        rig.head.rotation.z = Math.sin(t * 0.6 + seed) * 0.08;
+        rig.head.rotation.y = Math.sin(t * 0.33 + seed) * 0.35;
+        mouth = every(t, 6, 2.2, seed + 1) >= 0 ? "smile" : "none";
+      }
       rig.body.position.y += Math.sin(t * 1.6 + seed) * 0.006;
     }
   } else {
-    // 站立闲聊
+    // 站立：轻晃、东张西望，偶尔挥手打招呼
     rig.body.position.y = Math.sin(t * 2 + seed) * 0.008;
     rig.head.rotation.z = Math.sin(t * 0.7 + seed) * 0.07;
     rig.head.rotation.y = Math.sin(t * 0.37 + seed) * 0.3;
-    rig.armL.rotation.set(-0.15 + Math.sin(t * 1.3 + seed) * 0.05, 0, -0.32);
-    rig.armR.rotation.set(-0.3 + Math.sin(t * 1.1 + seed) * 0.05, 0, 0.32);
-    if (agent.status === "provisioning") rig.armR.rotation.set(-2.7 + Math.sin(t * 8) * 0.25, 0, -0.3);
-  }
-
-  // 像素画角色：手臂没有单独拆分，动作靠上身摆动；坐下时裙摆收起。
-  if (rig.upper !== undefined && rig.lower !== undefined) {
-    rig.upper.rotation.set(0, 0, 0);
-    rig.lower.rotation.set(0, 0, 0);
-    rig.lower.scale.y = seated ? 0.55 : 1;
-    if (agent.moving) {
-      const w = t * 10;
-      rig.upper.rotation.z = Math.sin(w) * 0.05;
-      rig.lower.rotation.z = -Math.sin(w) * 0.05;
-    } else if (seated && agent.at === agent.deskAt && agent.status === "running") {
-      const kind = agent.member.current?.kind ?? "thinking";
-      const category = agent.member.current?.category;
-      if (kind === "waiting") {
-        rig.upper.rotation.x = -0.08;
-        rig.upper.rotation.y = Math.sin(t * 0.8 + seed) * 0.2;
-      } else if (kind === "thinking") {
-        rig.upper.rotation.z = 0.07 + Math.sin(t * 0.9 + seed) * 0.03;
-        rig.head.rotation.z = 0.1;
-      } else if (category === "team") {
-        rig.upper.rotation.y = Math.sin(t * 3 + seed) * 0.12;
-      } else {
-        rig.upper.rotation.x = 0.1 + Math.sin(t * 16 + seed) * 0.012;
-      }
-    } else if (agent.status === "failed") {
-      rig.upper.rotation.x = 0.25;
+    const wave = agent.status === "provisioning" ? 0 : every(t, 12, 1.6, seed);
+    if (agent.status === "provisioning" || wave >= 0) {
+      arms(rig, [-0.15, 0, -0.3], [-2.75 + Math.sin(t * 9) * 0.25, 0, 0.45 + Math.sin(t * 9) * 0.15]);
+      eyes = "happy";
+      mouth = "smile";
     } else {
-      rig.upper.rotation.z = Math.sin(t * 0.8 + seed) * 0.03;
+      arms(rig, [-0.15 + Math.sin(t * 1.3 + seed) * 0.05, 0, -0.3], [-0.3 + Math.sin(t * 1.1 + seed) * 0.05, 0, 0.3]);
     }
   }
 
-  // 收到消息时轻跳
+  // 收到消息：轻跳 + 惊讶
   const since = t - agent.jumpAt;
   if (since >= 0 && since < 0.5) rig.body.position.y += Math.sin((since / 0.5) * Math.PI) * 0.22;
+  if (since >= 0 && since < 1.0) {
+    eyes = "open";
+    mouth = "open";
+  }
+  // 眨眼（睁眼时）
+  if (eyes === "open" && every(t, 3.7 + (seed % 1.5), 0.13, seed) >= 0) eyes = "closed";
+  // 像素画角色的长发跟头部一起动：转头幅度减半，免得发梢甩得太远。
+  if (rig.upper !== undefined) {
+    rig.head.rotation.x *= 0.5;
+    rig.head.rotation.y *= 0.5;
+    rig.head.rotation.z *= 0.5;
+  }
+  const override = agent.face;
+  if (override !== undefined) [eyes, mouth] = override;
+  rig.setFace?.(eyes, mouth);
 
   if (rig.tail) {
     rig.tail.rotation.y = Math.sin(t * 1.8 + seed) * 0.28;
@@ -454,6 +648,7 @@ function envelope(kind: OfficeInteraction["kind"]): THREE.Mesh {
 
 export function createOfficeScene(container: HTMLElement, options: SceneOptions): OfficeScene {
   ensureCss();
+  let disposed = false;
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
   renderer.shadowMap.enabled = true;
@@ -502,7 +697,15 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   // ---- 办公室
   const office = new THREE.Scene();
   lights(office, 17);
-  office.add(buildLeadOffice(), buildLounge());
+  // 休息区、书架等装饰不影响信息：首帧之后空闲时再搭，先让人物和工位出来。
+  const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
+    .requestIdleCallback;
+  const addDecor = () => {
+    if (disposed) return;
+    office.add(buildDecor(RING_CENTER), buildLounge());
+  };
+  if (idle !== undefined) idle(addDecor, { timeout: 600 });
+  else setTimeout(addDecor, 200);
   const whiteboard: Whiteboard = buildWhiteboard();
   office.add(whiteboard.group);
   let room: THREE.Group | undefined;
@@ -576,7 +779,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   }
 
   let mode: "office" | "gallery" = "office";
-  const officeView = { target: new THREE.Vector3(0, 0.6, 0), zoom: 1.25, polar: 1.02, azimuth: 0.62 };
+  const officeView = { target: new THREE.Vector3(-0.5, 0.6, -0.5), zoom: 1.25, polar: 1.02, azimuth: 0.62 };
   const galleryView = { target: new THREE.Vector3(0, 1.4, 0.4), zoom: 1.25, polar: 1.22, azimuth: 0 };
   function applyView(view: typeof officeView): void {
     controls.target.copy(view.target);
@@ -639,16 +842,30 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   renderer.domElement.addEventListener("pointerup", onUp);
 
   // ---- 图鉴细看
-  type InspectPose = "stand" | "walk" | "type" | "think" | "wait" | "talk" | "sleep";
+  type InspectPose = "stand" | "walk" | "type" | "read" | "write" | "think" | "wait" | "talk" | "idle" | "lounge" | "failed";
   const POSES: [InspectPose, string][] = [
     ["stand", "站立"],
     ["walk", "走路"],
     ["type", "打字"],
+    ["read", "阅读"],
+    ["write", "书写"],
     ["think", "思考"],
     ["wait", "等待"],
     ["talk", "沟通"],
-    ["sleep", "休息"],
+    ["idle", "工位摸鱼"],
+    ["lounge", "喝咖啡"],
+    ["failed", "沮丧"],
   ];
+  const FACES: [string, [Eyes, Mouth] | undefined][] = [
+    ["自动", undefined],
+    ["普通", ["open", "none"]],
+    ["闭眼", ["closed", "none"]],
+    ["开心", ["happy", "smile"]],
+    ["困倦", ["half", "small"]],
+    ["惊讶", ["open", "open"]],
+    ["微笑", ["open", "smile"]],
+  ];
+  let inspectFace: [Eyes, Mouth] | undefined;
   const ANGLES: [number, string][] = [
     [0, "正面"],
     [Math.PI / 4, "斜侧"],
@@ -688,25 +905,32 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   /** 细看时套给 pose() 的假成员：只用到 pose 读取的字段。 */
   const fakeSpot = (seat: boolean): Spot => ({ x: 0, z: 0, facing: 0, approach: [], ...(seat ? { seat: "chair" as const } : {}) });
   const deskSpotFake = fakeSpot(true);
+  const loungeSpotFake = fakeSpot(true);
   const standSpot = fakeSpot(false);
   function fakeAgent(entry: GalleryEntry): Agent {
-    const seated = inspectPose !== "stand" && inspectPose !== "walk";
-    const working = inspectPose === "type" || inspectPose === "think" || inspectPose === "wait" || inspectPose === "talk";
+    const p = inspectPose;
+    const seated = p !== "stand" && p !== "walk";
+    const working = ["type", "read", "write", "think", "wait", "talk"].includes(p);
     const current =
-      inspectPose === "type"
+      p === "type"
         ? { kind: "tool", category: "edit", label: "", since: 0 }
-        : inspectPose === "wait"
-          ? { kind: "waiting", category: "wait", label: "", since: 0 }
-          : inspectPose === "talk"
-            ? { kind: "tool", category: "team", label: "", since: 0 }
-            : { kind: "thinking", label: "", since: 0 };
+        : p === "read"
+          ? { kind: "tool", category: "read", label: "", since: 0 }
+          : p === "write"
+            ? { kind: "tool", category: "plan", label: "", since: 0 }
+            : p === "wait"
+              ? { kind: "waiting", category: "wait", label: "", since: 0 }
+              : p === "talk"
+                ? { kind: "tool", category: "team", label: "", since: 0 }
+                : { kind: "thinking", label: "", since: 0 };
     return {
       rig: entry.rig,
-      moving: inspectPose === "walk",
-      at: seated ? deskSpotFake : standSpot,
+      moving: p === "walk",
+      at: !seated ? standSpot : p === "lounge" ? loungeSpotFake : deskSpotFake,
       deskAt: deskSpotFake,
-      status: working ? "running" : "inactive",
+      status: p === "failed" ? "failed" : working ? "running" : "inactive",
       jumpAt: -10,
+      face: inspectFace,
       member: { id: entry.title, current },
     } as unknown as Agent;
   }
@@ -762,6 +986,11 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       "动作",
       POSES.map(([p, text]) => [text, inspectPose === p, () => (inspectPose = p)]),
     );
+    if (galleryRigs[inspecting]!.rig.setFace !== undefined)
+      group(
+        "表情",
+        FACES.map(([text, f]) => [text, inspectFace === f, () => (inspectFace = f)]),
+      );
     const nav = document.createElement("div");
     nav.className = "nav";
     const mk = (text: string, act: () => void) => {
@@ -815,6 +1044,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     entry.rig.root.rotation.set(0, 0, 0);
     inspecting = null;
     inspectPose = "stand";
+    inspectFace = undefined;
     inspectSpin = true;
     stool.visible = false;
     for (const g of galleryRigs) {
@@ -1125,7 +1355,6 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
         const seated = inspectPose !== "stand" && inspectPose !== "walk";
         stool.visible = seated;
         pose(fakeAgent(entry), t, dt);
-        if (inspectPose === "sleep") entry.rig.head.rotation.x = 0.35;
         entry.rig.root.rotation.y = inspectYaw;
         // 坐姿时人朝 +z、凳子在身后：凳子跟着转。
         stool.rotation.y = inspectYaw;
@@ -1141,6 +1370,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
         rig.head.rotation.z = Math.sin(t * 0.8 + seed) * 0.07;
         rig.armR.rotation.set(-0.3 + Math.sin(t * 1.2 + seed) * 0.08, 0, 0.32);
         rig.armL.rotation.set(-0.15, 0, -0.32);
+        rig.setFace?.(every(t, 4, 0.13, seed) >= 0 ? "closed" : "open", "none");
         if (rig.tail) rig.tail.rotation.y = Math.sin(t * 1.8 + seed) * 0.3;
         if (rig.halo) rig.halo.rotation.y = t * 1.6;
         if (rig.sparkles)
@@ -1245,6 +1475,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       galleryLabels.style.display = next === "gallery" ? "" : "none";
     },
     dispose() {
+      disposed = true;
       cancelAnimationFrame(raf);
       observer.disconnect();
       controls.dispose();
@@ -1263,4 +1494,3 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   };
 }
 
-void LEAD_OFFICE;

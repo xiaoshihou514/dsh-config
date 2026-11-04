@@ -94,8 +94,10 @@ export interface OfficeMember {
   readonly lastActiveAt?: number | undefined;
   readonly joinedAt?: number | undefined;
   readonly stats: OfficeMemberStats;
-  /** 最近的活动，按时间正序。 */
-  readonly activity: readonly OfficeActivity[];
+  /** 自动识别的人设 / 档位 / 岗位（有手动指定时与上面不同）。 */
+  readonly detected?: { readonly vendor: Vendor; readonly tier: Tier; readonly roleKind: RoleKind } | undefined;
+  /** 哪些字段是手动指定的。 */
+  readonly overridden?: { readonly role: boolean; readonly vendor: boolean; readonly tier: boolean } | undefined;
 }
 
 /** 成员之间（含你本人）的一次交流。`from`/`to` 是成员 id，你本人为 `"user"`。 */

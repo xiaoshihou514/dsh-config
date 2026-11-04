@@ -21,7 +21,7 @@ import { PROP_HAND, PROP_VOXEL, buildHalo, buildQuestion, buildRoleProp, buildSp
 export interface CharacterRig {
   readonly root: THREE.Group;
   readonly body: THREE.Group;
-  readonly head: THREE.Group;
+  readonly head: THREE.Object3D;
   readonly armL: THREE.Group;
   readonly armR: THREE.Group;
   readonly legL: THREE.Group;
@@ -34,8 +34,10 @@ export interface CharacterRig {
   readonly halo?: THREE.Object3D | undefined;
   readonly sparkles?: THREE.Group | undefined;
   /** 像素画体素角色：髋以上 / 以下两段（手臂不单独拆分，动作靠上身摆动）。 */
-  readonly upper?: THREE.Group | undefined;
-  readonly lower?: THREE.Group | undefined;
+  readonly upper?: THREE.Object3D | undefined;
+  readonly lower?: THREE.Object3D | undefined;
+  /** 切换表情（眼睛 / 嘴）；不支持的角色缺省。 */
+  readonly setFace?: ((eyes: "open" | "closed" | "happy" | "half", mouth: "none" | "open" | "smile" | "small") => void) | undefined;
   /** 可点选、可整体置灰的网格（不含描边）。 */
   readonly meshes: THREE.Mesh[];
   readonly height: number;
