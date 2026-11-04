@@ -190,7 +190,10 @@ body[data-dsh-office] [class*="_centerCol"] {
   position: absolute; left: 50%; top: 16px; transform: translateX(-50%); padding: 7px 14px; border-radius: 10px;
   background: rgba(20,24,33,.8); color: #fff; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.2);
 }
-.dso-hint { position: absolute; left: 12px; bottom: 10px; font-size: 11px; color: rgba(30,40,55,.55); pointer-events: none; }
+.dso-hint {
+  position: absolute; left: 12px; bottom: 10px; font-size: 11px; pointer-events: none;
+  color: rgba(255,255,255,.85); text-shadow: 0 1px 2px rgba(0,0,0,.45);
+}
 
 .dso-section {
   display: flex; align-items: center; gap: 8px; margin: 16px 2px 8px; font-size: 11px; font-weight: 800;

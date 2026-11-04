@@ -30,11 +30,10 @@ import {
   buildDecor,
   buildLounge,
   buildRoom,
-  buildWhiteboard,
   type DeskParts,
-  type Whiteboard,
 } from "./furniture.ts";
-import { drawScreen, drawWhiteboard, type ScreenMode } from "./screens.ts";
+import { drawScreen, type ScreenMode } from "./screens.ts";
+import { createEnvironment } from "./environment.ts";
 import { Voxels, voxelMaterial } from "./voxel.ts";
 import { buildRoleProp } from "./props.ts";
 
@@ -343,6 +342,8 @@ class Agent {
   readonly say: HTMLDivElement;
   sayUntil = 0;
   gray = false;
+  /** 鼠标在头顶信息上（保持显示，名牌可点）。 */
+  labelHover = false;
   /** 固定表情（图鉴细看时用）；缺省按状态自动。 */
   face: [Eyes, Mouth] | undefined;
 
@@ -384,6 +385,8 @@ class Agent {
       onTagClick(this.member.id);
     });
     this.label.append(this.say, this.bubble, this.tag);
+    this.label.addEventListener("pointerenter", () => (this.labelHover = true));
+    this.label.addEventListener("pointerleave", () => (this.labelHover = false));
     labels.appendChild(this.label);
     this.renderTag();
   }
@@ -616,7 +619,9 @@ function pose(agent: Agent, t: number, dt: number): void {
 interface Flight {
   readonly mesh: THREE.Object3D;
   readonly from: THREE.Vector3;
+  /** 收件人当前位置（每帧按收件人实际位置更新——人可能已经走开）。 */
   readonly to: THREE.Vector3;
+  readonly toId: string;
   readonly start: number;
   readonly duration: number;
   readonly onArrive: () => void;
@@ -679,8 +684,9 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   controls.maxZoom = 5;
   controls.screenSpacePanning = true;
 
-  function lights(scene: THREE.Scene, span: number): void {
-    scene.add(new THREE.HemisphereLight("#eef3ff", "#b49a7a", 1.6));
+  function lights(scene: THREE.Scene, span: number): { hemi: THREE.HemisphereLight; sun: THREE.DirectionalLight } {
+    const hemi = new THREE.HemisphereLight("#eef3ff", "#b49a7a", 1.6);
+    scene.add(hemi);
     const sun = new THREE.DirectionalLight("#fff4e0", 2.2);
     sun.position.set(9, 18, 10);
     sun.castShadow = true;
@@ -694,11 +700,13 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     sun.shadow.bias = -0.0004;
     sun.shadow.normalBias = 0.03;
     scene.add(sun);
+    return { hemi, sun };
   }
 
   // ---- 办公室
   const office = new THREE.Scene();
-  lights(office, 17);
+  // 房间外的环境按本地时间切换早晨 / 正午 / 傍晚 / 夜晚
+  const env = createEnvironment(office, container, lights(office, 17), RING_CENTER, ROOM);
   // 休息区、书架等装饰不影响信息：首帧之后空闲时再搭，先让人物和工位出来。
   const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
     .requestIdleCallback;
@@ -708,15 +716,17 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   };
   if (idle !== undefined) idle(addDecor, { timeout: 600 });
   else setTimeout(addDecor, 200);
-  const whiteboard: Whiteboard = buildWhiteboard();
-  office.add(whiteboard.group);
   let room: THREE.Group | undefined;
   const agents = new Map<string, Agent>();
   const seen = new Set<string>();
   const flights: Flight[] = [];
   let initialized = false;
-  let lastTasks = "";
   let selected: string | null = null;
+  /** 鼠标悬停的角色（头顶信息只在悬停或选中时显示）。 */
+  let hovered: string | null = null;
+  /** 刚离开的角色：头顶信息再保留一会儿，好让鼠标移到名牌上点击。 */
+  let lastHovered: string | null = null;
+  let lastHoveredUntil = 0;
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(0.5, 0.64, 40),
     new THREE.MeshBasicMaterial({ color: "#ffffff", transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
@@ -840,6 +850,37 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     const id = (hit?.object.userData.agentId as string | undefined) ?? null;
     options.onSelect(id);
   };
+  let hoverPending = false;
+  let hoverAt: [number, number] = [0, 0];
+  const onMove = (event: PointerEvent) => {
+    if (mode !== "office") return;
+    hoverAt = [event.clientX, event.clientY];
+    if (hoverPending) return;
+    hoverPending = true;
+    requestAnimationFrame(() => {
+      hoverPending = false;
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.set(((hoverAt[0] - rect.left) / rect.width) * 2 - 1, -((hoverAt[1] - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster.intersectObjects([...agents.values()].flatMap((agent) => agent.rig.meshes), false)[0];
+      const next = (hit?.object.userData.agentId as string | undefined) ?? null;
+      if (hovered !== null && next !== hovered) {
+        lastHovered = hovered;
+        lastHoveredUntil = clock.elapsedTime + 0.6;
+      }
+      hovered = next;
+      renderer.domElement.style.cursor = hovered === null ? "" : "pointer";
+    });
+  };
+  const onLeave = () => {
+    if (hovered !== null) {
+      lastHovered = hovered;
+      lastHoveredUntil = clock.elapsedTime + 0.6;
+    }
+    hovered = null;
+  };
+  renderer.domElement.addEventListener("pointermove", onMove);
+  renderer.domElement.addEventListener("pointerleave", onLeave);
   renderer.domElement.addEventListener("pointerdown", onDown);
   renderer.domElement.addEventListener("pointerup", onUp);
 
@@ -1126,6 +1167,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       mesh,
       from: fromPos,
       to: toPos,
+      toId: item.to,
       start: now + delay,
       duration: 1.5 + Math.min(1, fromPos.distanceTo(toPos) / 20),
       arrived: false,
@@ -1158,6 +1200,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       room = buildRoom(`${project} 项目组`);
       room.userData.project = project;
       office.add(room);
+      env.applyRoom(room);
     }
     const ids = new Set(snapshot.members.map((m) => m.id));
     for (const [id, agent] of agents)
@@ -1207,12 +1250,6 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       if (last !== undefined) setTimeout(() => launch(last, 0), 600);
     }
 
-    const taskKey = JSON.stringify([snapshot.taskSource, snapshot.tasks]);
-    if (taskKey !== lastTasks) {
-      lastTasks = taskKey;
-      drawWhiteboard(whiteboard.canvas, snapshot.tasks, snapshot.taskSource);
-      whiteboard.texture.needsUpdate = true;
-    }
     initialized = true;
   }
 
@@ -1326,6 +1363,9 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
           flights.splice(i, 1);
           continue;
         }
+        // 追着收件人当前的位置飞
+        const target = headPosition(flight.toId, t);
+        if (target !== undefined) flight.to.copy(target);
         const e = k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2;
         const mid = tmp.copy(flight.from).add(flight.to).multiplyScalar(0.5);
         mid.y += 2 + flight.from.distanceTo(flight.to) * 0.12;
@@ -1402,6 +1442,17 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     const w = container.clientWidth;
     const h = container.clientHeight;
     for (const agent of agents.values()) {
+      // 头顶信息只在悬停或选中时显示
+      const id = agent.member.id;
+      const show = id === hovered || id === selected || agent.labelHover || (id === lastHovered && t < lastHoveredUntil);
+      agent.label.style.display = show ? "" : "none";
+      if (!show) {
+        if (agent.sayUntil > 0 && t > agent.sayUntil) {
+          agent.sayUntil = 0;
+          agent.say.style.display = "none";
+        }
+        continue;
+      }
       const root = agent.rig.root.position;
       const top = agent.rig.body.position.y + agent.rig.height + (agent.rig.halo ? 0.62 : 0.12);
       tmp.set(root.x, top, root.z).project(camera);
@@ -1496,6 +1547,9 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       controls.dispose();
       renderer.domElement.removeEventListener("pointerdown", onDown);
       renderer.domElement.removeEventListener("pointerup", onUp);
+      renderer.domElement.removeEventListener("pointermove", onMove);
+      renderer.domElement.removeEventListener("pointerleave", onLeave);
+      env.dispose();
       document.removeEventListener("keydown", onKey, true);
       panel.remove();
       galleryHint.remove();

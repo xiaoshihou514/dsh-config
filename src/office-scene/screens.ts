@@ -1,7 +1,7 @@
-/** 显示器画面与白板的 canvas 绘制。 */
+/** 显示器画面的 canvas 绘制。 */
 
 import { ROLE_COLOR } from "../office/classify.ts";
-import type { OfficeTask, RoleKind, ToolCategory } from "../office/types.ts";
+import type { RoleKind, ToolCategory } from "../office/types.ts";
 
 export type ScreenMode = ToolCategory | "thinking" | "idle" | "failed" | "off";
 
@@ -173,89 +173,5 @@ export function drawScreen(canvas: HTMLCanvasElement, mode: ScreenMode, role: Ro
     g.textAlign = "left";
     g.textBaseline = "middle";
     g.fillText(label, 4, h - 7, w - 8);
-  }
-}
-
-const STATUS_COLUMNS: readonly [OfficeTask["status"], string, string][] = [
-  ["pending", "待处理", "#fff3a8"],
-  ["in_progress", "进行中", "#bfe1ff"],
-  ["completed", "已完成", "#c9f2c7"],
-];
-
-function wrap(g: CanvasRenderingContext2D, text: string, width: number, lines: number): string[] {
-  const out: string[] = [];
-  let line = "";
-  for (const ch of text) {
-    if (g.measureText(line + ch).width > width) {
-      out.push(line);
-      line = ch;
-      if (out.length === lines) break;
-    } else line += ch;
-  }
-  if (out.length < lines && line) out.push(line);
-  if (out.length === lines && text.length > out.join("").length) out[lines - 1] = `${out[lines - 1]!.slice(0, -1)}…`;
-  return out;
-}
-
-export function drawWhiteboard(
-  canvas: HTMLCanvasElement,
-  tasks: readonly OfficeTask[],
-  source: "team" | "todo" | "none",
-): void {
-  const g = canvas.getContext("2d")!;
-  const w = canvas.width;
-  const h = canvas.height;
-  g.fillStyle = "#fbfcfd";
-  g.fillRect(0, 0, w, h);
-  g.fillStyle = "#2b3a55";
-  g.font = `bold 24px ${FONT}`;
-  g.textAlign = "left";
-  g.textBaseline = "top";
-  g.fillText(source === "todo" ? "组长待办" : "共享任务板", 18, 12);
-  g.fillStyle = "#8a93a3";
-  g.font = `14px ${FONT}`;
-  g.fillText(`${tasks.filter((t) => t.status === "completed").length}/${tasks.length} 完成`, w - 110, 18);
-  const colW = (w - 36) / 3;
-  STATUS_COLUMNS.forEach(([status, title, color], col) => {
-    const x = 18 + col * colW;
-    g.fillStyle = "#3b4252";
-    g.font = `bold 15px ${FONT}`;
-    g.fillText(title, x + 4, 48);
-    g.strokeStyle = "#dfe3ea";
-    g.beginPath();
-    g.moveTo(x + colW - 4, 46);
-    g.lineTo(x + colW - 4, h - 12);
-    g.stroke();
-    const list = tasks.filter((t) => t.status === status).slice(0, 4);
-    list.forEach((task, i) => {
-      const y = 72 + i * 70;
-      g.save();
-      g.translate(x + 6 + colW / 2 - 12, y + 30);
-      g.rotate(((task.id.length * 7 + i * 3) % 5 - 2) * 0.012);
-      g.fillStyle = color;
-      g.fillRect(-(colW - 24) / 2, -30, colW - 24, 62);
-      g.fillStyle = "rgba(0,0,0,0.08)";
-      g.fillRect(-(colW - 24) / 2, 28, colW - 24, 4);
-      g.fillStyle = "#2a2d36";
-      g.font = `13px ${FONT}`;
-      wrap(g, task.subject, colW - 36, 2).forEach((line, k) => g.fillText(line, -(colW - 24) / 2 + 6, -24 + k * 17));
-      if (task.ownerName) {
-        g.fillStyle = "#6a7180";
-        g.font = `11px ${FONT}`;
-        g.fillText(`@${task.ownerName}`, -(colW - 24) / 2 + 6, 12);
-      }
-      g.restore();
-    });
-    const more = tasks.filter((t) => t.status === status).length - list.length;
-    if (more > 0) {
-      g.fillStyle = "#8a93a3";
-      g.font = `12px ${FONT}`;
-      g.fillText(`还有 ${more} 项…`, x + 8, h - 28);
-    }
-  });
-  if (tasks.length === 0) {
-    g.fillStyle = "#a6adbb";
-    g.font = `16px ${FONT}`;
-    g.fillText("暂无任务", 24, 90);
   }
 }

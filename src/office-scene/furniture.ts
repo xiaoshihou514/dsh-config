@@ -124,6 +124,7 @@ export function buildRoom(projectName: string): THREE.Group {
       new THREE.MeshBasicMaterial({ color: "#bfe3ff" }),
     );
     glass.position.set((a + b) / 2, 1.1 + (ROOM.wallHeight - 1.7) / 2, ROOM.z0 - wallT + 0.02);
+    glass.userData.glass = true;
     const frame = new Voxels();
     const cols = Math.round((b - a) / F);
     const rows = Math.round((ROOM.wallHeight - 1.7) / F);
@@ -465,33 +466,4 @@ export function buildLounge(): THREE.Group {
 
   group.add(plant(4.3, 8.3, 1.3), plant(11.4, 8.4, 1.1));
   return group;
-}
-
-export interface Whiteboard {
-  readonly group: THREE.Group;
-  readonly canvas: HTMLCanvasElement;
-  readonly texture: THREE.CanvasTexture;
-}
-
-/** 左墙上的任务白板（面朝 +x）。 */
-export function buildWhiteboard(): Whiteboard {
-  const group = new THREE.Group();
-  const canvas = document.createElement("canvas");
-  canvas.width = 640;
-  canvas.height = 360;
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 4;
-  const w = 6;
-  const h = 3.4;
-  const board = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: texture }));
-  const frame = new THREE.Mesh(new THREE.BoxGeometry(w + 0.16, h + 0.16, 0.05), new THREE.MeshLambertMaterial({ color: "#aab2bd" }));
-  frame.position.z = -0.03;
-  const tray = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, 0.16), new THREE.MeshLambertMaterial({ color: "#aab2bd" }));
-  tray.position.set(0, -h / 2 - 0.08, 0.06);
-  board.position.z = 0.002;
-  group.add(frame, board, tray);
-  group.rotation.y = Math.PI / 2;
-  group.position.set(ROOM.x0 + 0.06, 2.1, -4.6);
-  return { group, canvas, texture };
 }
