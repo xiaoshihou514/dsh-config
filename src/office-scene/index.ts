@@ -47,6 +47,8 @@ export interface OfficeScene {
   select(id: string | null): void;
   focus(id: string): void;
   setMode(mode: "office" | "gallery"): void;
+  /** 暂停 / 恢复渲染循环（场景被隐藏时暂停，不跟原生界面抢主线程）。 */
+  setPaused(paused: boolean): void;
   dispose(): void;
 }
 
@@ -1421,9 +1423,10 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   }
 
   let raf = 0;
+  let paused = false;
   const loop = () => {
     raf = requestAnimationFrame(loop);
-    if (document.hidden) return;
+    if (document.hidden || paused) return;
     tick();
   };
   raf = requestAnimationFrame(loop);
@@ -1460,6 +1463,12 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
         start: performance.now(),
       };
       requestAnimationFrame(focusTick);
+    },
+    setPaused(next) {
+      if (paused === next) return;
+      paused = next;
+      // 恢复时丢掉暂停期间的时间差，免得动画一下跳太远
+      if (!next) clock.getDelta();
     },
     setMode(next) {
       if (next === mode) return;

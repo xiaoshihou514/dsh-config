@@ -27,6 +27,7 @@ export interface SceneModule {
     select(id: string | null): void;
     focus(id: string): void;
     setMode(mode: "office" | "gallery"): void;
+    setPaused?(paused: boolean): void;
     dispose(): void;
   };
 }
@@ -287,18 +288,19 @@ function useGeometry(on: boolean, chatOpen: boolean): void {
       clear();
       return;
     }
-    body.setAttribute("data-dsh-office", "");
     let raf = 0;
+    const apply = () => {
+      const col = document.querySelector<HTMLElement>('[class*="_centerCol"]');
+      const left = col?.getBoundingClientRect().left ?? 0;
+      body.style.setProperty("--dsh-office-pad", `${Math.max(0, Math.round(SIDE_W - left))}px`);
+    };
     const measure = () => {
       cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        // 先去掉内边距再量中央列的左边位置
-        const col = document.querySelector<HTMLElement>('[class*="_centerCol"]');
-        const left = col?.getBoundingClientRect().left ?? 0;
-        body.style.setProperty("--dsh-office-pad", `${Math.max(0, Math.round(SIDE_W - left))}px`);
-      });
+      raf = requestAnimationFrame(apply);
     };
-    measure();
+    // 首次在布局阶段同步算好再挂属性，展开时只重排一次。
+    apply();
+    body.setAttribute("data-dsh-office", "");
     const col = document.querySelector<HTMLElement>('[class*="_centerCol"]');
     const observer = new ResizeObserver(measure);
     if (col) observer.observe(col);
@@ -435,6 +437,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   });
   useEffect(() => scene.current?.select(selected), [selected]);
   useEffect(() => scene.current?.setMode(mode), [mode, api, leadId]);
+  useEffect(() => scene.current?.setPaused?.(chatOpen), [chatOpen, api, leadId]);
 
   const members = snapshot?.members ?? [];
   const isRunning = (m: OfficeMember) => live[m.id] ?? m.busy;
@@ -442,9 +445,14 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const member = members.find((m) => m.id === selected);
   const openChat = (id: string) => {
     if (leadId === null) return;
-    officeHost.current?.showConversation();
-    officeHost.current?.openSession(leadId, id);
+    // 先立刻收起 3D、展开对话栏；打开会话（要加载历史）放到下一刻，免得点击后界面卡住不动。
     setOffice({ chatOpen: true });
+    setTimeout(() => {
+      officeHost.current?.showConversation();
+      const current = currentSession();
+      const already = current.sessionId === id || (id === leadId && current.sessionId === leadId);
+      if (!already) officeHost.current?.openSession(leadId, id);
+    }, 0);
   };
   const pickTeam = (id: string) => {
     setOffice({ lead: id });
