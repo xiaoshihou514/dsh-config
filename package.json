@@ -44,6 +44,10 @@
     "./session-activity": {
       "types": "./lib/session-activity.d.ts",
       "default": "./lib/session-activity.js"
+    },
+    "./team-model": {
+      "types": "./lib/team-model.d.ts",
+      "default": "./lib/team-model.js"
     }
   },
   "files": [

@@ -13,6 +13,7 @@ export default defineConfig([
       "overflow-recovery": "src/overflow-recovery.ts",
       "session-activity": "src/session-activity.ts",
       "agent-office": "src/agent-office.ts",
+      "team-model": "src/team-model.ts",
     },
     dts: true,
     fixedExtension: false,

@@ -16,3 +16,5 @@
       name: dsh-config/overflow-recovery
     - id: dsh-config-agent-office
       name: dsh-config/agent-office
+    - id: dsh-config-team-model
+      name: dsh-config/team-model
