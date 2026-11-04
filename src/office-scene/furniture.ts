@@ -1,6 +1,6 @@
 /**
- * 办公室陈设：地板、墙、窗、门、组长办公室玻璃隔断、工位（按岗位区分摆设）、
- * 茶水休息区、白板。家具用 0.1 世界单位的体素拼搭。
+ * 办公室陈设：地板、墙、窗、门、工位（按岗位区分摆设）、茶水休息区。
+ * 家具用 0.1 世界单位的体素拼搭。
  */
 
 import * as THREE from "three";
@@ -38,7 +38,7 @@ function mesh(v: Voxels | (() => Voxels), scale = F, key?: string): THREE.Mesh {
 
 // ---------------------------------------------------------------- 纹理
 
-function canvasTexture(width: number, height: number, draw: (g: CanvasRenderingContext2D) => void): THREE.CanvasTexture {
+export function canvasTexture(width: number, height: number, draw: (g: CanvasRenderingContext2D) => void): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
@@ -83,16 +83,23 @@ export function buildRoom(projectName: string): THREE.Group {
   floor.rotation.x = -Math.PI / 2;
   floor.receiveShadow = true;
   room.add(floor);
-  // 地板边缘厚度
-  const base = new THREE.Mesh(
-    new THREE.BoxGeometry(width + 0.6, 0.4, depth + 0.6),
-    new THREE.MeshLambertMaterial({ color: "#8a6a4c" }),
-  );
-  base.position.set(0, -0.201, 0);
-  room.add(base);
 
   const wallMat = new THREE.MeshLambertMaterial({ color: "#efe8dc" });
   const trimMat = new THREE.MeshLambertMaterial({ color: "#c9b79c" });
+  // 前墙、右墙按剖面图的方式只留一截矮墙（不挡视线），墙顶是深色剖切面
+  const cutMat = new THREE.MeshLambertMaterial({ color: "#5d5650" });
+  const stubH = 0.32;
+  for (const [w, d, x, z] of [
+    [width + 0.6, 0.3, 0, ROOM.z1 + 0.15],
+    [0.3, depth, ROOM.x1 + 0.15, 0],
+  ] as const) {
+    const stub = new THREE.Mesh(new THREE.BoxGeometry(w, stubH, d), wallMat);
+    stub.position.set(x, stubH / 2, z);
+    stub.receiveShadow = true;
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(w, 0.02, d), cutMat);
+    cap.position.set(x, stubH + 0.01, z);
+    room.add(stub, cap);
+  }
   // 后墙（带窗）
   const back = new THREE.Group();
   const wallT = 0.3;
