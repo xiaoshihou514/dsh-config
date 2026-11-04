@@ -127,7 +127,7 @@ export const PHASE_LABEL: Record<DayPhase, string> = { morning: "早晨", noon: 
 // ---------------------------------------------------------------- 楼群着色器
 
 /**
- * 楼群（含本楼楼板以下的外立面）共用一个着色器：窗格按世界坐标程序生成，
+ * 周围楼群共用一个着色器：窗格按世界坐标程序生成，
  * 每个格子按哈希决定夜里亮不亮灯；越往下、越远越混进雾色。
  * 每栋楼的墙色、屋顶色、窗格尺寸放在顶点属性里，全部合并成一次绘制。
  */
@@ -279,10 +279,6 @@ function cityGeometry(foot: { x0: number; x1: number; z0: number; z1: number }):
         );
       }
     }
-  // 本楼楼板以下的外立面（每层 4.4 高，与本层对齐）
-  parts.push(
-    block(bx, bz, foot.x1 - foot.x0, foot.z1 - foot.z0, -110, -0.7, "#d5d8de", "#d5d8de", [1.65, 4.4, 0.06, 1]),
-  );
   const merged = mergeGeometries(parts);
   for (const p of parts) p.dispose();
   return merged;
@@ -362,6 +358,8 @@ function elevatorCore(x0: number, x1: number, z0: number, z1: number, height: nu
 }
 
 type Side = WallSide;
+/** 外壳属于哪部分：本层、楼上（只在看整栋楼时出现）、楼下（一直显示，样式同楼上）。 */
+type Tier = "ours" | "upper" | "lower";
 const SIDES: readonly Side[] = ["back", "front", "left", "right"];
 const OUTWARD: Record<Side, readonly [number, number]> = { back: [0, -1], front: [0, 1], left: [-1, 0], right: [1, 0] };
 
@@ -374,7 +372,7 @@ interface Fader {
   readonly base: number;
   readonly glass: boolean;
   /** 楼上的楼层：只在缩放到最远时出现。 */
-  readonly upper: boolean;
+  readonly tier: Tier;
   readonly room: boolean;
 }
 
@@ -413,6 +411,7 @@ export function createEnvironment(
   const H = 4.6;
   const FLOOR = 4.4;
   const UPPER = 7;
+  const LOWER = 10;
   const top = H + UPPER * FLOOR;
 
   const carpet = new THREE.Mesh(
@@ -427,22 +426,22 @@ export function createEnvironment(
   slab.position.set(fx, -0.37, fz);
   group.add(slab);
 
-  // ---- 大楼外壳：按（材质种类、所属外墙、是否楼上）分桶合并，每桶一份材质单独淡化
+  // ---- 大楼外壳：按（材质种类、所属外墙、本层 / 楼上 / 楼下）分桶合并，每桶一份材质单独淡化
   type Kind = "concrete" | "mullion" | "glass" | "floor";
-  const buckets = new Map<string, { kind: Kind; sides: Side[]; upper: boolean; geos: THREE.BufferGeometry[] }>();
-  const put = (kind: Kind, sides: Side[], upper: boolean, g: THREE.BufferGeometry) => {
-    const key = `${kind}|${sides.join(",")}|${upper ? 1 : 0}`;
+  const buckets = new Map<string, { kind: Kind; sides: Side[]; tier: Tier; geos: THREE.BufferGeometry[] }>();
+  const put = (kind: Kind, sides: Side[], tier: Tier, g: THREE.BufferGeometry) => {
+    const key = `${kind}|${sides.join(",")}|${tier}`;
     let bucket = buckets.get(key);
     if (bucket === undefined) {
-      bucket = { kind, sides, upper, geos: [] };
+      bucket = { kind, sides, tier, geos: [] };
       buckets.set(key, bucket);
     }
     bucket.geos.push(g);
   };
-  const box = (kind: Kind, sides: Side[], upper: boolean, w: number, h: number, d: number, x: number, y: number, z: number) => {
+  const box = (kind: Kind, sides: Side[], tier: Tier, w: number, h: number, d: number, x: number, y: number, z: number) => {
     const g = new THREE.BoxGeometry(w, h, d);
     g.translate(x, y, z);
-    put(kind, sides, upper, g);
+    put(kind, sides, tier, g);
   };
   const sidesAt = (x: number, z: number): Side[] => {
     const out: Side[] = [];
@@ -453,7 +452,7 @@ export function createEnvironment(
     return out;
   };
   /** 一段楼层高的外墙：玻璃 + 竖梃 + 底梁、顶梁。 */
-  const facade = (side: Side, y0: number, h: number, upper: boolean) => {
+  const facade = (side: Side, y0: number, h: number, tier: Tier) => {
     const alongX = side === "back" || side === "front";
     const a = alongX ? foot.x0 : foot.z0;
     const b = alongX ? foot.x1 : foot.z1;
@@ -463,49 +462,71 @@ export function createEnvironment(
     if (!alongX) glass.rotateY(Math.PI / 2);
     if (alongX) glass.translate((a + b) / 2, y0 + h / 2, at);
     else glass.translate(at, y0 + h / 2, (a + b) / 2);
-    put("glass", [side], upper, glass);
+    put("glass", [side], tier, glass);
     const n = Math.round(len / 1.6);
     for (let i = 0; i <= n; i += 1) {
       const p = a + (len * i) / n;
-      if (alongX) box("mullion", [side], upper, 0.08, h, 0.08, p, y0 + h / 2, at);
-      else box("mullion", [side], upper, 0.08, h, 0.08, at, y0 + h / 2, p);
+      if (alongX) box("mullion", [side], tier, 0.08, h, 0.08, p, y0 + h / 2, at);
+      else box("mullion", [side], tier, 0.08, h, 0.08, at, y0 + h / 2, p);
     }
     for (const [y, t] of [
       [y0 + 0.06, 0.12],
       [y0 + h - 0.12, 0.24],
     ] as const) {
-      if (alongX) box("mullion", [side], upper, len, t, 0.14, (a + b) / 2, y, at);
-      else box("mullion", [side], upper, 0.14, t, len, at, y, (a + b) / 2);
+      if (alongX) box("mullion", [side], tier, len, t, 0.14, (a + b) / 2, y, at);
+      else box("mullion", [side], tier, 0.14, t, len, at, y, (a + b) / 2);
     }
   };
   const along = (a: number, b: number, n: number) => Array.from({ length: n + 1 }, (_, i) => a + ((b - a) * i) / n);
   const pillarSpots: [number, number][] = [];
   for (const x of along(foot.x0 + 0.4, foot.x1 - 0.4, 4)) pillarSpots.push([x, foot.z0 + 0.4], [x, foot.z1 - 0.4]);
   for (const z of along(foot.z0 + 0.4, foot.z1 - 0.4, 3).slice(1, -1)) pillarSpots.push([foot.x0 + 0.4, z], [foot.x1 - 0.4, z]);
-  const pillars = (y0: number, h: number, upper: boolean) => {
-    for (const [x, z] of pillarSpots) box("concrete", sidesAt(x, z), upper, 0.8, h, 0.8, x, y0 + h / 2, z);
+  const pillars = (y0: number, h: number, tier: Tier) => {
+    for (const [x, z] of pillarSpots) box("concrete", sidesAt(x, z), tier, 0.8, h, 0.8, x, y0 + h / 2, z);
   };
   // 电梯核心筒（本层的门在 elevatorCore 里，楼上只是一根实心筒）
   const core = { x0: foot.x0 + 0.5, x1: foot.x0 + 2.6, z0: room.z0 + 5, z1: room.z0 + 12.5 };
 
+  /** 一层楼（非本层）：底部楼板、四面幕墙、柱子、核心筒。 */
+  const storey = (y: number, tier: Tier) => {
+    box("floor", [], tier, fw, 0.45, fd, fx, y - 0.225, fz);
+    for (const side of SIDES) facade(side, y, FLOOR, tier);
+    pillars(y, FLOOR, tier);
+    box("concrete", ["left"], tier, core.x1 - core.x0, FLOOR, core.z1 - core.z0, (core.x0 + core.x1) / 2, y + FLOOR / 2, (core.z0 + core.z1) / 2);
+  };
   // 本层：四面幕墙、柱子
-  for (const side of SIDES) facade(side, 0, H, false);
-  pillars(0, H, false);
-  // 楼上各层：整块楼板（第一块就是本层的天花板）、四面幕墙、柱子、核心筒，顶上女儿墙
-  for (let k = 0; k < UPPER; k += 1) {
-    const y = H + k * FLOOR;
-    box("floor", [], true, fw, 0.45, fd, fx, y + 0.225 - 0.45, fz);
-    for (const side of SIDES) facade(side, y, FLOOR, true);
-    pillars(y, FLOOR, true);
-    box("concrete", ["left"], true, core.x1 - core.x0, FLOOR, core.z1 - core.z0, (core.x0 + core.x1) / 2, y + FLOOR / 2, (core.z0 + core.z1) / 2);
-  }
-  box("floor", [], true, fw, 0.6, fd, fx, top + 0.3 - 0.45, fz);
-  box("concrete", ["back"], true, fw, 1, 0.4, fx, top + 0.6, foot.z0 + 0.2);
-  box("concrete", ["front"], true, fw, 1, 0.4, fx, top + 0.6, foot.z1 - 0.2);
-  box("concrete", ["left"], true, 0.4, 1, fd, foot.x0 + 0.2, top + 0.6, fz);
-  box("concrete", ["right"], true, 0.4, 1, fd, foot.x1 - 0.2, top + 0.6, fz);
-  box("concrete", [], true, 4, 1.6, 3, fx + 4, top + 0.95, fz - 2);
+  for (const side of SIDES) facade(side, 0, H, "ours");
+  pillars(0, H, "ours");
+  // 楼下各层与楼上同样的构造，越往下越隐进雾里
+  for (let k = 1; k <= LOWER; k += 1) storey(-0.7 - k * FLOOR, "lower");
+  // 楼上各层（第一块楼板就是本层的天花板），顶上女儿墙和设备间
+  for (let k = 0; k < UPPER; k += 1) storey(H + k * FLOOR, "upper");
+  box("floor", [], "upper", fw, 0.6, fd, fx, top - 0.15, fz);
+  box("concrete", ["back"], "upper", fw, 1, 0.4, fx, top + 0.6, foot.z0 + 0.2);
+  box("concrete", ["front"], "upper", fw, 1, 0.4, fx, top + 0.6, foot.z1 - 0.2);
+  box("concrete", ["left"], "upper", 0.4, 1, fd, foot.x0 + 0.2, top + 0.6, fz);
+  box("concrete", ["right"], "upper", 0.4, 1, fd, foot.x1 - 0.2, top + 0.6, fz);
+  box("concrete", [], "upper", 4, 1.6, 3, fx + 4, top + 0.95, fz - 2);
 
+  // 楼下各层和楼群一样往下渐隐进雾色（与城市着色器共用雾色、雾高度）
+  const hazeColor = new THREE.Color("#e9f3fb");
+  const hazeY = new THREE.Vector2(-4, -42);
+  const withHaze = (mat: THREE.Material) => {
+    mat.customProgramCacheKey = () => "dso-haze";
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uHaze = { value: hazeColor };
+      shader.uniforms.uHazeY = { value: hazeY };
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying float vHazeY;")
+        .replace("#include <project_vertex>", "#include <project_vertex>\nvHazeY = (modelMatrix * vec4(transformed, 1.0)).y;");
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", "#include <common>\nuniform vec3 uHaze;\nuniform vec2 uHazeY;\nvarying float vHazeY;")
+        .replace(
+          "#include <opaque_fragment>",
+          "#include <opaque_fragment>\n{ float hz = clamp((uHazeY.x - vHazeY) / (uHazeY.x - uHazeY.y), 0.0, 1.0); hz = hz * hz * (3.0 - 2.0 * hz); gl_FragColor.rgb = mix(gl_FragColor.rgb, uHaze, hz); }",
+        );
+    };
+  };
   const faders: Fader[] = [];
   const glassMats: THREE.MeshBasicMaterial[] = [];
   for (const bucket of buckets.values()) {
@@ -517,6 +538,7 @@ export function createEnvironment(
           transparent: true,
         });
     keep(mat);
+    if (bucket.tier === "lower") withHaze(mat);
     if (glass) glassMats.push(mat as THREE.MeshBasicMaterial);
     const m = new THREE.Mesh(keep(mergeGeometries(bucket.geos)), mat);
     m.receiveShadow = !glass;
@@ -526,9 +548,9 @@ export function createEnvironment(
       mats: [mat],
       meshes: [m],
       sides: bucket.sides,
-      base: glass ? (bucket.upper ? 0.72 : 0.3) : 1,
+      base: glass ? (bucket.tier === "ours" ? 0.3 : 0.72) : 1,
       glass,
-      upper: bucket.upper,
+      tier: bucket.tier,
       room: false,
     });
   }
@@ -557,7 +579,7 @@ export function createEnvironment(
         clone = orig.clone();
         clone.transparent = true;
         clones.set(key, clone);
-        faders.push({ mats: [clone], meshes: [], sides: [side], base: orig.opacity, glass: false, upper: false, room: isRoom });
+        faders.push({ mats: [clone], meshes: [], sides: [side], base: orig.opacity, glass: false, tier: "ours", room: isRoom });
       }
       mesh.material = clone;
       faders.find((f) => f.mats[0] === clone)!.meshes.push(mesh);
@@ -622,6 +644,7 @@ export function createEnvironment(
     const u = cityMat.uniforms;
     (u.uGlass!.value as THREE.Color).set(look.cityGlass);
     (u.uHaze!.value as THREE.Color).set(look.haze);
+    hazeColor.set(look.haze);
     (u.uSunDir!.value as THREE.Vector3).set(...look.sunPos).normalize();
     u.uAmb!.value = look.cityAmb;
     u.uSun!.value = look.citySun;
@@ -668,10 +691,12 @@ export function createEnvironment(
       for (const f of faders) {
         let face = 0;
         for (const side of f.sides) face = Math.max(face, facing[side]);
-        // 朝镜头的墙：看整栋楼时半透明，能隐约看到里面；拉近时几乎透明
-        const faced = f.glass ? 0.04 + 0.2 * b : 0.06 + 0.3 * b;
+        // 朝镜头的墙：看整栋楼时半透明，能隐约看到里面；拉近时几乎透明。
+        // 楼下各层不是焦点，一直按「整栋楼」的样式，和楼上看起来一样。
+        const bb = f.tier === "lower" ? 1 : b;
+        const faced = f.glass ? 0.04 + 0.2 * bb : 0.06 + 0.3 * bb;
         let alpha = f.base + (faced - f.base) * face;
-        if (f.upper) alpha *= b;
+        if (f.tier === "upper") alpha *= b;
         const visible = alpha > 0.01;
         for (const m of f.meshes) m.visible = visible;
         for (const mat of f.mats) {
