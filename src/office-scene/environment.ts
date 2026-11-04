@@ -379,8 +379,8 @@ interface Fader {
 export interface Environment {
   /** 房间重搭（如改名）后重新给窗玻璃上色、登记要随视角淡化的墙。 */
   applyRoom(room: THREE.Object3D): void;
-  /** 每帧调用：按镜头方向淡化朝镜头的墙；缩放到最远时显示楼上各层。 */
-  update(camera: THREE.OrthographicCamera, target: THREE.Vector3, minZoom: number, dt: number): void;
+  /** 每帧调用：按镜头方向淡化朝镜头的墙；大楼外观视角显示楼上各层。 */
+  update(camera: THREE.OrthographicCamera, target: THREE.Vector3, building: boolean, dt: number): void;
   /** 当前是否在看整栋楼（楼上各层已显示）。 */
   readonly building: boolean;
   readonly phase: DayPhase;
@@ -672,7 +672,7 @@ export function createEnvironment(
       roomClones = adopt(target, true);
       if (current !== null) paintGlass(target, LOOK[current].glass);
     },
-    update(camera, target, minZoom, dt) {
+    update(camera, target, building, dt) {
       let dx = camera.position.x - target.x;
       let dz = camera.position.z - target.z;
       const len = Math.hypot(dx, dz) || 1;
@@ -683,8 +683,8 @@ export function createEnvironment(
         const [nx, nz] = OUTWARD[side];
         facing[side] += (smooth(0.2, 0.55, nx * dx + nz * dz) - facing[side]) * k;
       }
-      // 缩放到最远（再往外滚一点就到底）时显示整栋楼
-      const want = camera.zoom <= minZoom * 1.12 ? 1 : 0;
+      // 大楼外观视角显示整栋楼
+      const want = building ? 1 : 0;
       upperShown += (want - upperShown) * Math.min(1, dt * 6);
       if (Math.abs(want - upperShown) < 0.002) upperShown = want;
       const b = upperShown;
@@ -693,8 +693,14 @@ export function createEnvironment(
         for (const side of f.sides) face = Math.max(face, facing[side]);
         // 朝镜头的墙：看整栋楼时半透明，能隐约看到里面；拉近时几乎透明。
         // 楼下各层不是焦点，一直按「整栋楼」的样式，和楼上看起来一样。
+        // 在办公室里时，本层大楼外壳朝镜头的部分完全隐去（不属于办公室，免得竖梃挡在画面前面）
         const bb = f.tier === "lower" ? 1 : b;
-        const faced = f.glass ? 0.04 + 0.2 * bb : 0.06 + 0.3 * bb;
+        const faced =
+          f.tier === "ours" && !f.room && bb < 1
+            ? (f.glass ? 0.24 : 0.36) * bb
+            : f.glass
+              ? 0.04 + 0.2 * bb
+              : 0.06 + 0.3 * bb;
         let alpha = f.base + (faced - f.base) * face;
         if (f.tier === "upper") alpha *= b;
         const visible = alpha > 0.01;
