@@ -71,11 +71,11 @@ export function apply(ctx: Context): void {
     );
   });
   // 宿主能力：打开会话（右侧原生对话）、显示对话面板、快速组建团队。
-  ctx.inject(["uiWorkspace", "workspaces", "sessions"], (scoped) => {
+  ctx.inject(["uiWorkspace", "workspaces", "sessions", "conversation"], (scoped) => {
     const services = scoped as unknown as {
       uiWorkspace: {
         openSession(target: unknown): void;
-        connectWorkspace(workspaceId: string): Promise<string>;
+        openWorkspace(workspaceId: string, beforeOpen?: (sessionId: string) => void): Promise<void>;
         pickDirectory(): Promise<string | null>;
       };
       workspaces: {
@@ -87,13 +87,15 @@ export function apply(ctx: Context): void {
         rename(workspaceId: string, title: string): Promise<unknown>;
       };
       sessions: {
-        using<T>(
-          target: string,
-          options: { source: string },
-          operation: (reference: {
-            ready: Promise<{ session: { prompt(content: { type: "text"; text: string }[], mode: "queue"): Promise<unknown> } }>;
-          }) => Promise<T>,
-        ): Promise<T>;
+        binding(sessionId: string): unknown;
+      };
+      conversation: {
+        input: {
+          requestDraftInitialization(
+            binding: unknown,
+            options: { prompt?: string; clearPreviousDraft?: boolean },
+          ): "applied" | "preserved" | "blocked";
+        };
       };
     };
     const ui = services.uiWorkspace;
@@ -121,16 +123,19 @@ export function apply(ctx: Context): void {
       async createTeam(path) {
         const existing = services.workspaces.list.getSnapshot().items.find((w) => w.path === path);
         const ws = existing ?? (await services.workspaces.create({ path }));
-        const sessionId = await ui.connectWorkspace(ws.workspaceId);
-        ui.openSession(sessionId);
-        await services.sessions.using(sessionId, { source: "controllerOperation" }, async (reference) => {
-          const binding = await reference.ready;
-          const result = (await binding.session.prompt([{ type: "text", text: TEAM_PROMPT }], "queue")) as {
-            ok?: boolean;
-            error?: { message?: string };
-          };
-          if (result && result.ok === false) throw new Error(result.error?.message ?? "发送提示词失败");
+        let sessionId: string | undefined;
+        // 新会话的输入框就绪后预填项目经理提示词，但不发送：留出补充指示和改写的余地。
+        await ui.openWorkspace(ws.workspaceId, (id) => {
+          sessionId = id;
+          const binding = services.sessions.binding(id);
+          if (binding === undefined) throw new Error("新会话尚未就绪，无法预填提示词");
+          const result = services.conversation.input.requestDraftInitialization(binding, {
+            prompt: TEAM_PROMPT,
+            clearPreviousDraft: true,
+          });
+          if (result === "blocked") throw new Error("输入框正忙，无法预填提示词");
         });
+        if (sessionId === undefined) throw new Error("未能打开会话");
         return sessionId;
       },
     };
