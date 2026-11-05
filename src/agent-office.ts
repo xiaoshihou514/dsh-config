@@ -6,8 +6,8 @@
  *   存储（按存储版本缓存摘要）。带 ETag，浏览器轮询时未变化返回 304。
  * - `POST /dsh-config/office/override`：手动指定成员的岗位 / 人设 / 档位（自动识别
  *   不准时用），持久化在 `$DSH_HOME/dsh-config/office-overrides.json`，按成员会话 id 记。
- * - `GET /dsh-config/office/teams`：组建过团队的会话（Lead），每个文件夹只保留最近活跃的一个，
- *   供全屏办公室切换项目。
+ * - `GET /dsh-config/office/teams`：组建过团队的会话（Lead），每个文件夹只保留最近组建的一个
+ *   （`replaces` 列出被它取代的旧 Lead，前端据此把记住的旧团队换成新的），供全屏办公室切换项目。
  * - `GET /dsh-config/office/scene.js`：按需加载的 three.js 体素场景（ESM），带
  *   ETag（文件修改时间），浏览器协商缓存；重建后刷新即可生效。
  */
@@ -284,6 +284,9 @@ export function apply(ctx: Context): void {
           cwd?: string | undefined;
           members: number;
           lastActiveAt?: number | undefined;
+          /** 组建时间：最早一名成员的加入时间。 */
+          formedAt: number;
+          replaces: string[];
         }[] = [];
         await Promise.all(
           [...parents].map(async (id) => {
@@ -298,19 +301,25 @@ export function apply(ctx: Context): void {
               cwd: result.cwd,
               members: result.digest.team.length + 1,
               lastActiveAt: Math.max(result.digest.lastActiveAt ?? 0, ...memberTimes),
+              formedAt: Math.min(...result.digest.team.map((m) => m.at)),
+              replaces: [],
             });
           }),
         );
-        teams.sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
-        // 一个文件夹只算一个团队：保留最近活跃的那个。
-        const seenCwd = new Set<string>();
-        const unique = teams.filter((team) => {
+        // 一个文件夹只算一个团队：保留最近组建的那个（重新组队就换成新团队，旧团队之后
+        // 再活跃也不抢回来），被取代的旧 Lead 记在 replaces 里。
+        const byCwd = new Map<string, (typeof teams)[number]>();
+        for (const team of [...teams].sort((a, b) => b.formedAt - a.formedAt)) {
           const key = team.cwd ?? team.leadId;
-          if (seenCwd.has(key)) return false;
-          seenCwd.add(key);
-          return true;
+          const newest = byCwd.get(key);
+          if (newest === undefined) byCwd.set(key, team);
+          else newest.replaces.push(team.leadId);
+        }
+        const unique = [...byCwd.values()].sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+        respondJson(response, 200, {
+          ok: true,
+          teams: unique.map(({ formedAt: _formedAt, ...team }) => team),
         });
-        respondJson(response, 200, { ok: true, teams: unique });
       } catch (error) {
         logger.warn("列出团队失败：%s", String(error));
         respondJson(response, 500, { ok: false, error: String(error) });

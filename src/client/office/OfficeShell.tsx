@@ -11,7 +11,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { ROLE_COLOR, ROLE_LABEL, TIER_LABEL, VENDOR_LABEL } from "../../office/classify.ts";
 import type { OfficeInteraction, OfficeMember, OfficeSnapshot, RoleKind, Tier, Vendor } from "../../office/types.ts";
 import { USER_ID } from "../../office/types.ts";
-import { currentSession, setOffice, useOffice } from "./store.ts";
+import { currentSession, getOffice, setOffice, useOffice } from "./store.ts";
 import { CSS } from "./styles.ts";
 
 type Selector<T> = (selector: (state: any) => T) => T;
@@ -132,6 +132,8 @@ interface TeamEntry {
   readonly cwd?: string;
   readonly members: number;
   readonly lastActiveAt?: number;
+  /** 同一文件夹里被这个团队取代的旧 Lead（重新组队后）。 */
+  readonly replaces?: readonly string[];
 }
 
 /**
@@ -353,16 +355,17 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const pollNow = useRef<() => void>(() => {});
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // 选团队：记录的 → 当前会话所在团队 → 最近活跃的 → 当前会话本身（接口不可用时）
+  // 选团队：记录的（同文件夹重新组队后换成新团队）→ 当前会话所在团队 → 最近活跃的 →
+  // 当前会话本身（接口不可用时）
   const leadId = useMemo(() => {
-    if (storedLead !== null) return storedLead;
+    if (storedLead !== null) return teams?.find((t) => t.replaces?.includes(storedLead))?.leadId ?? storedLead;
     if (teams === null) return null;
     const { sessionId, parentSessionId } = currentSession();
     const inTeams = (id: string | undefined) => (id !== undefined && teams.some((t) => t.leadId === id) ? id : undefined);
     return inTeams(parentSessionId) ?? inTeams(sessionId) ?? teams[0]?.leadId ?? parentSessionId ?? sessionId ?? null;
   }, [storedLead, teams]);
   useEffect(() => {
-    if (storedLead === null && leadId !== null) setOffice({ lead: leadId });
+    if (leadId !== null && leadId !== storedLead) setOffice({ lead: leadId });
   }, [storedLead, leadId]);
 
   const memberIds = useMemo(() => snapshot?.members.map((m) => m.id) ?? [], [snapshot]);
@@ -379,6 +382,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
     if (leadId === null) return;
     let stopped = false;
     let etag = "";
+    let missing = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       try {
@@ -386,6 +390,12 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
           headers: { "x-dsh-config": "agent-office", ...(etag ? { "if-none-match": etag } : {}) },
           cache: "no-store",
         });
+        missing = response.status === 404 ? missing + 1 : 0;
+        // 记住的组长会话被删了：连续几次找不到就忘掉它，回到默认选择（刚建的会话可能晚一点落盘）
+        if (missing >= 3 && getOffice().lead === leadId) {
+          missing = 0;
+          setOffice({ lead: null });
+        }
         if (response.status === 200) {
           etag = response.headers.get("etag") ?? "";
           const body = (await response.json()) as { snapshot?: OfficeSnapshot };
