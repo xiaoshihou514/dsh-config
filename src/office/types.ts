@@ -93,6 +93,8 @@ export interface OfficeMember {
   readonly error?: string | undefined;
   readonly provider?: string | undefined;
   readonly model?: string | undefined;
+  /** 当前（或手动换上、下一步生效）的推理强度；没有记录时为空（用模型默认）。 */
+  readonly reasoningEffort?: string | undefined;
   readonly vendor: Vendor;
   readonly tier: Tier;
   readonly roleKind: RoleKind;

@@ -8,6 +8,8 @@
  *   不准时用），持久化在 `$DSH_HOME/dsh-config/office-overrides.json`，按成员会话 id 记。
  * - `GET /dsh-config/office/teams`：组建过团队的会话（Lead），每个文件夹只保留最近组建的一个
  *   （`replaces` 列出被它取代的旧 Lead，前端据此把记住的旧团队换成新的），供全屏办公室切换项目。
+ * - `GET /dsh-config/office/models`、`POST /dsh-config/office/model`：手动给成员换模型（见
+ *   `office/member-model.ts`）。
  * - `GET /dsh-config/office/scene.js`：按需加载的 three.js 体素场景（ESM），带
  *   ETag（文件修改时间），浏览器协商缓存；重建后刷新即可生效。
  */
@@ -25,6 +27,7 @@ import {
   type SessionDigest,
 } from "./office/derive.ts";
 import { ROLE_LABEL, TIER_LABEL, VENDOR_LABEL } from "./office/classify.ts";
+import { registerMemberModelRoutes } from "./office/member-model.ts";
 import type { OfficeMember, OfficeSnapshot, RoleKind, Tier, Vendor } from "./office/types.ts";
 
 export const name = "dsh-config-agent-office";
@@ -420,6 +423,7 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.webServer.register(sceneRoute), "dsh-config: agent office scene");
   ctx.effect(() => ctx.webServer.register(overrideRoute), "dsh-config: agent office overrides");
   ctx.effect(() => ctx.webServer.register(teamsRoute), "dsh-config: agent office teams");
+  registerMemberModelRoutes(ctx, logger);
 }
 
 /** FNV-1a，用于 ETag。 */

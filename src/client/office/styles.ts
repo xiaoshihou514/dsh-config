@@ -348,6 +348,15 @@ body[data-dsh-office] [class*="_centerCol"] {
 }
 .dso-pick-menu button:hover { background: var(--dsw-alias-bg-layer-1); }
 .dso-pick-menu button.on { background: color-mix(in srgb, #f2b632 18%, transparent); font-weight: 700; }
+.dso-pick-btn:disabled { opacity: .6; cursor: default; }
+.dso-pick-btn .dso-ellipsis { min-width: 0; flex: 1; }
+.dso-model-menu { max-height: 340px; }
+.dso-model-search {
+  box-sizing: border-box; width: 100%; height: 28px; margin-bottom: 4px; padding: 0 8px; border-radius: 7px;
+  border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: inherit; font: inherit; font-size: 12px; outline: none;
+}
+.dso-model-search:focus { border-color: var(--dsw-alias-border-l3); }
+.dso-model-group { padding: 6px 8px 2px; font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--dsw-alias-label-tertiary); }
 .dso-dot { width: 9px; height: 9px; border-radius: 3px; flex: none; box-shadow: inset 0 -1px 0 rgba(0,0,0,.2); }
 
 /* ---- 交流日志 ---- */

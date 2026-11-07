@@ -193,6 +193,7 @@ export interface SessionDigest {
   readonly title?: string | undefined;
   readonly provider?: string | undefined;
   readonly model?: string | undefined;
+  readonly reasoningEffort?: string | undefined;
   /** 有已开始未结束的步骤。 */
   readonly open: boolean;
   readonly current?: OfficeCurrent | undefined;
@@ -239,6 +240,9 @@ export function digestSession(
   let title: string | undefined;
   let provider: string | undefined;
   let model: string | undefined;
+  let effort: string | undefined;
+  /** 手动换的模型（`model/selection`），下一次请求用上之前优先显示它。 */
+  let selected: { provider: string; model: string; effort?: string | undefined } | undefined;
   let stepOpen = false;
   let stepSince = 0;
   let turns = 0;
@@ -268,12 +272,21 @@ export function digestSession(
       case "subagent/descriptor": {
         provider = str(data.agentProvider) ?? provider;
         model = str(data.agentModel) ?? model;
+        effort = str(data.agentReasoningEffort) ?? effort;
+        break;
+      }
+      case "model/selection": {
+        const p = str(data.provider);
+        const m = str(data.model);
+        if (p !== undefined && m !== undefined) selected = { provider: p, model: m, effort: str(data.reasoningEffort) };
         break;
       }
       case "request/header": {
         const config = dict(dict(data.header).config);
         provider = str(config.provider) || provider;
         model = str(config.model) || model;
+        effort = str(config.reasoningEffort);
+        if (selected !== undefined && selected.provider === provider && selected.model === model) selected = undefined;
         break;
       }
       case "turn/start": {
@@ -475,8 +488,9 @@ export function digestSession(
   return {
     id,
     title,
-    provider,
-    model,
+    provider: selected?.provider ?? provider,
+    model: selected?.model ?? model,
+    reasoningEffort: selected !== undefined ? selected.effort : effort,
     open: stepOpen,
     current,
     activity: trimmed,
@@ -550,6 +564,7 @@ export function assembleSnapshot(input: AssembleInput): OfficeSnapshot {
       ...base,
       provider: digest?.provider,
       model: digest?.model,
+      reasoningEffort: digest?.reasoningEffort,
       vendor: vendorOf(digest?.provider, digest?.model),
       tier: tierOf(digest?.model),
       roleKind: roleKindOf(base.role, base.name, base.description),

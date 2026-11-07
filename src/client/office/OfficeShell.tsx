@@ -593,6 +593,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
                 });
                 pollNow.current();
               }}
+              onModelChanged={() => pollNow.current()}
             />
           ) : (
             <TeamPanel
@@ -1338,6 +1339,199 @@ function Pick<T extends string>({
   );
 }
 
+// ---------------------------------------------------------------- 成员模型
+
+interface CatalogGroup {
+  readonly provider: string;
+  readonly name: string;
+  readonly models: readonly { id: string; name: string }[];
+  readonly error?: string;
+}
+
+const officeHeaders = { "x-dsh-config": "agent-office" } as const;
+
+/** 关掉：点外面。 */
+function useDismiss(open: boolean, close: () => void) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: PointerEvent) => {
+      if (ref.current !== null && !ref.current.contains(event.target as Node)) close();
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [open]);
+  return ref;
+}
+
+/**
+ * 手动换模型：原生选择器对子智能体会话禁用，这里经宿主接口给成员会话记一条模型选择
+ * （下一步生效、续跑沿用，不改默认模型）。
+ */
+function ModelPicks({ member, onChanged }: { member: OfficeMember; onChanged: () => void }) {
+  const [open, setOpen] = useState<"model" | "effort" | null>(null);
+  const [groups, setGroups] = useState<CatalogGroup[] | null>(null);
+  const [efforts, setEfforts] = useState<{ list: { id: string; name: string }[]; fallback?: string } | null>(null);
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const modelRef = useDismiss(open === "model", () => setOpen(null));
+  const effortRef = useDismiss(open === "effort", () => setOpen(null));
+  const { provider, model } = member;
+
+  useEffect(() => {
+    if (open !== "model" || groups !== null) return;
+    fetch("/dsh-config/office/models", { headers: officeHeaders, cache: "no-store" })
+      .then((r) => r.json() as Promise<{ ok: boolean; groups?: CatalogGroup[]; error?: string }>)
+      .then((body) => (body.ok ? setGroups(body.groups ?? []) : setFailure(body.error ?? "读取模型列表失败")))
+      .catch((reason) => setFailure(String(reason)));
+  }, [open, groups]);
+
+  useEffect(() => {
+    setEfforts(null);
+    if (provider === undefined || model === undefined) return;
+    let stale = false;
+    const params = new URLSearchParams({ provider, model });
+    fetch(`/dsh-config/office/models?${params}`, { headers: officeHeaders, cache: "no-store" })
+      .then((r) => r.json() as Promise<{ ok: boolean; efforts?: { id: string; name: string }[]; defaultEffort?: string }>)
+      .then((body) => {
+        if (!stale && body.ok) setEfforts({ list: body.efforts ?? [], ...(body.defaultEffort ? { fallback: body.defaultEffort } : {}) });
+      })
+      .catch(() => {});
+    return () => {
+      stale = true;
+    };
+  }, [provider, model]);
+
+  const apply = async (next: { provider: string; model: string; reasoningEffort?: string }) => {
+    setOpen(null);
+    setBusy(true);
+    setFailure(null);
+    try {
+      const response = await fetch("/dsh-config/office/model", {
+        method: "POST",
+        headers: { ...officeHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ member: member.id, ...next }),
+      });
+      const body = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!response.ok || body.ok !== true) setFailure(body.error ?? `HTTP ${response.status}`);
+      onChanged();
+    } catch (reason) {
+      setFailure(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const q = query.trim().toLowerCase();
+  const shown = (groups ?? [])
+    .map((g) => ({
+      ...g,
+      models: g.models.filter((m) => q === "" || `${g.provider} ${g.name} ${m.id} ${m.name}`.toLowerCase().includes(q)),
+    }))
+    .filter((g) => g.models.length > 0 || (q === "" && g.error !== undefined));
+  const effortName = (id: string | undefined) => efforts?.list.find((e) => e.id === id)?.name ?? id;
+  const unknown = provider === undefined || model === undefined;
+
+  return (
+    <>
+      <div ref={modelRef} className="dso-pick">
+        <span className="dso-pick-label">模型</span>
+        <button
+          type="button"
+          className={`dso-pick-btn${open === "model" ? " open" : ""}`}
+          disabled={busy}
+          onClick={() => setOpen(open === "model" ? null : "model")}
+          title={unknown ? undefined : `${provider} / ${model}`}
+        >
+          <span className="dso-ellipsis">{unknown ? "未知" : model}</span>
+          {!unknown && <small>{provider}</small>}
+          <span className="dso-caret">▾</span>
+        </button>
+        {open === "model" && (
+          <div className="dso-pick-menu dso-model-menu">
+            <input
+              className="dso-model-search"
+              placeholder="搜索模型…"
+              value={query}
+              autoFocus
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") setOpen(null);
+              }}
+            />
+            {groups === null ? (
+              <div className="dso-empty">加载中…</div>
+            ) : shown.length === 0 ? (
+              <div className="dso-empty">没有匹配的模型</div>
+            ) : (
+              shown.map((group) => (
+                <div key={group.provider}>
+                  <div className="dso-model-group">{group.name}</div>
+                  {group.error !== undefined && group.models.length === 0 && (
+                    <div className="dso-empty" title={group.error}>
+                      ⚠ 读取失败
+                    </div>
+                  )}
+                  {group.models.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      className={group.provider === provider && m.id === model ? "on" : ""}
+                      title={`${group.provider} / ${m.id}`}
+                      onClick={() => void apply({ provider: group.provider, model: m.id })}
+                    >
+                      <span className="dso-ellipsis">{m.name}</span>
+                    </button>
+                  ))}
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+      {!unknown && efforts !== null && efforts.list.length > 0 && (
+        <div ref={effortRef} className="dso-pick">
+          <span className="dso-pick-label">推理</span>
+          <button
+            type="button"
+            className={`dso-pick-btn${open === "effort" ? " open" : ""}`}
+            disabled={busy}
+            onClick={() => setOpen(open === "effort" ? null : "effort")}
+          >
+            <span>{effortName(member.reasoningEffort ?? efforts.fallback) ?? "默认"}</span>
+            {member.reasoningEffort === undefined && <small>默认</small>}
+            <span className="dso-caret">▾</span>
+          </button>
+          {open === "effort" && (
+            <div className="dso-pick-menu">
+              <button
+                type="button"
+                className={member.reasoningEffort === undefined ? "on" : ""}
+                onClick={() => void apply({ provider: provider!, model: model! })}
+              >
+                默认{efforts.fallback ? `（${effortName(efforts.fallback)}）` : ""}
+              </button>
+              {efforts.list.map((e) => (
+                <button
+                  key={e.id}
+                  type="button"
+                  className={member.reasoningEffort === e.id ? "on" : ""}
+                  onClick={() => void apply({ provider: provider!, model: model!, reasoningEffort: e.id })}
+                >
+                  {e.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {busy && <div className="dso-muted">切换中…</div>}
+      {failure && <div className="dso-error">{failure}</div>}
+    </>
+  );
+}
+
 function MemberPanel({
   api,
   member,
@@ -1347,6 +1541,7 @@ function MemberPanel({
   onFocus,
   onOpen,
   onOverride,
+  onModelChanged,
 }: {
   api: SceneModule | null;
   member: OfficeMember;
@@ -1356,6 +1551,7 @@ function MemberPanel({
   onFocus: () => void;
   onOpen: () => void;
   onOverride: (patch: OverridePatch) => Promise<void>;
+  onModelChanged: () => void;
 }) {
   const st = statusOf(member, running);
   const names = new Map(snapshot.members.map((m) => [m.id, m]));
@@ -1409,6 +1605,13 @@ function MemberPanel({
             <span>{label}</span>
           </div>
         ))}
+      </div>
+      <h3 className="dso-section">
+        <span>模型</span>
+        <small>下一步生效</small>
+      </h3>
+      <div className="dso-picks">
+        <ModelPicks member={member} onChanged={onModelChanged} />
       </div>
       <h3 className="dso-section">
         <span>角色设定</span>
