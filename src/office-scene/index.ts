@@ -294,6 +294,41 @@ const LOUNGE_SPOTS: readonly Spot[] = [
   ).map(([x, z]): Spot => ({ x, z, facing: faceTo(x, z, TABLE), approach: [[LOUNGE_X, AISLE], [LOUNGE_X, -4.7], [x, -4.7], [x, z]] })),
 ];
 
+/**
+ * 空闲去处：休息区之外，书架前、窗边、靠墙、右前方空地、盆栽旁都能待，免得全挤在沙发周围。
+ * 站位朝向尽量侧对 / 正对镜头；只有看窗外的背对。路线由寻路给出，approach 只是兜底。
+ */
+type IdleKind = "desk" | "sofa" | "lounge" | "shelf" | "window" | "wall" | "open" | "plant";
+const standAt = (x: number, z: number, facing: number): Spot => ({ x, z, facing, approach: [[x, AISLE], [x, z]] });
+const IDLE_SPOTS: readonly { readonly kind: IdleKind; readonly spot: Spot }[] = [
+  { kind: "sofa", spot: LOUNGE_SPOTS[1]! },
+  { kind: "shelf", spot: standAt(-7.9, -7.7, faceTo(-7.9, -7.7, [-9.0, -8.75])) },
+  { kind: "open", spot: standAt(6.1, -2.3, faceTo(6.1, -2.3, [7.7, -1.3])) },
+  { kind: "window", spot: standAt(-6.0, -8.15, Math.PI) },
+  { kind: "sofa", spot: LOUNGE_SPOTS[0]! },
+  { kind: "wall", spot: standAt(-9.25, -3.2, Math.PI / 2 + 0.35) },
+  { kind: "open", spot: standAt(7.7, -1.3, faceTo(7.7, -1.3, [6.1, -2.3])) },
+  { kind: "plant", spot: standAt(8.45, 5.45, faceTo(8.45, 5.45, [ROOM.x1 - 0.7, ROOM.z1 - 0.7])) },
+  { kind: "lounge", spot: LOUNGE_SPOTS[3]! },
+  { kind: "sofa", spot: LOUNGE_SPOTS[2]! },
+  { kind: "open", spot: standAt(6.8, 2.6, 0.55) },
+  { kind: "lounge", spot: LOUNGE_SPOTS[4]! },
+  { kind: "lounge", spot: LOUNGE_SPOTS[5]! },
+  { kind: "lounge", spot: LOUNGE_SPOTS[6]! },
+];
+/** 各家偏爱的去处（先到先得，都占了就按 IDLE_SPOTS 顺序找空位，再没有就留在工位）。 */
+const IDLE_PREF: Record<Vendor, readonly IdleKind[]> = {
+  deepseek: ["sofa", "desk"],
+  glm: ["shelf", "desk"],
+  kimi: ["window", "shelf", "open"],
+  gpt: ["desk", "wall"],
+  claude: ["window", "shelf", "sofa"],
+  gemini: ["open", "plant", "sofa"],
+  grok: ["sofa", "open"],
+  qwen: ["plant", "window", "open"],
+  other: ["wall", "open"],
+};
+
 /** 两条入场路径共用的前缀（逐点相同）长度。 */
 function sharedPrefix(a: readonly P2[], b: readonly P2[]): number {
   let k = 0;
@@ -1355,9 +1390,16 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   document.addEventListener("keydown", onKey, true);
 
   // ---- 状态同步
-  function idleSpotFor(member: OfficeMember, index: number): Spot {
+  /** 按人设挑一个没人占的空闲去处；desk = 留在自己工位上摸鱼。 */
+  function idleSpotFor(member: OfficeMember, deskAt: Spot): Spot {
     if (member.role === "lead") return LEAD_IDLE;
-    return LOUNGE_SPOTS[index % LOUNGE_SPOTS.length]!;
+    const taken = new Set([...agents.values()].map((a) => a.idleAt));
+    for (const kind of IDLE_PREF[member.vendor]) {
+      if (kind === "desk") return deskAt;
+      const free = IDLE_SPOTS.find((e) => e.kind === kind && !taken.has(e.spot));
+      if (free !== undefined) return free.spot;
+    }
+    return IDLE_SPOTS.find((e) => !taken.has(e.spot))?.spot ?? deskAt;
   }
 
   function statusOf(member: OfficeMember, live: Readonly<Record<string, boolean>>): Status {
@@ -1457,7 +1499,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       const status = statusOf(member, live);
       if (agent === undefined) {
         const deskAt = member.role === "lead" ? LEAD_DESK : deskSpot(index);
-        const idleAt = idleSpotFor(member, Math.max(0, index));
+        const idleAt = idleSpotFor(member, deskAt);
         const fresh = initialized && member.role !== "lead";
         const start = fresh ? DOOR : status === "inactive" && member.role !== "lead" ? idleAt : deskAt;
         agent = new Agent(member, deskAt, idleAt, start, office, labels, (id) => options.onSelect(id));
