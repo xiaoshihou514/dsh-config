@@ -16,6 +16,11 @@ import type { CharacterRig } from "./anime.ts";
 import { Voxels, voxelMaterial } from "./voxel.ts";
 
 export type SlackWhere = "desk" | "sofa" | "stand";
+/**
+ * 所在的去处：工位、沙发、茶几旁、书架前、窗边、靠墙、空地、盆栽旁、组长休息点。
+ * 带 place 的动作只在对应去处出现（书架前翻书、盆栽旁浇水……）。
+ */
+export type SlackPlace = "desk" | "sofa" | "lounge" | "shelf" | "window" | "wall" | "open" | "plant" | "lead";
 type Eyes = "open" | "closed" | "happy" | "half";
 type Mouth = "none" | "open" | "smile" | "small";
 
@@ -42,6 +47,8 @@ interface Routine {
   readonly id: string;
   readonly label: string;
   readonly where: readonly SlackWhere[];
+  /** 只在这些去处出现；缺省 = 哪儿都行。 */
+  readonly place?: readonly SlackPlace[];
   readonly prop?: PropKind;
   /** 头顶飘的符号与颜色。 */
   readonly fx?: readonly [string, string];
@@ -86,7 +93,12 @@ type PropKind =
   | "fan"
   | "crane"
   | "map"
-  | "coffee";
+  | "coffee"
+  | "phone"
+  | "console"
+  | "can"
+  | "cookie"
+  | "shelfbook";
 
 const PV = 0.032; // 道具体素尺寸
 
@@ -296,6 +308,62 @@ const PROPS: Record<PropKind, PropSpec> = {
     offset: [0.12, 0.02, 0.08],
     rotation: [-0.7, 0, 0],
   },
+  phone: {
+    // 手机：深色机身、亮屏
+    build: () => {
+      const v = new Voxels();
+      v.box(-2, 0, 0, 2, 7, 0, "#23262e");
+      v.box(-1, 1, 1, 1, 6, 1, (_x, y) => (y === 6 ? "#9fd8ff" : y % 2 === 0 ? "#dfefff" : "#7fbfff"));
+      return v;
+    },
+    offset: [0, 0.02, 0.06],
+    rotation: [-0.9, 0, 0],
+  },
+  console: {
+    // 掌机：两侧手柄 + 屏幕
+    build: () => {
+      const v = new Voxels();
+      v.box(-6, 0, 0, 6, 4, 0, "#e04f4f");
+      v.box(-6, 0, 0, -4, 4, 0, "#4f7fe0");
+      v.box(-3, 1, 1, 3, 4, 1, (x, y) => ((x + y) % 3 === 0 ? "#ffe08a" : "#2b3140"));
+      v.set(5, 3, 1, "#ffffff").set(5, 1, 1, "#ffffff").set(-5, 2, 1, "#2a2230");
+      return v;
+    },
+    offset: [0.14, 0.03, 0.08],
+    rotation: [-0.8, 0, 0],
+  },
+  can: {
+    // 绿色喷壶
+    build: () => {
+      const v = new Voxels();
+      v.box(-2, 0, -2, 2, 4, 2, "#4fb85b");
+      v.box(-2, 5, -1, -2, 7, 1, "#3a8f45").box(-1, 7, 0, 1, 7, 0, "#3a8f45");
+      for (let i = 0; i < 5; i += 1) v.set(3 + i, 2 + i, 0, "#3a8f45");
+      v.set(8, 7, 0, "#a8dcff").set(8, 8, 0, "#a8dcff");
+      return v;
+    },
+    offset: [0, -0.04, 0.05],
+  },
+  cookie: {
+    // 一块巧克力豆饼干
+    build: () => {
+      const v = new Voxels();
+      v.box(-2, 0, -2, 2, 0, 2, (x, _y, z) => (x * x + z * z > 5 ? null : (x + z) % 3 === 0 ? "#5a3a22" : "#d9a35a"));
+      return v;
+    },
+    offset: [0, 0.03, 0.05],
+    rotation: [-1.2, 0, 0],
+  },
+  shelfbook: {
+    // 刚从书架抽出的书
+    build: () => {
+      const v = new Voxels();
+      v.box(-1, 0, -2, 1, 7, 2, (x) => (x === 1 ? "#efe3c4" : "#4f7fe0"));
+      v.box(-1, 3, -2, -1, 3, 2, "#e3b546");
+      return v;
+    },
+    offset: [0, 0.03, 0.04],
+  },
   coffee: {
     build: () => {
       const v = new Voxels();
@@ -437,6 +505,232 @@ const COMMON: readonly Routine[] = [
       arms(rig, [-1.25 - sip * 1.0, 0, 0.35 + sip * 0.2], [-0.85, 0, -0.25]);
       rig.head.rotation.x = -0.1 * sip;
       return { eyes: sip > 0.3 ? "happy" : "open", mouth: sip > 0.3 ? "small" : "none" };
+    },
+  },
+];
+
+/** 跟去处走的动作（谁都会）：让同一个人换个地方就换些事做。 */
+const PLACES: readonly Routine[] = [
+  {
+    id: "shelf-hunt",
+    label: "📚 在书架上找书",
+    where: STAND,
+    place: ["shelf"],
+    run: ({ rig, t }) => {
+      const reach = (Math.sin(t * 0.9) + 1) / 2;
+      arms(rig, [-2.4 - reach * 0.5, 0, -0.2], [-0.2, 0, 0.3]);
+      rig.head.rotation.x = -0.25 - reach * 0.15;
+      rig.head.rotation.y = Math.sin(t * 0.6) * 0.3;
+      return { eyes: "open" };
+    },
+  },
+  {
+    id: "shelf-browse",
+    label: "📖 站着翻两页",
+    where: STAND,
+    place: ["shelf"],
+    prop: "shelfbook",
+    run: ({ rig, t }) => {
+      const flip = bump(every(t, 3, 0.6));
+      arms(rig, [-1.35, 0, 0.35], [-1.25 - flip * 0.3, 0, -0.3 - flip * 0.4]);
+      rig.head.rotation.x = 0.28;
+      return { eyes: "half" };
+    },
+  },
+  {
+    id: "window-gaze",
+    label: "🌆 看看窗外",
+    where: STAND,
+    place: ["window"],
+    run: ({ rig, t }) => {
+      arms(rig, [0.35, 0, 0.25], [0.35, 0, -0.25]);
+      rig.head.rotation.y = Math.sin(t * 0.35) * 0.45;
+      rig.head.rotation.x = -0.12;
+      rig.body.position.y += Math.sin(t * 1.2) * 0.01;
+      return {};
+    },
+  },
+  {
+    id: "window-breath",
+    label: "🌬️ 对着窗户哈气画画",
+    where: STAND,
+    place: ["window"],
+    run: ({ rig, t }) => {
+      arms(rig, [-1.9, 0, 0.35], [-1.6 + Math.sin(t * 4) * 0.15, 0, -0.2 + Math.cos(t * 4) * 0.15]);
+      rig.head.rotation.x = 0.05;
+      return { mouth: every(t, 4, 1.2) >= 0 ? "open" : "smile" };
+    },
+  },
+  {
+    id: "plant-water",
+    label: "🪴 给盆栽浇水",
+    where: STAND,
+    place: ["plant"],
+    prop: "can",
+    run: ({ rig, t, prop }) => {
+      const pour = (Math.sin(t * 0.8) + 1) / 2;
+      arms(rig, [-1.25, 0, 0.35], [-0.2, 0, 0.3]);
+      rig.head.rotation.x = 0.3;
+      if (prop) prop.rotation.z = -0.2 - pour * 0.5;
+      return { mouth: "smile" };
+    },
+  },
+  {
+    id: "plant-leaf",
+    label: "🍃 数叶子",
+    where: STAND,
+    place: ["plant"],
+    run: ({ rig, t }) => {
+      const tap = bump(every(t, 1.4, 0.4));
+      arms(rig, [-0.2, 0, -0.3], [-1.1 - tap * 0.2, 0, 0.1]);
+      rig.head.rotation.x = 0.35;
+      rig.head.rotation.z = Math.sin(t * 0.8) * 0.12;
+      return { eyes: "half", mouth: "small" };
+    },
+  },
+  {
+    id: "wall-phone",
+    label: "📱 靠墙刷手机",
+    where: STAND,
+    place: ["wall", "open", "lounge", "lead"],
+    prop: "phone",
+    run: ({ rig, t }) => {
+      const swipe = bump(every(t, 1.8, 0.35));
+      arms(rig, [-1.55, 0, 0.45], [-1.45 - swipe * 0.15, 0, -0.45]);
+      rig.head.rotation.x = 0.32;
+      return { eyes: every(t, 6, 1.6) >= 0 ? "happy" : "half", mouth: every(t, 6, 1.6) >= 0 ? "smile" : "none" };
+    },
+  },
+  {
+    id: "wall-doze",
+    label: "💤 靠墙打个盹",
+    where: STAND,
+    place: ["wall"],
+    fx: ["Z", "#c8ccd6"],
+    run: ({ rig, t }) => {
+      arms(rig, [-1.25, 0, 0.95], [-1.3, 0, -0.95]);
+      rig.head.rotation.x = 0.35 + Math.sin(t * 0.9) * 0.05;
+      rig.head.rotation.z = 0.15;
+      return { eyes: "closed" };
+    },
+  },
+  {
+    id: "open-chat",
+    label: "💬 闲聊几句",
+    where: STAND,
+    place: ["open", "lounge"],
+    run: ({ rig, t }) => {
+      arms(rig, [-0.3, 0, -0.3], [-1.5 + Math.sin(t * 4) * 0.35, 0, 0.2 + Math.sin(t * 2.5) * 0.15]);
+      rig.head.rotation.y = Math.sin(t * 1.5) * 0.15;
+      const laugh = every(t, 5, 1.2) >= 0;
+      if (laugh) rig.body.position.y += Math.abs(Math.sin(t * 16)) * 0.012;
+      return { eyes: laugh ? "happy" : "open", mouth: laugh ? "open" : Math.floor(t * 5) % 2 === 0 ? "small" : "none" };
+    },
+  },
+  {
+    id: "open-exercise",
+    label: "🤸 活动活动筋骨",
+    where: STAND,
+    place: ["open", "plant", "lead"],
+    run: ({ rig, t }) => {
+      const side = Math.sin(t * 1.6);
+      arms(rig, [-2.9, 0, 0.2 - side * 0.5], [-0.1, 0, 0.3 + side * 0.4]);
+      if (rig.upper) rig.upper.rotation.z = side * 0.18;
+      rig.head.rotation.z = side * 0.15;
+      return { eyes: "closed", mouth: "small" };
+    },
+  },
+  {
+    id: "lounge-cookie",
+    label: "🍪 顺一块饼干",
+    where: ["stand", "sofa"],
+    place: ["lounge", "sofa"],
+    prop: "cookie",
+    run: ({ rig, t }) => {
+      const bite = bump(every(t, 3, 0.8));
+      arms(rig, [-1.3 - bite * 0.9, 0, 0.4 + bite * 0.2], [-0.85, 0, -0.25]);
+      return { eyes: "happy", mouth: bite > 0.4 ? "open" : "smile" };
+    },
+  },
+  {
+    id: "sofa-game",
+    label: "🎮 窝着打游戏",
+    where: ["sofa"],
+    place: ["sofa"],
+    prop: "console",
+    run: ({ rig, t }) => {
+      const mash = Math.sin(t * 18) * 0.05;
+      arms(rig, [-1.3 + mash, 0, 0.3], [-1.3 - mash, 0, -0.3]);
+      rig.head.rotation.x = 0.3;
+      const win = every(t, 7, 1.2);
+      if (win >= 0) rig.body.position.y += bump(win) * 0.03;
+      return { eyes: win >= 0 ? "happy" : "open", mouth: win >= 0 ? "open" : "small" };
+    },
+  },
+  {
+    id: "sofa-sprawl",
+    label: "😌 瘫在沙发上",
+    where: ["sofa"],
+    place: ["sofa"],
+    run: ({ rig, t }) => {
+      arms(rig, [-0.1, 0, 0.7], [-0.1, 0, -0.7]);
+      if (rig.upper) rig.upper.rotation.x = -0.22;
+      rig.head.rotation.x = -0.3;
+      rig.head.rotation.z = Math.sin(t * 0.5) * 0.1;
+      return { eyes: "closed", mouth: "smile" };
+    },
+  },
+  {
+    id: "desk-phone",
+    label: "📱 桌子底下偷偷刷手机",
+    where: ["desk"],
+    place: ["desk"],
+    prop: "phone",
+    run: ({ rig, t }) => {
+      const peek = every(t, 6, 0.8);
+      arms(rig, [-1.0, 0, 0.45], [-0.95, 0, -0.45]);
+      rig.head.rotation.x = peek >= 0 ? 0 : 0.45;
+      rig.head.rotation.y = peek >= 0 ? Math.sin(peek * Math.PI * 2) * 0.5 : 0;
+      return { eyes: peek >= 0 ? "open" : "half" };
+    },
+  },
+  {
+    id: "desk-music",
+    label: "🎧 戴耳机听歌",
+    where: ["desk"],
+    place: ["desk"],
+    fx: ["♪", "#ffd76a"],
+    run: ({ rig, t }) => {
+      const beat = Math.sin(t * 7);
+      arms(rig, [-1.2, 0, 0.35 + beat * 0.05], [-1.25 + Math.max(0, beat) * 0.15, 0, -0.35]);
+      rig.head.rotation.x = 0.05 + beat * 0.08;
+      rig.head.rotation.z = Math.sin(t * 3.5) * 0.12;
+      return { eyes: "closed", mouth: "smile" };
+    },
+  },
+  {
+    id: "desk-snack",
+    label: "🍪 抽屉里摸零食",
+    where: ["desk"],
+    place: ["desk"],
+    prop: "cookie",
+    run: ({ rig, t }) => {
+      const bite = bump(every(t, 2.5, 0.7));
+      arms(rig, [-1.25 - bite * 0.95, 0, 0.4 + bite * 0.2], [-1.2, 0, -0.35]);
+      rig.head.rotation.y = Math.sin(t * 0.7) * 0.25;
+      return { eyes: bite > 0.4 ? "happy" : "open", mouth: bite > 0.4 ? "open" : "small" };
+    },
+  },
+  {
+    id: "desk-spin",
+    label: "🌀 转椅子玩",
+    where: ["desk"],
+    place: ["desk"],
+    run: ({ rig, t }) => {
+      arms(rig, [-0.5, 0, 0.6], [-0.5, 0, -0.6]);
+      rig.body.rotation.y = Math.sin(t * 1.3) * 0.7;
+      rig.head.rotation.x = -0.15;
+      return { eyes: "happy", mouth: "open" };
     },
   },
 ];
@@ -870,17 +1164,22 @@ const ROUTINES: Record<Vendor, readonly Routine[]> = {
   ],
 };
 
-/** 某家在某场合可做的全部动作（专属在前，通用在后）。 */
-export function slackRoutines(vendor: Vendor, where: SlackWhere): readonly { id: string; label: string }[] {
-  return pool(vendor, where);
+/**
+ * 某家在某场合、某去处可做的全部动作（专属在前，去处动作、通用在后）。
+ * place 缺省时不按去处筛选（图鉴预览用，列出全部）。
+ */
+export function slackRoutines(vendor: Vendor, where: SlackWhere, place?: SlackPlace): readonly { id: string; label: string }[] {
+  return pool(vendor, where, place);
 }
 
 const poolCache = new Map<string, readonly Routine[]>();
-function pool(vendor: Vendor, where: SlackWhere): readonly Routine[] {
-  const key = `${vendor}:${where}`;
+function pool(vendor: Vendor, where: SlackWhere, place: SlackPlace | undefined): readonly Routine[] {
+  const key = `${vendor}:${where}:${place ?? "*"}`;
   let list = poolCache.get(key);
   if (list === undefined) {
-    list = [...ROUTINES[vendor], ...COMMON].filter((r) => r.where.includes(where));
+    list = [...ROUTINES[vendor], ...PLACES, ...COMMON].filter(
+      (r) => r.where.includes(where) && (place === undefined || r.place === undefined || r.place.includes(place)),
+    );
     poolCache.set(key, list);
   }
   return list;
@@ -933,8 +1232,9 @@ export function slack(
   t: number,
   seed: number,
   pick?: string,
+  place?: SlackPlace,
 ): SlackResult | undefined {
-  const list = pool(vendor, where);
+  const list = pool(vendor, where, place);
   if (list.length === 0) return undefined;
   let routine: Routine | undefined;
   let s: number;
@@ -948,7 +1248,10 @@ export function slack(
     const cycle = Math.floor(shifted / CYCLE);
     s = shifted - cycle * CYCLE;
     if (s >= ACTIVE) return undefined;
-    routine = list[Math.floor(hash(cycle, seed) * list.length)];
+    // 不连着做同一个：和上一段撞了就换下一个
+    let index = Math.floor(hash(cycle, seed) * list.length);
+    if (list.length > 1 && index === Math.floor(hash(cycle - 1, seed) * list.length)) index = (index + 1) % list.length;
+    routine = list[index];
     e = Math.min(1, s / FADE, (ACTIVE - s) / FADE);
     e = e * e * (3 - 2 * e);
   }

@@ -37,7 +37,7 @@ import { createEnvironment } from "./environment.ts";
 import { NavGrid } from "./nav.ts";
 import { Voxels, voxelMaterial } from "./voxel.ts";
 import { buildRoleProp } from "./props.ts";
-import { slack, slackReset, slackRoutines, type SlackWhere } from "./slack.ts";
+import { slack, slackReset, slackRoutines, type SlackPlace, type SlackWhere } from "./slack.ts";
 
 export interface SceneOptions {
   readonly onSelect: (id: string | null) => void;
@@ -298,16 +298,16 @@ const LOUNGE_SPOTS: readonly Spot[] = [
  * 空闲去处：休息区之外，书架前、窗边、靠墙、右前方空地、盆栽旁都能待，免得全挤在沙发周围。
  * 站位朝向尽量侧对 / 正对镜头；只有看窗外的背对。路线由寻路给出，approach 只是兜底。
  */
-type IdleKind = "desk" | "sofa" | "lounge" | "shelf" | "window" | "wall" | "open" | "plant";
+type IdleKind = Exclude<SlackPlace, "lead">;
 const standAt = (x: number, z: number, facing: number): Spot => ({ x, z, facing, approach: [[x, AISLE], [x, z]] });
 const IDLE_SPOTS: readonly { readonly kind: IdleKind; readonly spot: Spot }[] = [
   { kind: "sofa", spot: LOUNGE_SPOTS[1]! },
   { kind: "shelf", spot: standAt(-7.9, -7.7, faceTo(-7.9, -7.7, [-9.0, -8.75])) },
-  { kind: "open", spot: standAt(6.1, -2.3, faceTo(6.1, -2.3, [7.7, -1.3])) },
+  { kind: "open", spot: standAt(5.9, -0.3, faceTo(5.9, -0.3, [7.5, 0.7])) },
   { kind: "window", spot: standAt(-6.0, -8.15, Math.PI) },
   { kind: "sofa", spot: LOUNGE_SPOTS[0]! },
   { kind: "wall", spot: standAt(-9.25, -3.2, Math.PI / 2 + 0.35) },
-  { kind: "open", spot: standAt(7.7, -1.3, faceTo(7.7, -1.3, [6.1, -2.3])) },
+  { kind: "open", spot: standAt(7.5, 0.7, faceTo(7.5, 0.7, [5.9, -0.3])) },
   { kind: "plant", spot: standAt(8.45, 5.45, faceTo(8.45, 5.45, [ROOM.x1 - 0.7, ROOM.z1 - 0.7])) },
   { kind: "lounge", spot: LOUNGE_SPOTS[3]! },
   { kind: "sofa", spot: LOUNGE_SPOTS[2]! },
@@ -328,6 +328,12 @@ const IDLE_PREF: Record<Vendor, readonly IdleKind[]> = {
   qwen: ["plant", "window", "open"],
   other: ["wall", "open"],
 };
+
+/** 点位 → 去处（摸鱼动作按去处挑）。 */
+const PLACE_OF = new Map<Spot, SlackPlace>([...IDLE_SPOTS.map((e) => [e.spot, e.kind] as const), [LEAD_IDLE, "lead"]]);
+/** 空闲时隔多久换个地方（秒，含走路）。 */
+const WANDER_MIN = 40;
+const WANDER_SPAN = 50;
 
 /** 两条入场路径共用的前缀（逐点相同）长度。 */
 function sharedPrefix(a: readonly P2[], b: readonly P2[]): number {
@@ -437,6 +443,8 @@ class Agent {
   slackLabel: string | undefined;
   /** 指定摸鱼动作（图鉴预览）：undefined = 按时间轮换，null = 不摸鱼。 */
   slackPick: string | null | undefined;
+  /** 空闲时下次换地方的时刻（场景时钟）。 */
+  wanderAt = 0;
 
   constructor(
     member: OfficeMember,
@@ -552,7 +560,9 @@ function pose(agent: Agent, t: number, dt: number): void {
   /** 在已摆好的休息姿势上叠加摸鱼动作（按人设轮换）。 */
   const fish = (where: SlackWhere) => {
     if (agent.slackPick === null) return false;
-    const r = slack(rig, agent.member.vendor, where, t, seed, agent.slackPick);
+    // 图鉴预览（指定了动作或在图鉴里）不按去处筛选
+    const place = where === "desk" ? "desk" : PLACE_OF.get(agent.at) ?? (where === "sofa" ? "sofa" : undefined);
+    const r = slack(rig, agent.member.vendor, where, t, seed, agent.slackPick, agent.slackPick === undefined ? place : undefined);
     if (r === undefined) return false;
     agent.slackLabel = r.label;
     if (r.eyes !== undefined) eyes = r.eyes;
@@ -1402,6 +1412,37 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     return IDLE_SPOTS.find((e) => !taken.has(e.spot))?.spot ?? deskAt;
   }
 
+  /**
+   * 闲逛：空闲且已到位的人隔一阵换个没人占的地方（含回自己工位），偏爱的去处权重更高，
+   * 附近已经有人的去处按人数降权（免得又聚到一块儿），不会原地「换」到同一个点。
+   * 组长、有提醒的人不闲逛。
+   */
+  function wander(agent: Agent, t: number): void {
+    if (agent.member.role === "lead" || agent.status !== "inactive" || agent.attention !== null) return;
+    if (agent.moving || agent.at !== agent.idleAt) return;
+    if (agent.wanderAt === 0) agent.wanderAt = t + WANDER_MIN * 0.5 + Math.random() * WANDER_SPAN;
+    if (t < agent.wanderAt) return;
+    agent.wanderAt = t + WANDER_MIN + Math.random() * WANDER_SPAN;
+    const pref = IDLE_PREF[agent.member.vendor];
+    const others = [...agents.values()].filter((a) => a !== agent).map((a) => a.idleAt);
+    const taken = new Set(others);
+    const crowd = (spot: Spot) => others.filter((o) => Math.hypot(o.x - spot.x, o.z - spot.z) < 3).length;
+    const options: [Spot, number][] = IDLE_SPOTS.filter((e) => !taken.has(e.spot) && e.spot !== agent.idleAt).map((e) => [
+      e.spot,
+      (pref.includes(e.kind) ? 3 : 1) / (1 + 1.5 * crowd(e.spot)),
+    ]);
+    if (agent.idleAt !== agent.deskAt) options.push([agent.deskAt, pref.includes("desk") ? 3 : 1.2]);
+    const total = options.reduce((sum, [, w]) => sum + w, 0);
+    let r = Math.random() * total;
+    for (const [spot, w] of options) {
+      r -= w;
+      if (r <= 0) {
+        agent.idleAt = spot;
+        return;
+      }
+    }
+  }
+
   function statusOf(member: OfficeMember, live: Readonly<Record<string, boolean>>): Status {
     if (member.phase === "failed") return "failed";
     if (member.phase === "provisioning") return "provisioning";
@@ -1587,6 +1628,8 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     if (mode === "office") {
       if (navDirty) refreshNav();
       for (const agent of agents.values()) {
+        // 空闲时隔一阵换个地方待
+        wander(agent, t);
         // 路径规划
         const want = agent.wanted(t);
         // 目标变了就从当前位置重新寻路（走到一半也会掉头）
