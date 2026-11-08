@@ -634,24 +634,27 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
 // ---------------------------------------------------------------- 未读
 
 /**
- * 未读红点：某人最近一轮结束（说完了一段话）晚于你上次打开他的对话，就算有未读。
- * 每人记 { seen, latest }（localStorage `dsh-config:office-reads`）：latest 是见过的最近一轮结束时间
- * （之后开了新一轮快照里就没有 lastTurn 了，所以要自己记住），seen 是上次打开对话时的 latest。
- * 第一次见到某人时以当时为基线，不把旧消息都算成未读。
+ * 未读只看组长（组员只和组长交互，你只需关注组长的汇报）：组长最近一轮结束（说完了一段话）
+ * 晚于你上次打开他的对话，就算有未读。
+ * 按组长会话 id 记 { seen, latest }（localStorage `dsh-config:office-reads`，格式 `{ v: 2, leads }`）：
+ * latest 是见过的最近一轮结束时间（之后开了新一轮快照里就没有 lastTurn 了，所以要自己记住），
+ * seen 是上次打开对话时的 latest。第一次见到某个组长时以当时为基线，不把旧消息都算成未读。
+ * 旧格式（每个成员一条）直接忽略。
  */
 const READS_KEY = "dsh-config:office-reads";
 type Reads = Record<string, { seen: number; latest: number }>;
 const readListeners = new Set<() => void>();
 function loadReads(): Reads {
   try {
-    return JSON.parse(localStorage.getItem(READS_KEY) ?? "{}") as Reads;
+    const parsed = JSON.parse(localStorage.getItem(READS_KEY) ?? "{}") as { v?: unknown; leads?: Reads };
+    return parsed.v === 2 && parsed.leads !== undefined ? parsed.leads : {};
   } catch {
     return {};
   }
 }
 function saveReads(reads: Reads): void {
   try {
-    localStorage.setItem(READS_KEY, JSON.stringify(reads));
+    localStorage.setItem(READS_KEY, JSON.stringify({ v: 2, leads: reads }));
   } catch {
     // 隐私模式：只在内存里
   }
@@ -664,7 +667,7 @@ function reads(): Reads {
   return readsLoaded;
 }
 
-/** 打开某人的对话：他目前说过的都算看过了。 */
+/** 打开某人的对话：他目前说过的都算看过了（只有组长有记录，其他人是空操作）。 */
 function markRead(id: string): void {
   const entry = reads()[id];
   if (entry === undefined || entry.seen >= entry.latest) return;
@@ -686,6 +689,7 @@ function useUnread(snapshot: OfficeSnapshot | null, chatOpen: boolean): (id: str
     const viewing = chatOpen ? currentSession().sessionId : undefined;
     let next: Reads | undefined;
     for (const m of snapshot.members) {
+      if (m.role !== "lead") continue;
       const at = m.lastTurn?.at;
       const entry = (next ?? reads())[m.id];
       let updated = entry;
@@ -1103,7 +1107,6 @@ function TeamPanel({
   onOpen: (id: string) => void;
 }) {
   if (snapshot === null) return <div className="dso-empty">加载中…</div>;
-  const unreadCount = snapshot.members.filter((m) => unread(m.id)).length;
   return (
     <>
       <h3 className="dso-section">
@@ -1119,7 +1122,6 @@ function TeamPanel({
       <h3 className="dso-section">
         <span>队伍</span>
         <small>{snapshot.members.length}</small>
-        {unreadCount > 0 && <small className="dso-unread-count">{unreadCount} 人未读</small>}
       </h3>
       <div className="dso-roster">
         {snapshot.members.map((m) => {
@@ -1142,14 +1144,8 @@ function TeamPanel({
                   </span>
                 </span>
               </button>
-              <button
-                type="button"
-                className="dso-card-chat"
-                title={unread(m.id) ? "有新消息未读 · 打开对话" : "在右侧打开对话"}
-                onClick={() => onOpen(m.id)}
-              >
+              <button type="button" className="dso-card-chat" title="在右侧打开对话" onClick={() => onOpen(m.id)}>
                 💬
-                {unread(m.id) && <span className="dso-dot-unread" />}
               </button>
             </div>
           );

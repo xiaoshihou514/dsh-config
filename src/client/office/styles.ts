@@ -261,7 +261,6 @@ body[data-dsh-office] [class*="_centerCol"] {
 }
 .dso-lead-chat .dso-dot-unread { top: 2px; right: 2px; }
 @keyframes dso-unread-in { from { transform: scale(0); } to { transform: scale(1); } }
-.dso-section small.dso-unread-count { color: #fff; background: #ff3b30; }
 .dso-card-chat:hover { background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent); filter: none; }
 .dso-card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .dso-card-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
