@@ -739,6 +739,7 @@ export function buildCharacter(vendor: Vendor, tier: Tier, role: RoleKind): Char
     legL: legs[0]!,
     legR: legs[1]!,
     heldR: prop,
+    hand: [model.hand[0] * VOXEL, model.hand[1] * VOXEL, (model.hand[2] + 1.5) * VOXEL],
     halo,
     sparkles,
     upper,

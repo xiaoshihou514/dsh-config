@@ -37,6 +37,7 @@ import { createEnvironment } from "./environment.ts";
 import { NavGrid } from "./nav.ts";
 import { Voxels, voxelMaterial } from "./voxel.ts";
 import { buildRoleProp } from "./props.ts";
+import { slack, slackReset, slackRoutines, type SlackWhere } from "./slack.ts";
 
 export interface SceneOptions {
   readonly onSelect: (id: string | null) => void;
@@ -138,7 +139,7 @@ export function propIcon(role: RoleKind, size = 64): string {
   return url;
 }
 
-export const SCENE_VERSION = "2026-11-03-1";
+export const SCENE_VERSION = "2026-11-08-1";
 
 // ---------------------------------------------------------------- 布局
 
@@ -397,6 +398,10 @@ class Agent {
   callAt: Spot | undefined;
   /** 当前步速（起步加速、到站减速）。 */
   speed = 0;
+  /** 正在做的摸鱼动作（气泡显示）；没在摸鱼时为 undefined。 */
+  slackLabel: string | undefined;
+  /** 指定摸鱼动作（图鉴预览）：undefined = 按时间轮换，null = 不摸鱼。 */
+  slackPick: string | null | undefined;
 
   constructor(
     member: OfficeMember,
@@ -507,6 +512,18 @@ function pose(agent: Agent, t: number, dt: number): void {
   const seed = (agent.member.id.length * 1.37 + agent.member.id.charCodeAt(0) * 0.11) % 10;
   let eyes: Eyes = "open";
   let mouth: Mouth = "none";
+  slackReset(rig);
+  agent.slackLabel = undefined;
+  /** 在已摆好的休息姿势上叠加摸鱼动作（按人设轮换）。 */
+  const fish = (where: SlackWhere) => {
+    if (agent.slackPick === null) return false;
+    const r = slack(rig, agent.member.vendor, where, t, seed, agent.slackPick);
+    if (r === undefined) return false;
+    agent.slackLabel = r.label;
+    if (r.eyes !== undefined) eyes = r.eyes;
+    if (r.mouth !== undefined) mouth = r.mouth;
+    return true;
+  };
 
   const seated = !agent.moving && agent.at.seat !== undefined;
   if (rig.heldL) rig.heldL.visible = !seated;
@@ -588,31 +605,18 @@ function pose(agent: Agent, t: number, dt: number): void {
         if (rig.upper) rig.upper.rotation.x = 0.07;
       }
     } else if (atDesk) {
-      // 工位空闲：手放腿上，偶尔伸懒腰打哈欠
-      const stretch = every(t, 14, 1.8, seed);
-      if (stretch >= 0) {
-        arms(rig, [-3.0, 0, -0.35], [-3.0, 0, 0.35]);
-        rig.head.rotation.x = -0.25;
-        eyes = "closed";
-        mouth = "open";
-      } else {
-        arms(rig, [-0.85, 0, 0.25], [-0.85, 0, -0.25]);
-        rig.head.rotation.z = Math.sin(t * 0.6 + seed) * 0.08;
-      }
+      // 工位空闲：手放腿上，按人设轮换摸鱼（干饭、精读、吹长笛……，见 slack.ts）
+      arms(rig, [-0.85, 0, 0.25], [-0.85, 0, -0.25]);
+      rig.head.rotation.z = Math.sin(t * 0.6 + seed) * 0.08;
+      fish("desk");
     } else {
-      // 沙发 / 休息区：手放腿上，隔一会儿抿一口咖啡
-      const sip = every(t, 9, 1.8, seed);
-      if (sip >= 0) {
-        arms(rig, [-0.85, 0, 0.25], [-2.3, 0, -0.55]);
-        rig.head.rotation.x = -0.1;
-        eyes = "happy";
-      } else {
-        arms(rig, [-0.85, 0, 0.25], [-0.95, 0, -0.2]);
-        rig.head.rotation.z = Math.sin(t * 0.6 + seed) * 0.08;
-        rig.head.rotation.y = Math.sin(t * 0.33 + seed) * 0.35;
-        mouth = every(t, 6, 2.2, seed + 1) >= 0 ? "smile" : "none";
-      }
+      // 沙发 / 休息区：手放腿上、东张西望，按人设轮换摸鱼
+      arms(rig, [-0.85, 0, 0.25], [-0.95, 0, -0.2]);
+      rig.head.rotation.z = Math.sin(t * 0.6 + seed) * 0.08;
+      rig.head.rotation.y = Math.sin(t * 0.33 + seed) * 0.35;
+      mouth = every(t, 6, 2.2, seed + 1) >= 0 ? "smile" : "none";
       rig.body.position.y += Math.sin(t * 1.6 + seed) * 0.006;
+      fish("sofa");
     }
   } else {
     // 站立：轻晃、东张西望，偶尔挥手打招呼
@@ -640,6 +644,8 @@ function pose(agent: Agent, t: number, dt: number): void {
     } else {
       arms(rig, [-0.15 + Math.sin(t * 1.3 + seed) * 0.05, 0, -0.3], [-0.3 + Math.sin(t * 1.1 + seed) * 0.05, 0, 0.3]);
     }
+    // 空闲站着（组长休息点、茶几旁）：按人设轮换摸鱼；有提醒、入职中时不摸
+    if (agent.status === "inactive" && agent.attention === null) fish("stand");
   }
 
   // 收到消息：轻跳 + 惊讶
@@ -1094,7 +1100,10 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   renderer.domElement.addEventListener("pointerup", onUp);
 
   // ---- 图鉴细看
-  type InspectPose = "stand" | "walk" | "type" | "read" | "write" | "think" | "wait" | "talk" | "idle" | "lounge" | "failed";
+  type InspectPose = "stand" | "walk" | "type" | "read" | "write" | "think" | "wait" | "talk" | "idle" | "lounge" | "loaf" | "failed";
+  const isSeated = (p: InspectPose) => p !== "stand" && p !== "walk" && p !== "loaf";
+  /** 摸鱼动作对应的场合。 */
+  const slackWhere = (p: InspectPose): SlackWhere | undefined => (p === "idle" ? "desk" : p === "lounge" ? "sofa" : p === "loaf" ? "stand" : undefined);
   const POSES: [InspectPose, string][] = [
     ["stand", "站立"],
     ["walk", "走路"],
@@ -1105,7 +1114,8 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     ["wait", "等待"],
     ["talk", "沟通"],
     ["idle", "工位摸鱼"],
-    ["lounge", "喝咖啡"],
+    ["lounge", "沙发摸鱼"],
+    ["loaf", "站着摸鱼"],
     ["failed", "沮丧"],
   ];
   const FACES: [string, [Eyes, Mouth] | undefined][] = [
@@ -1128,6 +1138,8 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   let inspectYaw = 0;
   let inspectSpin = true;
   let inspectPose: InspectPose = "stand";
+  /** 细看时指定的摸鱼动作；undefined = 轮换。 */
+  let inspectSlack: string | undefined;
   const galleryHint = document.createElement("div");
   galleryHint.className = "dso-ghint";
   galleryHint.textContent = "点击角色查看细节";
@@ -1161,7 +1173,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   const standSpot = fakeSpot(false);
   function fakeAgent(entry: GalleryEntry): Agent {
     const p = inspectPose;
-    const seated = p !== "stand" && p !== "walk";
+    const seated = isSeated(p);
     const working = ["type", "read", "write", "think", "wait", "talk"].includes(p);
     const current =
       p === "type"
@@ -1183,7 +1195,9 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       status: p === "failed" ? "failed" : working ? "running" : "inactive",
       jumpAt: -10,
       face: inspectFace,
-      member: { id: entry.title, current },
+      attention: null,
+      slackPick: p === "stand" ? null : inspectSlack,
+      member: { id: entry.title, vendor: entry.vendor, current },
     } as unknown as Agent;
   }
 
@@ -1236,8 +1250,25 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     ]);
     group(
       "动作",
-      POSES.map(([p, text]) => [text, inspectPose === p, () => (inspectPose = p)]),
+      POSES.map(([p, text]) => [
+        text,
+        inspectPose === p,
+        () => {
+          inspectPose = p;
+          inspectSlack = undefined;
+        },
+      ]),
     );
+    const where = slackWhere(inspectPose);
+    if (where !== undefined)
+      group("摸鱼", [
+        ["轮换", inspectSlack === undefined, () => (inspectSlack = undefined)],
+        ...slackRoutines(entry.vendor, where).map(({ id, label }): [string, boolean, () => void] => [
+          label.length > 12 ? `${label.slice(0, 11)}…` : label,
+          inspectSlack === id,
+          () => (inspectSlack = id),
+        ]),
+      ]);
     if (galleryRigs[inspecting]!.rig.setFace !== undefined)
       group(
         "表情",
@@ -1296,6 +1327,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     entry.rig.root.rotation.set(0, 0, 0);
     inspecting = null;
     inspectPose = "stand";
+    inspectSlack = undefined;
     inspectFace = undefined;
     inspectSpin = true;
     stool.visible = false;
@@ -1489,7 +1521,9 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
         return { text: `${CATEGORY_ICON[current.category ?? "other"]} ${current.label}`, cls: "" };
       }
       default:
-        return agent.at === agent.idleAt && !agent.moving ? { text: "☕ 休息", cls: "idle" } : null;
+        if (agent.moving) return null;
+        if (agent.slackLabel !== undefined) return { text: agent.slackLabel, cls: "idle" };
+        return agent.at === agent.idleAt ? { text: "☕ 休息", cls: "idle" } : null;
     }
   }
 
@@ -1676,8 +1710,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       if (inspecting !== null) {
         const entry = galleryRigs[inspecting]!;
         if (inspectSpin) inspectYaw += dt * 0.6;
-        const seated = inspectPose !== "stand" && inspectPose !== "walk";
-        stool.visible = seated;
+        stool.visible = isSeated(inspectPose);
         pose(fakeAgent(entry), t, dt);
         entry.rig.root.rotation.y = inspectYaw;
         // 坐姿时人朝 +z、凳子在身后：凳子跟着转。

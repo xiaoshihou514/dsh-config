@@ -31,6 +31,8 @@ export interface CharacterRig {
   readonly wings?: THREE.Group | undefined;
   readonly heldL?: THREE.Object3D | undefined;
   readonly heldR?: THREE.Object3D | undefined;
+  /** 手心相对肩关节（手臂组）的位置，摸鱼道具挂在这里。 */
+  readonly hand?: readonly [number, number, number] | undefined;
   readonly halo?: THREE.Object3D | undefined;
   readonly sparkles?: THREE.Group | undefined;
   /** 像素画体素角色：髋以上 / 以下两段（手臂不单独拆分，动作靠上身摆动）。 */
@@ -1406,6 +1408,7 @@ export function buildCharacter(vendor: Vendor, tier: Tier, role: RoleKind): Char
     wings: hasWings ? wings : undefined,
     heldL,
     heldR: prop,
+    hand: [0, -0.4, 0.03],
     halo,
     sparkles,
     meshes: b.meshes,
