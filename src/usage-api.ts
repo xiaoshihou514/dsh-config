@@ -32,6 +32,7 @@ const OFFICIAL_PROVIDER = "deepseek-official";
 /** 订阅档：不按 token 计费，只记账词元量。 */
 const SUBSCRIPTION_PROVIDERS = new Set([
   "opencode-free",
+  "opencodex",
   "openai-codex",
   "github-copilot",
   "kimi-coding",
