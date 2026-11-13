@@ -7,8 +7,10 @@
  * 数量级；写盘走防抖批量合并，不再每条全量重写。
  *
  * 支持 provider：deepseek-official（官方峰谷计费）；zai-coding-cn（GLM
- * Coding Plan 包月套餐，按智谱国内站 API 牌价估算费用（非高峰 5 折积分）；其余
- * 订阅档（OpenCode Free、Codex、GitHub Copilot 等）费用恒为 0，只统计词元量。
+ * Coding Plan 包月套餐，按智谱国内站 API 牌价估算费用（非高峰 5 折积分）；
+ * opencodex / openai-codex / github-copilot（按各家 API 美元牌价估算，固定
+ * 汇率 7.2 折人民币，单一价无峰谷，未收录模型记 0）；其余订阅档
+ * （OpenCode Free 等）费用恒为 0，只统计词元量。
  */
 
 import { randomUUID } from "node:crypto";
@@ -30,11 +32,9 @@ const HEADER_VALUE = "usage-calendar";
 
 const OFFICIAL_PROVIDER = "deepseek-official";
 /** 订阅档：不按 token 计费，只记账词元量。 */
+/** 订阅档：不按 token 计费，只记账词元量（费用恒 0）。 */
 const SUBSCRIPTION_PROVIDERS = new Set([
   "opencode-free",
-  "opencodex",
-  "openai-codex",
-  "github-copilot",
   "kimi-coding",
   "qwen-token-plan",
   "qwen-token-plan-cn",
@@ -46,10 +46,48 @@ const SUBSCRIPTION_PROVIDERS = new Set([
 ]);
 
 /**
- * 计价订阅档：包月套餐，仍只记账词元量，但按供应商 API 牌价**估算**费用
- * （供「如果按量付费要花多少」参考）。目前仅智谱 GLM Coding Plan（国内站）。
+ * 计价订阅档：按供应商 API 牌价**估算**费用（供「如果按量付费要花多少」
+ * 参考）。人民币牌价：智谱 GLM Coding Plan（国内站）；美元牌价（按固定
+ * 汇率折算）：opencodex / openai-codex / github-copilot 下的 claude、gpt、
+ * grok、kimi 系模型，牌价表中没有的模型仍记 0。
  */
 const PRICED_PROVIDERS = new Set(["zai-coding-cn"]);
+
+/** 美元牌价估算档：未命中下表的模型费用记 0（无牌价）。 */
+const USD_PRICED_PROVIDERS = new Set([
+  "opencodex",
+  "openai-codex",
+  "github-copilot",
+]);
+
+/** 美元兑人民币固定折算汇率（估算口径，不随行市浮动）。 */
+const USD_CNY = 7.2;
+
+/**
+ * 美元牌价（美元 / 百万 tokens）：输入 / 缓存读 / 缓存写 / 输出。
+ * 键取模型名末段（`opencodex/cursor/grok-4.7--fast` → `grok-4.7--fast`）。
+ * 来源：platform.claude.com、developers.openai.com、docs.x.ai、Moonshot
+ * 官方定价页（2026-11 标准/短上下文档）；缓存写统一取短时效档
+ * （Anthropic 5 分钟 / OpenAI 30 分钟），无缓存写牌价的模型（xAI、Kimi、
+ * codex-spark）按输入价计。
+ */
+const USD_PRICE = {
+  "claude-opus-5-5": { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 },
+  "claude-sonnet-5": { input: 2, cacheRead: 0.2, cacheWrite: 2.5, output: 10 },
+  "gpt-5.6-luna": { input: 0.2, cacheRead: 0.02, cacheWrite: 0.25, output: 1.2 },
+  "gpt-6-luna": { input: 0.1, cacheRead: 0.01, cacheWrite: 0.125, output: 0.5 },
+  "gpt-5.6-terra": { input: 2, cacheRead: 0.2, cacheWrite: 2.5, output: 12 },
+  "gpt-5.3-codex-spark": { input: 1.75, cacheRead: 0.175, cacheWrite: 1.75, output: 14 },
+  "grok-4.7": { input: 2, cacheRead: 0.5, cacheWrite: 2, output: 6 },
+  "grok-4.7--fast": { input: 4, cacheRead: 1, cacheWrite: 4, output: 12 },
+  "kimi-k3": { input: 3, cacheRead: 0.3, cacheWrite: 3, output: 15 },
+} as const;
+
+/** 模型键的末段（`opencodex/anthropic/claude-opus-5-5` → `claude-opus-5-5`）。 */
+function usdPriceOf(model: string) {
+  const slash = model.lastIndexOf("/");
+  return USD_PRICE[(slash === -1 ? model : model.slice(slash + 1)) as keyof typeof USD_PRICE];
+}
 
 /**
  * 智谱国内站（bigmodel.cn）API 牌价（元 / 百万 tokens）：缓存命中 / 未命中输入 / 输出。
@@ -107,6 +145,20 @@ function costOf(
     return { cost: 0, peakCost: 0, offCost: 0 };
   const cacheRead = record.cacheReadTokens ?? 0;
   const cacheWrite = record.cacheWriteTokens ?? 0;
+  // 美元牌价估算档（opencodex / openai-codex / github-copilot 下的
+  // claude、gpt、grok、kimi 系）：单一价、无峰谷；牌价表未收录记 0。
+  if (USD_PRICED_PROVIDERS.has(provider)) {
+    const price = usdPriceOf(model);
+    if (price === undefined) return { cost: 0, peakCost: 0, offCost: 0 };
+    const cost =
+      ((record.inputTokens + cacheWrite) * price.input +
+        cacheRead * price.cacheRead +
+        cacheWrite * (price.cacheWrite - price.input) +
+        record.outputTokens * price.output) /
+      1_000_000 *
+      USD_CNY;
+    return { cost, peakCost: 0, offCost: 0 };
+  }
   // 计价订阅档（智谱 GLM Coding Plan）：按 API 牌价估算。非高峰时段积分
   // 5 折抵扣（费用随之减半），峰/闲拆分反映真实消耗差。
   if (PRICED_PROVIDERS.has(provider)) {
@@ -250,7 +302,9 @@ function modelOf(provider: string, model: string): string | undefined {
   // 计价订阅档与免费订阅档一样以「provider/model」复合名入账（筛选标签、
   // 聚合桶保持同一形态，历史数据不分裂）。
   if (
-    (SUBSCRIPTION_PROVIDERS.has(provider) || PRICED_PROVIDERS.has(provider)) &&
+    (SUBSCRIPTION_PROVIDERS.has(provider) ||
+      PRICED_PROVIDERS.has(provider) ||
+      USD_PRICED_PROVIDERS.has(provider)) &&
     model !== ""
   )
     return `${provider}/${model}`;

@@ -8,8 +8,14 @@ dsh-config 在 DSH Web **侧边栏设置上方的「用量」入口**（`sidebar
 
 - 用量记录保存在 `$DSH_HOME/dsh-config/usage.json`（**v2 结构**：`days` 为按「自然日 ×（项目 × 模型）」提前聚合的桶（费用含峰谷拆分），`today` 仅保留当前自然日逐条明细，跨天自动折叠；v1 全量 `records` 首次加载时自动迁移为 v2）。
 - `deepseek-official` 的 `deepseek-v4-flash` / `deepseek-v4-pro` 按官方峰谷单价计费。
+- **美元牌价估算档（2026-11-13 起）**：`opencodex`、`openai-codex`、`github-copilot` 下的 claude / gpt / grok / kimi 系模型按各家 API 官方牌价**估算**费用——美元价 × 固定汇率 7.2 折人民币，单一价（峰谷规则不适用），费用字段为估算参考值。牌价（美元/百万词元：输入 / 缓存读 / 缓存写 / 输出；缓存写统一取短时效档，无缓存写牌价的按输入价计）：
+  - Anthropic：`claude-opus-5-5` 4 / 0.20 / 5 / 20；`claude-sonnet-5` 2 / 0.20 / 2.50 / 10（github-copilot 与 opencodex/cursor 线路同价）
+  - OpenAI：`gpt-5.6-luna` 0.20 / 0.02 / 0.25 / 1.20；`gpt-6-luna` 0.10 / 0.01 / 0.125 / 0.50；`gpt-5.6-terra` 2.00 / 0.20 / 2.50 / 12.00；`gpt-5.3-codex-spark` 按 `gpt-5.3-codex` 1.75 / 0.175 / 1.75 / 14.00（官方无 spark 条目）
+  - xAI（<200k prompt 档，DSH 单请求几乎不超 200k，统一用此档）：`grok-4.7` 2.00 / 0.50 / 2.00 / 6.00；`grok-4.7--fast`（Cursor fast 变体，标准价 2 倍）4.00 / 1.00 / 4.00 / 12.00
+  - Kimi（Moonshot 官方）：`kimi-k3` 3.00 / 0.30 / 3.00 / 15.00（缓存写价未公布，按输入价，与 zai 口径一致）
+  - 无牌价记 0 清单：`opencodex/nvidia/deepseek-ai-deepseek-v4.1-flash`、`opencodex/cloudflare-workers-ai/@cf-deepseek-ai-deepseek-v4.1-flash-1017` 等未收录模型（历史调用量个位数）。
 - `zai-coding-cn`（GLM Coding Plan 包月套餐）按**智谱国内站 API 统一牌价估算**费用（2026-10-17 起计价；此前该供应商记 0，历史聚合不回填）：`glm-5.3-flash` 0.23/0.8/2.8、`glm-5.3-flashx` 0.57/2/7、`glm-5.3` 与 `glm-5.2` 2/8/28、`glm-5.1` 1.3/6/24、`glm-5-turbo` 1.2/5/22、`glm-5` 1/4/18（元/百万词元，缓存命中/未命中输入/输出）。**智谱无峰谷差价**（谷时半价是 DeepSeek 的结构；智谱的「错峰」是套餐额度活动，不影响 API 单价），峰/闲拆分按调用发生时段归属；分档模型按低档计；未知 GLM 模型记 0。
-- 其余订阅档（`opencode-free`、`opencodex`、`openai-codex`、`github-copilot` 及同类 coding/token-plan）费用记 0，只统计词元量；筛选标签为 `provider/model`（opencodex 为三段复合名，如 `opencodex/anthropic/claude-opus-5-5`）。
+- 其余订阅档（`opencode-free` 及同类免费/token-plan）费用记 0，只统计词元量；筛选标签为 `provider/model`（opencodex 为三段复合名，如 `opencodex/anthropic/claude-opus-5-5`）。
 - `opencodex` 2026-11-13 起纳入记账（此前该供应商所有事件被白名单丢弃，属漏记缺陷）；历史漏记部分由 `scripts/backfill-usage.mjs` 回填——脚本扫描近 30 天会话日志，按现行计价与去重规则重建记录，与存量按「天 × 模型」算差额后幂等折叠写入（自动备份、不动 today 明细）。宿主侧白名单需重启 dsh 才生效；**重启后应再跑一次脚本**补齐重启前空窗。
 - 缓存写入按缓存未命中输入计费。
 - 记录以 `sessionId:turn:step` 去重；0.2.0 起 usage 直接挂在 `assistant/message` 事件数据上，逐条各记一条。

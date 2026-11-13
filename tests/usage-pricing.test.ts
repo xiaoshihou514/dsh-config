@@ -253,3 +253,84 @@ describe("Copilot 配额响应精简", () => {
     });
   });
 });
+
+describe("美元牌价估算档（claude / gpt / grok / kimi）", () => {
+  it("opencodex claude-opus-5-5：输入含缓存写、缓存读、输出分别计价（×7.2）", () => {
+    const costs = pricing.costOf(
+      "opencodex",
+      "opencodex/anthropic/claude-opus-5-5",
+      peakTime,
+      record({
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        cacheReadTokens: 1_000_000,
+        cacheWriteTokens: 1_000_000,
+      }),
+    );
+    // (4 输入 + 5 缓存写 + 0.2 缓存读 + 20 输出) × 7.2，峰谷字段不拆分
+    expect(costs.cost).toBeCloseTo(29.2 * 7.2, 10);
+    expect(costs.peakCost).toBe(0);
+    expect(costs.offCost).toBe(0);
+  });
+
+  it("github-copilot claude-sonnet-5：缓存写按 5 分钟档 2.5 美元", () => {
+    const costs = pricing.costOf(
+      "github-copilot",
+      "github-copilot/claude-sonnet-5",
+      peakTime,
+      record({ cacheWriteTokens: 1_000_000 }),
+    );
+    expect(costs.cost).toBeCloseTo((2 + 0.5) * 7.2, 10);
+  });
+
+  it("openai-codex gpt-6-luna：输入/缓存读/缓存写（30 分钟档）/输出", () => {
+    const costs = pricing.costOf(
+      "openai-codex",
+      "gpt-6-luna",
+      peakTime,
+      record({
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        cacheReadTokens: 1_000_000,
+        cacheWriteTokens: 1_000_000,
+      }),
+    );
+    // (0.1 输入 + 0.125 缓存写 + 0.01 缓存读 + 0.5 输出) × 7.2
+    expect(costs.cost).toBeCloseTo(0.735 * 7.2, 10);
+  });
+
+  it("grok-4.7 与 grok-4.7--fast（Cursor fast 变体为标准价 2 倍）：缓存写按输入价", () => {
+    const usage = record({ inputTokens: 1_000_000, cacheWriteTokens: 1_000_000 });
+    const standard = pricing.costOf("opencodex", "opencodex/cursor/grok-4.7", peakTime, usage);
+    const fast = pricing.costOf("opencodex", "opencodex/cursor/grok-4.7--fast", peakTime, usage);
+    expect(standard.cost).toBeCloseTo((2 + 2) * 7.2, 10);
+    expect(fast.cost).toBeCloseTo((4 + 4) * 7.2, 10);
+  });
+
+  it("kimi-k3（github-copilot 与 opencodex 两线路同价）：缓存写按输入价", () => {
+    const usage = record({
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadTokens: 1_000_000,
+    });
+    for (const model of [
+      "github-copilot/kimi-k3",
+      "opencodex/cursor/kimi-k3",
+    ]) {
+      const provider = model.split("/")[0];
+      const costs = pricing.costOf(provider, model, peakTime, usage);
+      // (3 输入 + 0.3 缓存读 + 15 输出) × 7.2
+      expect(costs.cost).toBeCloseTo(18.3 * 7.2, 10);
+    }
+  });
+
+  it("牌价表未收录的模型（nvidia 线 deepseek）费用记 0", () => {
+    const costs = pricing.costOf(
+      "opencodex",
+      "opencodex/nvidia/deepseek-ai-deepseek-v4.1-flash",
+      peakTime,
+      record({ inputTokens: 15_033, outputTokens: 143 }),
+    );
+    expect(costs.cost).toBe(0);
+  });
+});

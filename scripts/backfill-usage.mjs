@@ -34,9 +34,6 @@ import { glob } from "node:fs/promises";
 const OFFICIAL_PROVIDER = "deepseek-official";
 const SUBSCRIPTION_PROVIDERS = new Set([
   "opencode-free",
-  "opencodex",
-  "openai-codex",
-  "github-copilot",
   "kimi-coding",
   "qwen-token-plan",
   "qwen-token-plan-cn",
@@ -47,6 +44,30 @@ const SUBSCRIPTION_PROVIDERS = new Set([
   "opencode-go",
 ]);
 const PRICED_PROVIDERS = new Set(["zai-coding-cn"]);
+
+// 美元牌价估算档：与 usage-api.ts 保持一致（2026-11-13 起 claude / gpt /
+// grok / kimi 系按牌价估算，固定汇率 7.2，单一价无峰谷，未收录记 0）。
+const USD_PRICED_PROVIDERS = new Set([
+  "opencodex",
+  "openai-codex",
+  "github-copilot",
+]);
+const USD_CNY = 7.2;
+const USD_PRICE = {
+  "claude-opus-5-5": { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 },
+  "claude-sonnet-5": { input: 2, cacheRead: 0.2, cacheWrite: 2.5, output: 10 },
+  "gpt-5.6-luna": { input: 0.2, cacheRead: 0.02, cacheWrite: 0.25, output: 1.2 },
+  "gpt-6-luna": { input: 0.1, cacheRead: 0.01, cacheWrite: 0.125, output: 0.5 },
+  "gpt-5.6-terra": { input: 2, cacheRead: 0.2, cacheWrite: 2.5, output: 12 },
+  "gpt-5.3-codex-spark": { input: 1.75, cacheRead: 0.175, cacheWrite: 1.75, output: 14 },
+  "grok-4.7": { input: 2, cacheRead: 0.5, cacheWrite: 2, output: 6 },
+  "grok-4.7--fast": { input: 4, cacheRead: 1, cacheWrite: 4, output: 12 },
+  "kimi-k3": { input: 3, cacheRead: 0.3, cacheWrite: 3, output: 15 },
+};
+function usdPriceOf(model) {
+  const slash = model.lastIndexOf("/");
+  return USD_PRICE[slash === -1 ? model : model.slice(slash + 1)];
+}
 
 const ZAI_PRICE = {
   "glm-5.3-flash": { hit: 0.23, miss: 0.8, output: 2.8 },
@@ -81,6 +102,18 @@ function costOf(provider, model, at, record) {
     return { cost: 0, peakCost: 0, offCost: 0 };
   const cacheRead = record.cacheReadTokens ?? 0;
   const cacheWrite = record.cacheWriteTokens ?? 0;
+  if (USD_PRICED_PROVIDERS.has(provider)) {
+    const price = usdPriceOf(model);
+    if (price === undefined) return { cost: 0, peakCost: 0, offCost: 0 };
+    const cost =
+      (((record.inputTokens + cacheWrite) * price.input +
+        cacheRead * price.cacheRead +
+        cacheWrite * (price.cacheWrite - price.input) +
+        record.outputTokens * price.output) /
+        1_000_000) *
+      USD_CNY;
+    return { cost, peakCost: 0, offCost: 0 };
+  }
   if (PRICED_PROVIDERS.has(provider)) {
     const bare = model.slice(provider.length + 1).toLowerCase();
     const price = ZAI_PRICE[bare];
@@ -125,7 +158,9 @@ function modelOf(provider, model) {
       : undefined;
   }
   if (
-    (SUBSCRIPTION_PROVIDERS.has(provider) || PRICED_PROVIDERS.has(provider)) &&
+    (SUBSCRIPTION_PROVIDERS.has(provider) ||
+      PRICED_PROVIDERS.has(provider) ||
+      USD_PRICED_PROVIDERS.has(provider)) &&
     model !== ""
   )
     return `${provider}/${model}`;
@@ -219,6 +254,7 @@ async function scanSessions(windowMs) {
   // 扫描结果：天 × 模型 → 聚合；记录缺失 session 时项目名用目录推导不可行，
   // 因此按「记录仍存在的事件」逐条保留用于折叠（内存放得下：缺口级别几千条）。
   const scanned = new Map(); // `${day}\u0000${model}` -> CellSummary（目标值）
+  const scannedCost = new Map(); // `${day}\u0000${project}\u0000${model}` -> 目标费用（元）
   const records = []; // 待折叠的完整记录（含 project），折叠时再按存量裁剪
   let events = 0;
 
@@ -266,9 +302,12 @@ async function scanSessions(windowMs) {
       const bucket = scanned.get(cellKey) ?? emptyCell();
       addCell(bucket, cellOf(records[records.length - 1]));
       scanned.set(cellKey, bucket);
+      const record = records[records.length - 1];
+      const triple = `${record.day}\u0000${record.project}\u0000${record.model}`;
+      scannedCost.set(triple, (scannedCost.get(triple) ?? 0) + record.cost);
     }
   }
-  return { scanned, records, events };
+  return { scanned, scannedCost, records, events };
 }
 
 // ===== 主流程 =====
@@ -288,7 +327,9 @@ async function main() {
   for await (const entry of glob("**/session*.jsonl.zstd", { cwd: root })) {
     files.push([entry.split("/")[0], join(root, entry)]);
   }
-  const { scanned, records, events } = await scanSessions(windowMs(windowDays));
+  const { scanned, scannedCost, records, events } = await scanSessions(
+    windowMs(windowDays),
+  );
   console.log(`扫描到 ${events} 条带 usage 的记账事件（模型键有效）。`);
 
   // 与存量按「天 × 模型」算差额；只折叠缺口对应的记录。
@@ -337,6 +378,31 @@ async function main() {
     folded += 1;
   }
 
+  // 费用补差：这些模型的存量费用是按旧口径（记 0）落的，条数已齐但费用
+  // 缺失。按「天 × 项目 × 模型」三元组把目标费用与存量费用的差额直接加进
+  // 聚合桶（calls/词元不变，只补 cost）。
+  let costAdjusted = 0;
+  let costDeltaTotal = 0;
+  for (const [triple, goalCost] of scannedCost) {
+    if (goalCost <= 0) continue;
+    const [day, project, model] = triple.split("\u0000");
+    const bucket = file.days[day];
+    if (bucket === undefined) continue;
+    const stored =
+      bucket.cells[`${project}\u0000${model}`]?.cost ?? 0;
+    const delta = goalCost - stored;
+    if (delta <= 1e-9) continue;
+    bucket.total.cost += delta;
+    const modelBucket = bucket.byModel[model];
+    if (modelBucket !== undefined) modelBucket.cost += delta;
+    const projectBucket = bucket.byProject[project];
+    if (projectBucket !== undefined) projectBucket.cost += delta;
+    const pairBucket = bucket.cells[`${project}\u0000${model}`];
+    if (pairBucket !== undefined) pairBucket.cost += delta;
+    costAdjusted += 1;
+    costDeltaTotal += delta;
+  }
+
   const afterTotals = totalCalls(file);
   console.log(`补录 ${folded} 条记录到 days 聚合（today 明细未动）。`);
   for (const [model, n] of [...groupModel(perModel)].sort((a, b) => b[1] - a[1]))
@@ -344,6 +410,10 @@ async function main() {
   console.log(
     `调用次数总量：${beforeTotals} → ${afterTotals}（净增 ${afterTotals - beforeTotals}）`,
   );
+  if (costAdjusted > 0)
+    console.log(
+      `费用补差 ${costAdjusted} 个（天×项目×模型）桶，合计补 ¥${costDeltaTotal.toFixed(2)}`,
+    );
   if (dryRun) {
     console.log("dry-run：不写盘。");
     return;

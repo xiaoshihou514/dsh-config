@@ -1069,7 +1069,11 @@ export function UsageSection() {
           icon={<IconListPenOutline16 size={16} />}
           value={money(shown.cost)}
           label="费用"
-          hint={`高峰 ${money(shown.peakCost)} · 闲时 ${money(shown.offCost)}`}
+          hint={
+            shown.peakCost > 0 || shown.offCost > 0
+              ? `高峰 ${money(shown.peakCost)} · 闲时 ${money(shown.offCost)}`
+              : "按 API 牌价估算（无峰谷差价）"
+          }
         />
       </div>
 
