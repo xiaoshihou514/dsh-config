@@ -31,7 +31,6 @@ const HEADER = "x-dsh-config";
 const HEADER_VALUE = "usage-calendar";
 
 const OFFICIAL_PROVIDER = "deepseek-official";
-/** 订阅档：不按 token 计费，只记账词元量。 */
 /** 订阅档：不按 token 计费，只记账词元量（费用恒 0）。 */
 const SUBSCRIPTION_PROVIDERS = new Set([
   "opencode-free",
