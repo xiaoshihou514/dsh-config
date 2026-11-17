@@ -16,6 +16,8 @@ import { USER_ID } from "../../office/types.ts";
 import { currentSession, getOffice, setOffice, useOffice } from "./store.ts";
 import { CSS } from "./styles.ts";
 import { useSoloPick, useSoloSnapshot } from "./shared.ts";
+import { bossSnapshot, useLeadFacts, useLeadPick } from "./boss.ts";
+import { BOSS_LABEL } from "../../office/boss.ts";
 
 type Selector<T> = (selector: (state: any) => T) => T;
 
@@ -24,7 +26,7 @@ export interface SceneModule {
   propIcon(role: RoleKind, size?: number): string;
   createOfficeScene(
     container: HTMLElement,
-    options: { onSelect(id: string | null): void; layout?: "ring" | "rows" },
+    options: { onSelect(id: string | null): void; layout?: "ring" | "rows" | "boss" },
   ): {
     update(snapshot: OfficeSnapshot, live: Record<string, boolean>): void;
     select(id: string | null): void;
@@ -385,9 +387,10 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const [sceneError, setSceneError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<"office" | "gallery">("office");
-  /** 看哪个办公室：当前团队，或所有项目单智能体的共享办公室。 */
-  const [view, setView] = useState<"team" | "shared">("team");
+  /** 看哪个办公室：当前团队、所有项目单智能体的共享办公室、各团队组长来汇报的老板办公室。 */
+  const [view, setView] = useState<"team" | "shared" | "boss">("team");
   const shared = view === "shared";
+  const bossView = view === "boss";
   const [api, setApi] = useState<SceneModule | null>(null);
   /** 场景每重建一次加一：新场景要立刻同步模式、暂停、提醒与快照（setApi 传同一个模块不会触发重渲染）。 */
   const [sceneVersion, setSceneVersion] = useState(0);
@@ -414,11 +417,25 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const soloPick = useSoloPick(shared, useSessions as never, leads);
   const nameOfProject = useProjectName();
   const solo = useSoloSnapshot(shared, soloPick.ids, nameOfProject);
-  /** 场景与左栏显示的那份快照。 */
-  const shown = shared ? solo.snapshot : snapshot;
+  // 老板办公室：一直轮询（HUD 角标要用），在老板办公室里更勤
+  const leadPick = useLeadPick(useSessions as never, leads);
+  const leadFacts = useLeadFacts(leadPick, bossView);
 
-  const memberIds = useMemo(() => shown?.members.map((m) => m.id) ?? [], [shown]);
+  const viewIds = shared ? (solo.snapshot?.members.map((m) => m.id) ?? []) : (snapshot?.members.map((m) => m.id) ?? []);
+  const bossIds = (leadFacts.leads ?? []).flatMap((f) => [f.member.id, ...f.memberIds]);
+  const idKey = [...viewIds, "|", ...bossIds].join(",");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const memberIds = useMemo(() => [...new Set([...viewIds, ...bossIds])], [idKey]);
   const live = useLive(memberIds, useSessions, useSessionStatus);
+  const liveKey = memberIds.map((id) => (live[id] === undefined ? "-" : live[id] ? "1" : "0")).join("");
+  const boss = useMemo(
+    () => bossSnapshot(leadFacts.leads, live, nameOfProject),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [leadFacts.leads, liveKey],
+  );
+  const bossPending = boss?.members.filter((m) => m.boss === "report" || m.boss === "error").length ?? 0;
+  /** 场景与左栏显示的那份快照。 */
+  const shown = shared ? solo.snapshot : bossView ? boss : snapshot;
 
   useEffect(() => {
     setSnapshot(null);
@@ -426,8 +443,8 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
     setError(null);
   }, [leadId]);
   useEffect(() => setSelected(null), [view]);
-  /** 场景随「团队 / 共享办公室」重建（布局不同）。 */
-  const sceneKey = shared ? "__shared__" : leadId;
+  /** 场景随「团队 / 共享办公室 / 老板办公室」重建（布局不同）。 */
+  const sceneKey = shared ? "__shared__" : bossView ? "__boss__" : leadId;
 
   // 轮询快照
   useEffect(() => {
@@ -484,7 +501,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
         if (disposed || sceneHost.current === null) return;
         scene.current = module.createOfficeScene(sceneHost.current, {
           onSelect: (id) => setSelected(id),
-          layout: sceneKey === "__shared__" ? "rows" : "ring",
+          layout: sceneKey === "__shared__" ? "rows" : sceneKey === "__boss__" ? "boss" : "ring",
         });
         setApi(module);
         setSceneVersion((v) => v + 1);
@@ -500,7 +517,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const nameOf = nameOfProject;
   const displayName = snapshot === null ? undefined : nameOf(snapshot.cwd);
   useEffect(() => {
-    if (shown !== null) scene.current?.update(shared ? shown : { ...shown, projectName: displayName }, live);
+    if (shown !== null) scene.current?.update(shared || bossView ? shown : { ...shown, projectName: displayName }, live);
   });
   useEffect(() => scene.current?.select(selected), [selected, sceneVersion]);
   useEffect(() => scene.current?.setMode(mode), [mode, sceneVersion]);
@@ -511,16 +528,22 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const running = members.filter(isRunning).length;
   const member = members.find((m) => m.id === selected);
   // 醒目提醒只看当前团队（共享办公室里不打扰）
-  const teamRunning = shared ? (snapshot?.members ?? []).filter((m) => m.busy).length : running;
+  const teamRunning = view !== "team" ? (snapshot?.members ?? []).filter((m) => m.busy).length : running;
   const attention = useAttention(snapshot, leadId, teamRunning, chatOpen);
   const unreadOf = useUnread(snapshot, chatOpen);
   const unread = (id: string) => unreadOf(id) || (attention !== null && id === attention.leadId);
   useEffect(
-    () => scene.current?.setAttention?.(shared ? null : (attention?.leadId ?? null), attention?.kind),
-    [attention?.leadId, attention?.kind, attention?.at, sceneVersion, shared],
+    () => scene.current?.setAttention?.(view !== "team" ? null : (attention?.leadId ?? null), attention?.kind),
+    [attention?.leadId, attention?.kind, attention?.at, sceneVersion, view],
   );
   const openChat = (id: string) => {
-    if (shared) {
+    if (bossView) {
+      // 打开组长对话就算看过这次汇报（团队办公室的横幅同步消失）
+      const lead = boss?.members.find((m) => m.id === id);
+      if (lead?.lastTurn !== undefined && lead.boss !== "waiting") acknowledge(id, lead.lastTurn.at);
+      markRead(id);
+    }
+    if (shared || bossView) {
       // 单智能体：直接打开它自己的会话
       setOffice({ chatOpen: true });
       setTimeout(() => {
@@ -565,6 +588,14 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
 
   const notice = sceneError
     ? `场景加载失败：${sceneError}`
+    : bossView
+      ? leadFacts.error
+        ? `读取老板办公室失败：${leadFacts.error}`
+        : boss === null
+          ? "正在进入老板办公室…"
+          : boss.members.length === 0
+            ? "暂无汇报：组长汇报完毕、出错停下或派完活等组员时会来这里"
+            : null
     : shared
       ? solo.error
         ? `读取共享办公室失败：${solo.error}`
@@ -623,7 +654,12 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
             reloadTeams();
           }}
         />
-        {shared ? (
+        {bossView ? (
+          <div className="dso-stats">
+            <Stat label="待处理" value={bossPending} tone={bossPending > 0 ? "good" : undefined} />
+            <Stat label="等组员" value={(boss?.members.length ?? 0) - bossPending} />
+          </div>
+        ) : shared ? (
           <div className="dso-stats">
             <Stat label="在座" value={members.length} />
             <Stat label="工作中" value={running} tone={running > 0 ? "good" : undefined} />
@@ -642,6 +678,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
             [
               ["team", "办公室"],
               ["shared", "共享办公室"],
+              ["boss", "老板办公室"],
               ["gallery", "角色图鉴"],
             ] as const
           ).map(([value, label]) => {
@@ -653,7 +690,13 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
                 role="tab"
                 aria-selected={on}
                 className={on ? "on" : ""}
-                title={value === "shared" ? "所有项目的单智能体：正在运行或 24 小时内活跃的入座" : undefined}
+                title={
+                  value === "shared"
+                    ? "所有项目的单智能体：正在运行或 24 小时内活跃的入座"
+                    : value === "boss"
+                      ? "各团队组长汇报完毕、出错停下或派完活等组员时来这里"
+                      : undefined
+                }
                 onClick={() => {
                   if (value === "gallery") setMode("gallery");
                   else {
@@ -663,6 +706,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
                 }}
               >
                 {label}
+                {value === "boss" && bossPending > 0 && <span className="dso-tab-badge">{bossPending}</span>}
               </button>
             );
           })}
@@ -692,7 +736,19 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
       </header>
       <div className="dso-body">
         <aside className="dso-side">
-          {shared ? (
+          {bossView ? (
+            <BossPanel
+              api={api}
+              snapshot={boss}
+              selected={selected}
+              onPick={(id) => {
+                setSelected(id);
+                setMode("office");
+                scene.current?.focus(id);
+              }}
+              onOpen={openChat}
+            />
+          ) : shared ? (
             <SharedPanel
               api={api}
               snapshot={solo.snapshot}
@@ -744,9 +800,13 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
         <main className="dso-stage">
           <div ref={sceneHost} className="dso-scene" />
           {notice && <div className="dso-notice">{notice}</div>}
-          {mode === "office" && !shared && attention !== null && (
+          {mode === "office" && view === "team" && attention !== null && (
             <AttentionBanner
               attention={attention}
+              onBoss={() => {
+                setView("boss");
+                setMode("office");
+              }}
               onOpen={() => openChat(attention.leadId)}
               onDismiss={() => {
                 acknowledge(attention.leadId, attention.at);
@@ -919,7 +979,17 @@ function useAttention(snapshot: OfficeSnapshot | null, leadId: string | null, ru
   return candidate === null ? null : stable;
 }
 
-function AttentionBanner({ attention, onOpen, onDismiss }: { attention: Attention; onOpen: () => void; onDismiss: () => void }) {
+function AttentionBanner({
+  attention,
+  onOpen,
+  onBoss,
+  onDismiss,
+}: {
+  attention: Attention;
+  onOpen: () => void;
+  onBoss: () => void;
+  onDismiss: () => void;
+}) {
   const [, tick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => tick((v) => v + 1), 30_000);
@@ -939,6 +1009,9 @@ function AttentionBanner({ attention, onOpen, onDismiss }: { attention: Attentio
       </span>
       <button type="button" className="dso-btn primary sm" onClick={onOpen}>
         {error ? "去看看" : "查看汇报"}
+      </button>
+      <button type="button" className="dso-btn ghost sm" title="所有团队的汇报都在老板办公室" onClick={onBoss}>
+        去老板办公室
       </button>
       <button type="button" className="dso-attn-x" title="知道了" onClick={onDismiss}>
         ✕
@@ -1216,6 +1289,69 @@ function InteractionItem({ item, names }: { item: OfficeInteraction; names: Map<
       </div>
       {open ? <pre className="dso-log-full">{item.text}</pre> : <div className="dso-log-preview">{item.preview}</div>}
     </li>
+  );
+}
+
+/** 老板办公室左栏：待处理（汇报 / 出错）在前，等组员的在后；💬 打开组长对话。 */
+function BossPanel({
+  api,
+  snapshot,
+  selected,
+  onPick,
+  onOpen,
+}: {
+  api: SceneModule | null;
+  snapshot: OfficeSnapshot | null;
+  selected: string | null;
+  onPick: (id: string) => void;
+  onOpen: (id: string) => void;
+}) {
+  if (snapshot === null) return <div className="dso-empty">加载中…</div>;
+  const pending = snapshot.members.filter((m) => m.boss !== "waiting");
+  const waiting = snapshot.members.filter((m) => m.boss === "waiting");
+  const card = (m: OfficeMember) => (
+    <div
+      key={m.id}
+      className={`dso-card ${m.boss === "error" ? "bad" : m.boss === "report" ? "good" : "idle"}${m.id === selected ? " sel" : ""}`}
+      style={{ ["--role" as string]: ROLE_COLOR.lead }}
+    >
+      <button type="button" className="dso-card-main" onClick={() => onPick(m.id)}>
+        <Avatar api={api} member={m} size={44} />
+        <span className="dso-card-text">
+          <span className="dso-card-name">
+            <b>{m.project ?? "项目"}</b>
+            <span className="dso-role-tag">{VENDOR_LABEL[m.vendor]}</span>
+          </span>
+          <span className="dso-card-sub dso-ellipsis" title={m.description}>
+            {m.description ?? "组长"}
+          </span>
+          <span className="dso-card-status">
+            <span className="dso-led" />
+            <span className="dso-ellipsis">
+              {m.boss === undefined ? "" : BOSS_LABEL[m.boss]}
+              {m.lastTurn !== undefined && m.boss !== "waiting" ? ` · ${agoShort(m.lastTurn.at)}` : ""}
+            </span>
+          </span>
+        </span>
+      </button>
+      <button type="button" className="dso-card-chat" title="打开组长对话" onClick={() => onOpen(m.id)}>
+        💬
+      </button>
+    </div>
+  );
+  return (
+    <>
+      <h3 className="dso-section">
+        <span>待处理</span>
+        <small>{pending.length}</small>
+      </h3>
+      {pending.length === 0 ? <div className="dso-empty">暂无汇报</div> : <div className="dso-roster">{pending.map(card)}</div>}
+      <h3 className="dso-section dso-shared-project">
+        <span>派完活、等组员</span>
+        <small>{waiting.length}</small>
+      </h3>
+      {waiting.length === 0 ? <div className="dso-empty">没有</div> : <div className="dso-roster">{waiting.map(card)}</div>}
+    </>
   );
 }
 

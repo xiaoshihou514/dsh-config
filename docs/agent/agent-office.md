@@ -8,8 +8,9 @@ Agent Teams 的 3D 可视化，以「办公室模式」呈现：侧边栏左下�
 
 | 文件 | 职责 |
 |---|---|
-| `src/agent-office.ts` | 宿主插件：`GET /dsh-config/office?lead=`（需 `x-dsh-config: agent-office`，带 ETag）、`POST /dsh-config/office/override`（手动指定岗位 / 人设 / 档位，存 `$DSH_HOME/dsh-config/office-overrides.json`）、`GET /dsh-config/office/teams`（组建过团队的会话列表，按最近活跃排序）、`GET /dsh-config/office/solo?ids=`（共享办公室入选者的详情）、`GET /dsh-config/office/scene.js`（ETag 协商缓存） |
+| `src/agent-office.ts` | 宿主插件：`GET /dsh-config/office?lead=`（需 `x-dsh-config: agent-office`，带 ETag）、`POST /dsh-config/office/override`（手动指定岗位 / 人设 / 档位，存 `$DSH_HOME/dsh-config/office-overrides.json`）、`GET /dsh-config/office/teams`（组建过团队的会话列表，按最近活跃排序）、`GET /dsh-config/office/solo?ids=`（共享办公室入选者的详情）、`GET /dsh-config/office/leads?ids=`（老板办公室组长的判定事实）、`GET /dsh-config/office/scene.js`（ETag 协商缓存） |
 | `src/office/derive.ts` | 纯推导：会话事件 → 成员活动、当前动作、交流、任务（有单测） |
+| `src/office/boss.ts` | 老板办公室：组长「汇报 / 出错 / 等组员」的判定（宿主与浏览器共用） |
 | `src/office/classify.ts` | 模型 → 厂商 / 档位，名字 + 描述 → 岗位；改档位规则看 `FAST_PATTERNS` / `FLAGSHIP_PATTERNS` |
 | `src/office-scene/` | three.js 场景（独立 ESM `lib/office-scene.js`，进入办公室时才加载）；`slack.ts` 是空闲角色的摸鱼动作 |
 | `src/client/office/` | 办公室模式：`OfficeShell.tsx`（覆盖层、HUD、项目面板、队伍 / 详情 / 交流）、`store.ts`（持久状态）、`styles.ts`（样式）；`SessionAvatar.tsx` 是对话界面的角色头像 |
@@ -21,6 +22,15 @@ Agent Teams 的 3D 可视化，以「办公室模式」呈现：侧边栏左下�
 - 详情：`GET /dsh-config/office/solo?ids=a,b,…`（最多 40 个）只为入选者补模型、当前动作、最近一轮：逐个走 `digestOf`（已加载读内存、未加载按存储版本缓存摘要），成员由 `derive.ts` 的 `memberFromDigest` 组装（与团队成员同一套厂商 / 档位 / 岗位识别，岗位按会话标题），套用手动指定；带 ETag，浏览器每 3 秒轮询、未变化 304。是否在跑仍以浏览器会话状态为准。
 - 场景：`createOfficeScene(…, { layout: "rows" })` 开放式长桌，6 列 × 4 排（`ROW_COLS` / `ROW_ZS`），从后排往前排、从左往右填，人面朝镜头。浏览器按项目名排好成员顺序，同项目坐在一起；人进进出出时优先坐列表位置对应的工位，被占了就坐第一个空位（`Agent.seat`）。在跑的打字 / 阅读，空闲的照常摸鱼、闲逛。名牌「角色名·项目名」（`OfficeMember.project`），副标题是会话标题。醒目提醒与横幅只在团队办公室出现。
 - 左栏 `SharedPanel`：按项目分组的卡片，点卡片定位，💬 打开它自己的对话（`openSession(id, id)`）。
+
+## 老板办公室
+
+- 入口：HUD 页签「老板办公室」（待处理数红色角标）；团队办公室的醒目提醒横幅上有「去老板办公室」。各团队组长在有事时来这里向你（老板）汇报。
+- 判定（`office/boss.ts` 的 `bossStateOf`）：waiting = 有组员在跑、组长没在干活（没有未结束的步骤，或卡在等组员的工具上）；report / error = 全队停下、组长这一轮已结束，按成败区分；组长自己在干活、或还没开过一轮的不来。是否在跑以浏览器会话状态为准（`client/office/boss.ts` 的 `bossOf`），宿主推导兜底。
+- 候选（`pickLeads`，浏览器端，零扫描）：`/office/teams` 里的组长（还没招人的也算）与会话列表里有子会话的顶层会话，只留 24 小时内组长或任一组员有活动（或正在运行）的，最近的在前，最多 24 个。
+- 事实：`GET /dsh-config/office/leads?ids=…`（最多 24 个）只为候选读组长与组员的摘要（`digestOf`，已加载读内存、未加载按存储版本缓存），返回组长成员、`leadWaiting`、组员 id 与宿主推导的「组员在跑」；不枚举会话。带 ETag，在老板办公室里每 5 秒、其他时候每 15 秒（只为角标）轮询，未变化 304。
+- 场景（`layout: "boss"`）：老板桌（大桌 + 红色老板椅，空着的椅子就是你，头顶「👔 老板（你）」名牌）在后墙中段，身后墙上挂待办屏（汇报 / 出错在前、等组员在后，超过 5 行慢慢滚动）；桌子与墙屏在首帧后空闲时才搭。汇报 / 出错的组长在桌子左前方斜着排队、面朝桌前：汇报的把文件夹递向桌前、边说边欠身，出错的低头垂手；等组员的在右前方空地（3×3，多出的去休息区）抱臂看表、两点间踱步。组长不带工位、不闲逛；状态不变位置不变，变了换到对应区域第一个空位。名牌与状态气泡常显。
+- 左栏 `BossPanel`：待处理在前、等组员在后；💬 打开组长对话，汇报 / 出错的同时记为已看过（与团队办公室的醒目提醒共用 `dsh-config:office-ack`）。
 
 ## 用量 / 设置入口
 

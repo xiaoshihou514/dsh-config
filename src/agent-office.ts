@@ -12,6 +12,8 @@
  *   `office/member-model.ts`）。
  * - `GET /dsh-config/office/solo?ids=a,b,…`：共享办公室的单智能体（浏览器按会话列表选好入选者，
  *   这里只处理传入的几个，按存储版本缓存摘要）。带 ETag，轮询时未变化返回 304。
+ * - `GET /dsh-config/office/leads?ids=a,b,…`：老板办公室的组长（浏览器按会话列表挑出 24 小时内活跃的团队，
+ *   这里只处理传入的组长及其组员，摘要按存储版本缓存），给出判定「汇报 / 出错 / 等组员」所需的事实。带 ETag。
  * - `GET /dsh-config/office/scene.js`：按需加载的 three.js 体素场景（ESM），带
  *   ETag（文件修改时间），浏览器协商缓存；重建后刷新即可生效。
  */
@@ -41,6 +43,9 @@ const SCENE_ROUTE = "/dsh-config/office/scene.js";
 const OVERRIDE_ROUTE = "/dsh-config/office/override";
 const TEAMS_ROUTE = "/dsh-config/office/teams";
 const SOLO_ROUTE = "/dsh-config/office/solo";
+const LEADS_ROUTE = "/dsh-config/office/leads";
+/** 老板办公室一次最多处理的组长数。 */
+const LEADS_LIMIT = 24;
 /** 共享办公室一次最多处理的会话数（浏览器端截断到 24 人，这里留余量）。 */
 const SOLO_LIMIT = 40;
 
@@ -449,6 +454,79 @@ export function apply(ctx: Context): void {
     },
   };
 
+  /**
+   * 老板办公室：入选的组长由浏览器从原生会话列表挑好（24 小时内团队有活动），这里只为它们
+   * 读组长与组员的摘要（已加载读内存，未加载按存储版本缓存），给出判定所需的事实——不枚举会话。
+   */
+  const leadsRoute: WebRoute = {
+    kind: "exact",
+    path: LEADS_ROUTE,
+    handler: async (request, response) => {
+      if (request.headers[HEADER] !== HEADER_VALUE) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (request.method !== "GET") {
+        response.writeHead(405).end();
+        return;
+      }
+      const raw = new URL(request.url ?? "/", "http://x").searchParams.get("ids") ?? "";
+      const ids = [...new Set(raw.split(",").map((id) => id.trim()).filter((id) => id.length > 0 && id.length <= 200))].slice(
+        0,
+        LEADS_LIMIT,
+      );
+      try {
+        const results = await Promise.all(
+          ids.map(async (id) => {
+            const lead = await digestOf(id, undefined);
+            if (lead === undefined || lead.digest.team.length === 0) return { id, lead: undefined, members: [] };
+            const members = await Promise.all(
+              lead.digest.team.map(async (entry) => ({ id: entry.id, result: await digestOf(entry.id, id) })),
+            );
+            return { id, lead, members };
+          }),
+        );
+        await overridesLoaded;
+        const keys = results.map(
+          ({ id, lead, members }) =>
+            `${id}=${lead?.key ?? "-"}${lead?.loaded === true ? "+" : ""}:${members
+              .map((m) => `${m.result?.key ?? "-"}${m.result?.loaded === true ? "+" : ""}`)
+              .join(",")}`,
+        );
+        const etag = `"${hash(`leads|${keys.join("|")}|o${overridesVersion}`)}"`;
+        if (request.headers["if-none-match"] === etag) {
+          response.writeHead(304, { etag }).end();
+          return;
+        }
+        const leads = results.flatMap(({ id, lead, members }) => {
+          if (lead === undefined) return [];
+          const title = lead.digest.title;
+          const member = memberFromDigest(
+            lead.digest,
+            { id, name: "组长", role: "lead", description: title, phase: "active", joinedAt: lead.digest.firstAt },
+            lead.loaded,
+          );
+          const [withOverride] = applyOverrides(
+            { leadId: id, generatedAt: 0, members: [member], interactions: [], tasks: [], taskSource: "none" },
+            overrides,
+          ).members;
+          return [
+            {
+              member: { ...withOverride!, cwd: lead.cwd },
+              leadWaiting: lead.digest.current?.kind === "waiting",
+              memberIds: members.map((m) => m.id),
+              membersRunning: members.some((m) => m.result !== undefined && m.result.loaded && m.result.digest.open),
+            },
+          ];
+        });
+        respondJson(response, 200, { ok: true, leads }, etag);
+      } catch (error) {
+        logger.warn("生成老板办公室失败：%s", String(error));
+        respondJson(response, 500, { ok: false, error: String(error) });
+      }
+    },
+  };
+
   const sceneFile = fileURLToPath(new URL("./office-scene.js", import.meta.url));
   const sceneRoute: WebRoute = {
     kind: "exact",
@@ -486,6 +564,7 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.webServer.register(overrideRoute), "dsh-config: agent office overrides");
   ctx.effect(() => ctx.webServer.register(teamsRoute), "dsh-config: agent office teams");
   ctx.effect(() => ctx.webServer.register(soloRoute), "dsh-config: agent office solo");
+  ctx.effect(() => ctx.webServer.register(leadsRoute), "dsh-config: agent office leads");
   registerMemberModelRoutes(ctx, logger);
 }
 

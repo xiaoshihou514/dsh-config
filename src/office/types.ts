@@ -113,6 +113,8 @@ export interface OfficeMember {
   readonly cwd?: string | undefined;
   /** 共享办公室（单智能体）：项目显示名；有它时名牌显示「角色名·项目名」。 */
   readonly project?: string | undefined;
+  /** 老板办公室：组长来汇报的原因（见 `office/boss.ts`）。 */
+  readonly boss?: "report" | "error" | "waiting" | undefined;
 }
 
 /** 成员之间（含你本人）的一次交流。`from`/`to` 是成员 id，你本人为 `"user"`。 */

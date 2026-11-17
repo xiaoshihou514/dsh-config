@@ -38,14 +38,16 @@ import { NavGrid } from "./nav.ts";
 import { Voxels, voxelMaterial } from "./voxel.ts";
 import { buildRoleProp } from "./props.ts";
 import { slack, slackReset, slackRoutines, type SlackPlace, type SlackWhere } from "./slack.ts";
+import { BOSS_LABEL } from "../office/boss.ts";
 
 export interface SceneOptions {
   readonly onSelect: (id: string | null) => void;
   /**
    * 工位布局：ring = 团队圆桌（组长坐圆心）；rows = 共享办公室的开放式长桌（几排面朝镜头，
-   * 调用方按项目排好成员顺序，同项目坐在一起）。创建后不变。
+   * 调用方按项目排好成员顺序，同项目坐在一起）；boss = 老板办公室（老板桌 + 墙上待办屏，
+   * 组长按 `member.boss` 排队汇报或在空地踱步等组员）。创建后不变。
    */
-  readonly layout?: "ring" | "rows";
+  readonly layout?: "ring" | "rows" | "boss";
 }
 
 export interface OfficeScene {
@@ -243,6 +245,42 @@ function rowSpot(index: number): Spot {
   return { x, z, facing: 0, seat: "chair", approach: [[x, AISLE], [x - 1.1, AISLE], [x - 1.1, z - 0.9], [x, z]] };
 }
 
+/** 老板办公室：老板桌（空着的老板椅就是你），墙上待办屏在它身后。 */
+const BOSS_SEAT: Spot = { x: 2.6, z: -7.2, facing: 0, seat: "chair", approach: [[2.6, AISLE], [2.6, -7.2]] };
+/**
+ * 汇报 / 出错的组长在老板桌左前方斜着排队。你（老板）就是看画面的人，所以基本面朝镜头、
+ * 略侧向老板桌（与醒目提醒「面朝镜头」一致）。
+ */
+const BOSS_QUEUE_FACING = 0.95;
+function bossQueueSpot(k: number): Spot {
+  const row = Math.floor(k / 5);
+  const i = k % 5;
+  // 往左前方（朝镜头）斜着排：名牌在画面上左右、上下都错开
+  const x = 0.4 - i * 1.2 - row * 2.2;
+  const z = -5.4 + i * 1.9 - row * 0.4;
+  return { x, z, facing: BOSS_QUEUE_FACING, approach: [[x, AISLE], [x, z]] };
+}
+/** 等组员的组长在右前方空地踱步（3×3），多出的去休息区。 */
+const BOSS_WAIT_COLS = [4.6, 6.8, 9.0] as const;
+const BOSS_WAIT_ZS = [-2.4, 0.4, 3.2] as const;
+function bossWaitSpots(k: number): [Spot, Spot] {
+  const n = BOSS_WAIT_COLS.length * BOSS_WAIT_ZS.length;
+  if (k >= n) {
+    const spot = LOUNGE_SPOTS[(k - n) % LOUNGE_SPOTS.length]!;
+    return [spot, spot];
+  }
+  const col = k % BOSS_WAIT_COLS.length;
+  const x = BOSS_WAIT_COLS[col]!;
+  const z = BOSS_WAIT_ZS[Math.floor(k / BOSS_WAIT_COLS.length)]!;
+  const x2 = col === BOSS_WAIT_COLS.length - 1 ? x - 0.9 : x + 0.9;
+  // 等组员的边踱步边朝老板桌这边张望（偏向镜头，免得只看到后背）
+  const facing = (faceTo(x, z, [BOSS_SEAT.x, BOSS_SEAT.z]) + 0.62) / 2;
+  return [
+    { x, z, facing, approach: [[x, AISLE], [x, z]] },
+    { x: x2, z, facing, approach: [[x2, AISLE], [x2, z]] },
+  ];
+}
+
 const LEAD_DESK: Spot = {
   x: RING_CENTER[0],
   z: RING_CENTER[1],
@@ -429,7 +467,8 @@ class Agent {
   member: OfficeMember;
   readonly rig: CharacterRig;
   readonly desk: DeskParts;
-  readonly deskAt: Spot;
+  /** 工位（老板办公室里是排队 / 踱步的位置，状态变了会换）。 */
+  deskAt: Spot;
   idleAt: Spot;
   at: Spot;
   path: P2[] = [];
@@ -465,6 +504,11 @@ class Agent {
   wanderAt = 0;
   /** 排式布局里的工位序号（-1 = 圆桌布局）。 */
   seat = -1;
+  /** 老板办公室：来汇报的原因与位置序号；踱步的另一个点。 */
+  boss: "report" | "error" | "waiting" | null = null;
+  bossSlot = -1;
+  paceTo: Spot | undefined;
+  paceAt = 0;
 
   constructor(
     member: OfficeMember,
@@ -474,6 +518,8 @@ class Agent {
     parent: THREE.Object3D,
     labels: HTMLElement,
     onTagClick: (id: string) => void,
+    /** 老板办公室里组长不带工位。 */
+    withDesk = true,
   ) {
     this.member = member;
     this.deskAt = deskAt;
@@ -488,7 +534,7 @@ class Agent {
     this.desk = buildDesk(member.roleKind, member.role === "lead");
     this.desk.group.position.set(deskAt.x, 0, deskAt.z);
     this.desk.group.rotation.y = deskAt.facing;
-    parent.add(this.desk.group);
+    if (withDesk) parent.add(this.desk.group);
 
     this.label = document.createElement("div");
     this.label.className = "dso-label";
@@ -522,10 +568,11 @@ class Agent {
     const sub = document.createElement("span");
     sub.className = "dso-sub";
     if (m.project !== undefined) {
-      // 共享办公室：「角色名·项目名」，副标题是会话标题
+      // 共享办公室 / 老板办公室：「角色名·项目名」；共享办公室的副标题是会话标题（老板办公室人多名牌常显，不加）
       name.textContent = `${VENDOR_LABEL[m.vendor]}·${m.project}`;
-      const title = m.description ?? "";
+      const title = m.boss === undefined ? (m.description ?? "") : "";
       sub.textContent = title.length > 16 ? `${title.slice(0, 15)}…` : title;
+      sub.style.display = title === "" ? "none" : "";
     } else {
       name.textContent = m.name;
       sub.textContent = `${VENDOR_LABEL[m.vendor]}·${TIER_LABEL[m.tier]}`;
@@ -716,8 +763,38 @@ function pose(agent: Agent, t: number, dt: number): void {
     } else {
       arms(rig, [-0.15 + Math.sin(t * 1.3 + seed) * 0.05, 0, -0.3], [-0.3 + Math.sin(t * 1.1 + seed) * 0.05, 0, 0.3]);
     }
-    // 空闲站着（组长休息点、茶几旁）：按人设轮换摸鱼；有提醒、入职中时不摸
-    if (agent.status === "inactive" && agent.attention === null) fish("stand");
+    // 空闲站着（组长休息点、茶几旁）：按人设轮换摸鱼；有提醒、入职中、在老板办公室时不摸
+    if (agent.status === "inactive" && agent.attention === null && agent.boss === null) fish("stand");
+    if (agent.boss === "report") {
+      // 递交汇报：右手把文件夹递向桌前，边说边微微欠身
+      rig.head.rotation.y = 0;
+      const talk = Math.floor(t * 5 + seed) % 2 === 0;
+      arms(rig, [-0.35, 0, -0.25], [-1.35 + Math.sin(t * 1.5) * 0.06, 0, -0.1]);
+      if (rig.upper) rig.upper.rotation.x = 0.06 + Math.max(0, Math.sin(t * 0.8)) * 0.05;
+      rig.head.rotation.x = 0.05;
+      eyes = every(t, 5, 1.2, seed) >= 0 ? "happy" : "open";
+      mouth = talk ? "open" : "small";
+    } else if (agent.boss === "error") {
+      rig.head.rotation.x = 0.35;
+      rig.head.rotation.y = Math.sin(t * 0.8 + seed) * 0.1;
+      arms(rig, [0.05, 0, -0.12], [0.05, 0, 0.12]);
+      if (rig.upper) rig.upper.rotation.x = 0.08;
+      eyes = "half";
+      mouth = "small";
+    } else if (agent.boss === "waiting") {
+      // 抱臂等组员，隔一会儿抬手看表
+      const watch = every(t, 7, 1.4, seed);
+      if (watch >= 0) {
+        arms(rig, [-1.6, 0, 0.55], [-1.25, 0, -0.9]);
+        rig.head.rotation.x = 0.3;
+        rig.head.rotation.y = 0.25;
+      } else {
+        arms(rig, [-1.25, 0, 0.95], [-1.3, 0, -0.95]);
+        rig.head.rotation.y = Math.sin(t * 0.8 + seed) * 0.35;
+      }
+      rig.legR.rotation.x = Math.max(0, Math.sin(t * 6)) * 0.12;
+      if (every(t, 9, 0.8, seed + 2) >= 0) eyes = "closed";
+    }
   }
 
   // 收到消息：轻跳 + 惊讶
@@ -858,9 +935,81 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   const addDecor = () => {
     if (disposed) return;
     decorGroups.push(buildDecor(RING_CENTER), buildLounge());
+    if (options.layout === "boss") decorGroups.push(buildBossCorner());
     office.add(...decorGroups);
     navDirty = true;
   };
+
+  // ---- 老板办公室：老板桌（空着的老板椅就是你）、身后墙上的待办屏、头顶名牌
+  const bossBoard = { canvas: document.createElement("canvas"), texture: undefined as THREE.CanvasTexture | undefined, drawnAt: -10 };
+  let bossTag: HTMLDivElement | undefined;
+  function buildBossCorner(): THREE.Group {
+    const group = new THREE.Group();
+    const desk = buildDesk("lead", true);
+    desk.group.position.set(BOSS_SEAT.x, 0, BOSS_SEAT.z);
+    drawScreen(desk.screenCanvas, "idle", "lead", 0, "");
+    desk.screenTexture.needsUpdate = true;
+    group.add(desk.group);
+    // 墙上待办屏：后墙中间窗与右窗之间，朝镜头
+    bossBoard.canvas.width = 512;
+    bossBoard.canvas.height = 280;
+    bossBoard.texture = new THREE.CanvasTexture(bossBoard.canvas);
+    bossBoard.texture.colorSpace = THREE.SRGBColorSpace;
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(3.0, 1.66, 0.08), new THREE.MeshLambertMaterial({ color: "#23262e" }));
+    frame.position.set(BOSS_SEAT.x, 2.05, ROOM.z0 + 0.06);
+    const panel = new THREE.Mesh(new THREE.PlaneGeometry(2.84, 1.52), new THREE.MeshBasicMaterial({ map: bossBoard.texture }));
+    panel.position.set(BOSS_SEAT.x, 2.05, ROOM.z0 + 0.105);
+    // 贴在墙上，不当寻路障碍（高处）
+    group.add(frame, panel);
+    bossTag = document.createElement("div");
+    bossTag.className = "dso-label";
+    bossTag.innerHTML = '<div class="dso-gallery">👔 老板（你）</div>';
+    labels.appendChild(bossTag);
+    return group;
+  }
+  /** 待办屏：汇报 / 出错在前、等组员在后，超过 5 行时慢慢滚动。 */
+  function drawBossBoard(t: number): void {
+    const texture = bossBoard.texture;
+    if (texture === undefined || t - bossBoard.drawnAt < 1) return;
+    bossBoard.drawnAt = t;
+    const g = bossBoard.canvas.getContext("2d")!;
+    const w = bossBoard.canvas.width;
+    const h = bossBoard.canvas.height;
+    g.fillStyle = "#11151d";
+    g.fillRect(0, 0, w, h);
+    const rows = [...agents.values()]
+      .filter((a) => a.boss !== null)
+      .sort((a, b) => Number(a.boss === "waiting") - Number(b.boss === "waiting"))
+      .map((a) => ({
+        mark: a.boss === "report" ? "📨" : a.boss === "error" ? "⚠️" : "⏳",
+        color: a.boss === "report" ? "#ffd76a" : a.boss === "error" ? "#ff8a80" : "#a9c7ff",
+        text: `${a.member.project ?? a.member.name} · ${a.boss === null ? "" : BOSS_LABEL[a.boss]}`,
+      }));
+    const pending = rows.filter((r) => r.mark !== "⏳").length;
+    g.font = "bold 26px system-ui, 'Noto Sans CJK SC', sans-serif";
+    g.fillStyle = "#ffffff";
+    g.fillText(`📋 待处理 ${pending}`, 18, 38);
+    g.font = "18px system-ui, 'Noto Sans CJK SC', sans-serif";
+    g.fillStyle = "#8a93a3";
+    g.fillText(rows.length - pending > 0 ? `另有 ${rows.length - pending} 个团队在等组员` : "", 220, 36);
+    g.fillStyle = "#2b3140";
+    g.fillRect(18, 52, w - 36, 2);
+    const visible = 5;
+    const offset = rows.length > visible ? Math.floor(t / 2.5) % rows.length : 0;
+    g.font = "21px system-ui, 'Noto Sans CJK SC', sans-serif";
+    if (rows.length === 0) {
+      g.fillStyle = "#6b7385";
+      g.fillText("暂无汇报，团队都在干活", 18, 100);
+    }
+    for (let i = 0; i < Math.min(visible, rows.length); i += 1) {
+      const row = rows[(offset + i) % rows.length]!;
+      const y = 92 + i * 40;
+      g.fillStyle = row.color;
+      const text = `${row.mark} ${row.text}`;
+      g.fillText(text.length > 26 ? `${text.slice(0, 25)}…` : text, 18, y);
+    }
+    texture.needsUpdate = true;
+  }
   if (idle !== undefined) idle(addDecor, { timeout: 600 });
   else setTimeout(addDecor, 200);
   let room: THREE.Group | undefined;
@@ -881,7 +1030,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       if (navBox.isEmpty() || navBox.max.y - navBox.min.y < 0.2 || navBox.min.y > 1.2) return;
       rects.push({ x0: navBox.min.x, x1: navBox.max.x, z0: navBox.min.z, z1: navBox.max.z });
     };
-    for (const agent of agents.values()) push(agent.desk.group);
+    for (const agent of agents.values()) if (agent.desk.group.parent !== null) push(agent.desk.group);
     for (const group of decorGroups) for (const child of group.children) push(child);
     for (const solid of env.solids) push(solid);
     nav.setObstacles(rects);
@@ -1542,13 +1691,57 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     }
   }
 
+  /**
+   * 老板办公室：汇报 / 出错的排队（老板桌左前方），等组员的在右前方空地踱步。
+   * 状态不变时位置不变；状态变了换到对应区域的第一个空位。组长不带工位、不闲逛。
+   */
+  function placeBoss(member: OfficeMember, status: Status, now: number): void {
+    const state = member.boss ?? "waiting";
+    const queue = state !== "waiting";
+    let agent = agents.get(member.id);
+    const sameZone = agent !== undefined && agent.boss !== null && (agent.boss === "waiting") === !queue;
+    let slot = sameZone ? agent!.bossSlot : -1;
+    if (slot < 0) {
+      const taken = new Set(
+        [...agents.values()].filter((a) => a !== agent && a.boss !== null && (a.boss === "waiting") === !queue).map((a) => a.bossSlot),
+      );
+      slot = 0;
+      while (taken.has(slot)) slot += 1;
+    }
+    const [spot, pace] = queue ? [bossQueueSpot(slot), undefined] : bossWaitSpots(slot);
+    const rebuild =
+      agent !== undefined &&
+      (agent.member.vendor !== member.vendor || agent.member.tier !== member.tier || agent.member.roleKind !== member.roleKind);
+    if (agent === undefined || rebuild) {
+      const at = agent?.at ?? (initialized ? DOOR : spot);
+      agent?.dispose();
+      agent = new Agent(member, spot, spot, at, office, labels, (id) => options.onSelect(id), false);
+      agent.inactiveSince = -100;
+      agents.set(member.id, agent);
+      navDirty = true;
+    }
+    if (!sameZone || agent.bossSlot !== slot) {
+      agent.deskAt = spot;
+      agent.idleAt = spot;
+      agent.paceTo = pace === undefined || pace === spot ? undefined : pace;
+      agent.paceAt = now + 3 + Math.random() * 4;
+    }
+    agent.boss = state;
+    agent.bossSlot = slot;
+    agent.status = status;
+    agent.member = member;
+    agent.attention = null;
+    agent.renderTag();
+  }
+
   function update(snapshot: OfficeSnapshot, live: Readonly<Record<string, boolean>>): void {
     const now = clock.elapsedTime;
     // 项目名变了（改名）就重搭房间（招牌在墙上）
     const project = snapshot.projectName ?? snapshot.cwd?.split(/[\\/]/).filter(Boolean).at(-1) ?? "项目";
     if (room === undefined || room.userData.project !== project) {
       room?.removeFromParent();
-      room = buildRoom(`${project} 项目组`);
+      // 团队办公室挂「xx 项目组」；共享办公室 / 老板办公室就叫本名
+      room = buildRoom(options.layout === "rows" || options.layout === "boss" ? project : `${project} 项目组`);
       room.userData.project = project;
       office.add(room);
       env.applyRoom(room);
@@ -1562,6 +1755,10 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       }
     let teammateIndex = 0;
     snapshot.members.forEach((member) => {
+      if (options.layout === "boss") {
+        placeBoss(member, statusOf(member, live), now);
+        return;
+      }
       const index = member.role === "lead" ? -1 : teammateIndex++;
       let agent = agents.get(member.id);
       const status = statusOf(member, live);
@@ -1625,6 +1822,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
 
   function bubbleOf(agent: Agent): { text: string; cls: string } | null {
     const m = agent.member;
+    if (agent.boss !== null) return { text: BOSS_LABEL[agent.boss], cls: agent.boss === "error" ? "fail" : agent.boss === "waiting" ? "wait" : "" };
     if (m.role === "lead") return null;
     switch (agent.status) {
       case "failed":
@@ -1663,8 +1861,15 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     if (mode === "office") {
       if (navDirty) refreshNav();
       for (const agent of agents.values()) {
-        // 空闲时隔一阵换个地方待
+        // 空闲时隔一阵换个地方待；老板办公室里等组员的在两点间踱步
         wander(agent, t);
+        if (agent.boss === "waiting" && agent.paceTo !== undefined && !agent.moving && agent.at === agent.idleAt && t > agent.paceAt) {
+          const next = agent.paceTo;
+          agent.paceTo = agent.idleAt;
+          agent.idleAt = next;
+          agent.deskAt = next;
+          agent.paceAt = t + 4 + Math.random() * 4;
+        }
         // 路径规划
         const want = agent.wanted(t);
         // 目标变了就从当前位置重新寻路（走到一半也会掉头）
@@ -1824,8 +2029,15 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
         hands[1]!.rotation.z = -((date.getHours() % 12) / 12) * Math.PI * 2 + Math.PI / 2;
       }
 
+      if (options.layout === "boss") drawBossBoard(t);
       renderer.render(office, camera);
       updateLabels(t);
+      if (bossTag !== undefined) {
+        tmp.set(BOSS_SEAT.x, 1.95, BOSS_SEAT.z).project(camera);
+        const bw = container.clientWidth;
+        const bh = container.clientHeight;
+        bossTag.style.transform = `translate(${(((tmp.x + 1) / 2) * bw).toFixed(1)}px, ${(((1 - tmp.y) / 2) * bh).toFixed(1)}px) translate(-50%,-100%)`;
+      }
     } else if (gallery !== undefined) {
       if (inspecting !== null) {
         const entry = galleryRigs[inspecting]!;
@@ -1873,7 +2085,9 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     for (const agent of agents.values()) {
       // 头顶信息只在悬停或选中时显示
       const id = agent.member.id;
-      const show = id === hovered || id === selected || agent.labelHover || (id === lastHovered && t < lastHoveredUntil);
+      // 老板办公室人少：名牌与状态一直显示
+      const show =
+        options.layout === "boss" || id === hovered || id === selected || agent.labelHover || (id === lastHovered && t < lastHoveredUntil);
       agent.label.style.display = show ? "" : "none";
       if (!show) {
         if (agent.sayUntil > 0 && t > agent.sayUntil) {
