@@ -7,17 +7,6 @@ export function UsageTrigger({ wide }: { wide: boolean }) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
   return (
     <>
       <button
@@ -56,14 +45,37 @@ export function UsageTrigger({ wide }: { wide: boolean }) {
           <span style={{ overflow: "hidden", whiteSpace: "nowrap" }}>用量</span>
         )}
       </button>
-      {open && <UsageModal onClose={() => setOpen(false)} />}
+      <UsageDialog open={open} onClose={() => setOpen(false)} />
     </>
   );
 }
 
-/** 用量弹窗：全屏遮罩 + 居中面板，外壳与设置弹窗（SettingsRoot）逐项对齐。 */
-function UsageModal({ onClose }: { onClose: () => void }) {
+export interface UsageDialogProps {
+  /** 是否显示弹窗（受控）。 */
+  open: boolean;
+  /** 关闭请求（遮罩点击 / 关闭按钮 / Escape）。 */
+  onClose: () => void;
+}
+
+/**
+ * 受控用量弹窗：全屏遮罩 + 居中面板，外壳与设置弹窗（SettingsRoot）逐项
+ * 对齐。供侧边栏入口与办公室覆盖层等场景复用；开关状态由调用方持有。
+ */
+export function UsageDialog({ open, onClose }: UsageDialogProps) {
   const [closeHover, setCloseHover] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, onClose]);
+
+  if (!open) return null;
   return (
     <div
       style={{
