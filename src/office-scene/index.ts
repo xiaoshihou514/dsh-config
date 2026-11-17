@@ -839,6 +839,19 @@ function pose(agent: Agent, t: number, dt: number): void {
 
 // ---------------------------------------------------------------- 信封
 
+/** 只演实时发出的消息：发出超过这么久（毫秒）的不再飞。 */
+export const FLIGHT_FRESH_MS = 15_000;
+/** 同时在飞的信封上限：多出的不排队，直接略过。 */
+export const FLIGHT_MAX = 3;
+
+/**
+ * 一条新消息要不要飞信封（纯函数）：场景在播（没暂停、页面在前台），消息是刚发出的，且在飞的不满额。
+ * 暂停 / 后台期间到的、轮询隔了一阵才拿到的旧消息都只记为已见，不补放，免得回来时一串积压动画。
+ */
+export function shouldFly(at: number, now: number, active: number, playing: boolean): boolean {
+  return playing && now - at <= FLIGHT_FRESH_MS && now - at >= -FLIGHT_FRESH_MS && active < FLIGHT_MAX;
+}
+
 interface Flight {
   readonly mesh: THREE.Object3D;
   readonly from: THREE.Vector3;
@@ -1853,16 +1866,14 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       agent.renderTag();
     });
 
+    // 首次打开只记下已有的消息，不回放；之后只演实时发出的
+    const playing = !paused && !document.hidden && mode === "office";
     for (const item of snapshot.interactions) {
       if (seen.has(item.id)) continue;
       seen.add(item.id);
       if (!initialized) continue;
-      launch(item, flights.filter((f) => !f.arrived).length * 0.35);
-    }
-    if (!initialized) {
-      // 首次打开：回放最近一条交流，让场景有点动静。
-      const last = snapshot.interactions.at(-1);
-      if (last !== undefined) setTimeout(() => launch(last, 0), 600);
+      const active = flights.filter((f) => !f.arrived).length;
+      if (shouldFly(item.at, Date.now(), active, playing)) launch(item, active * 0.35);
     }
 
     initialized = true;
@@ -2207,6 +2218,11 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     setPaused(next) {
       if (paused === next) return;
       paused = next;
+      // 暂停时丢掉还没飞完的信封：回来时不补放
+      if (next) {
+        for (const flight of flights) flight.mesh.removeFromParent();
+        flights.length = 0;
+      }
       // 恢复时丢掉暂停期间的时间差，免得动画一下跳太远
       if (!next) clock.getDelta();
     },
