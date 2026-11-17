@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bossOf, bossSnapshot, pickLeads, soloBossOf, workingProjects, type LeadFacts } from "../src/client/office/boss.ts";
+import { ROOM_PENDING, ROOM_WAITING, bossOf, bossSnapshot, pickLeads, roomOf, soloBossOf, workingProjects, type LeadFacts } from "../src/client/office/boss.ts";
 import { bossStateOf } from "../src/office/boss.ts";
 import type { OfficeMember } from "../src/office/types.ts";
 
@@ -119,5 +119,21 @@ describe("老板办公室：正在干活的项目", () => {
       ["solo", "n", 2, 2],
       ["team", "a", 1, 4],
     ]);
+  });
+});
+
+describe("老板办公室：房间限流", () => {
+  it("待处理与等组员各自封顶进屋，按原顺序取，其余计入门外", () => {
+    const m = (id: string, boss: "report" | "error" | "waiting") => ({ id, boss }) as OfficeMember;
+    const members = [
+      ...Array.from({ length: 8 }, (_, i) => m(`p${i}`, i === 2 ? "error" : "report")),
+      ...Array.from({ length: 5 }, (_, i) => m(`w${i}`, "waiting")),
+    ];
+    const room = roomOf({ leadId: "", generatedAt: 0, members, interactions: [], tasks: [], taskSource: "none" });
+    expect(room.members.map((x) => x.id)).toEqual([
+      ...Array.from({ length: ROOM_PENDING }, (_, i) => `p${i}`),
+      ...Array.from({ length: ROOM_WAITING }, (_, i) => `w${i}`),
+    ]);
+    expect(room.outside).toBe(13 - ROOM_PENDING - ROOM_WAITING);
   });
 });

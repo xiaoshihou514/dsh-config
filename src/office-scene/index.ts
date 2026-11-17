@@ -972,6 +972,8 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   }
   /** 墙屏下半区的数据：正在干活的项目（随快照更新）。 */
   let bossWorking: readonly OfficeWorking[] = [];
+  /** 门外排队（限流后没进屋）的人数。 */
+  let bossOutside = 0;
   /**
    * 墙屏：上半区待处理（汇报 / 出错在前、等组员在后，超过 3 行慢慢滚动）；下半区「正在干活」——
    * 组名 + 像素人手点阵（一个方块一个智能体，在跑亮绿），一行排不下就换行，再多标「+N」。
@@ -999,7 +1001,8 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     g.fillText(`📋 待处理 ${pending}`, 18, 38);
     g.font = "18px system-ui, 'Noto Sans CJK SC', sans-serif";
     g.fillStyle = "#8a93a3";
-    g.fillText(rows.length - pending > 0 ? `另有 ${rows.length - pending} 个团队在等组员` : "", 220, 36);
+    const notes = [rows.length - pending > 0 ? `${rows.length - pending} 个在等组员` : "", bossOutside > 0 ? `门外还有 ${bossOutside} 人` : ""].filter(Boolean);
+    g.fillText(notes.join(" · "), 210, 36);
     g.fillStyle = "#2b3140";
     g.fillRect(18, 52, w - 36, 2);
     const visible = 3;
@@ -1784,6 +1787,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
 
   function update(snapshot: OfficeSnapshot, live: Readonly<Record<string, boolean>>): void {
     bossWorking = snapshot.working ?? [];
+    bossOutside = snapshot.outside ?? 0;
     const now = clock.elapsedTime;
     // 项目名变了（改名）就重搭房间（招牌在墙上）
     const project = snapshot.projectName ?? snapshot.cwd?.split(/[\\/]/).filter(Boolean).at(-1) ?? "项目";

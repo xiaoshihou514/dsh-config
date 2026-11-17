@@ -176,6 +176,7 @@ body[data-dsh-office] [class*="_centerCol"] {
 .dso-mini-btn:hover { color: var(--dsw-alias-label-primary); }
 .dso-mini-btn:active { transform: translateY(1px); box-shadow: none; }
 .dso-section .dso-seal { margin-right: 2px; }
+.dso-mini-btn.wide { width: auto; display: inline-flex; gap: 3px; padding: 0 7px; margin-left: auto; font: inherit; font-size: 11px; font-weight: 700; letter-spacing: 0; }
 .dso-tallies.hud { height: 32px; gap: 12px; padding: 0 12px; border-radius: 9px; }
 .dso-section { align-items: center; }
 .dso-tallies { display: inline-flex; align-items: center; gap: 8px; margin-left: 6px; padding: 0 8px; height: 26px; border-radius: 8px; background: var(--dsw-alias-bg-layer-2, #f4f5f7); box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l2), inset 0 -2px 0 rgba(0,0,0,.05); }

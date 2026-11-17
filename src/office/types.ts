@@ -149,6 +149,8 @@ export interface OfficeSnapshot {
   readonly taskSource: "team" | "todo" | "none";
   /** 老板办公室：正在干活、没有待处理事项的团队 / 单智能体项目（墙屏下半区用）。 */
   readonly working?: readonly OfficeWorking[] | undefined;
+  /** 老板办公室：没进屋（门外排队）的人数——房间限流后只在左栏与墙屏列出。 */
+  readonly outside?: number | undefined;
 }
 
 /** 你本人在交流图里的固定 id。 */

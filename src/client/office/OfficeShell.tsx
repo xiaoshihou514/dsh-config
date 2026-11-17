@@ -16,7 +16,7 @@ import { USER_ID } from "../../office/types.ts";
 import { currentSession, getOffice, setOffice, useOffice } from "./store.ts";
 import { CSS } from "./styles.ts";
 import { useSoloPick, useSoloSnapshot } from "./shared.ts";
-import { bossSnapshot, useLeadFacts, useLeadPick, workingProjects, type WorkingProject } from "./boss.ts";
+import { bossSnapshot, roomOf, useLeadFacts, useLeadPick, workingProjects, type WorkingProject } from "./boss.ts";
 import { unitSet, useBusyUnits, useProjectActivity, type Crew, type ProjectActivity } from "./projects.ts";
 import { Seal, Squad, SquadVendors, Tally } from "./squad.tsx";
 import { PERSONA_AVATARS } from "./avatars.generated.ts";
@@ -559,7 +559,9 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   }, [teams, leadFacts.leads, snapshot, solo.snapshot]);
   const bossPending = boss?.members.filter((m) => m.boss === "report" || m.boss === "error").length ?? 0;
   /** 场景与左栏显示的那份快照。 */
-  const shown = shared ? solo.snapshot : bossView ? boss : snapshot;
+  // 老板办公室的场景只放限流后的人（左栏仍列出全部）
+  const bossRoom = useMemo(() => (boss === null ? null : roomOf(boss)), [boss]);
+  const shown = shared ? solo.snapshot : bossView ? bossRoom : snapshot;
 
   useEffect(() => {
     setSnapshot(null);
@@ -908,6 +910,13 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
                 const m = boss?.members.find((x) => x.id === id);
                 if (m?.lastTurn !== undefined) acknowledge(id, m.lastTurn.at);
                 markRead(id);
+              }}
+              onDismissAll={() => {
+                for (const m of boss?.members ?? []) {
+                  if (m.boss === "waiting" || m.lastTurn === undefined) continue;
+                  acknowledge(m.id, m.lastTurn.at);
+                  markRead(m.id);
+                }
               }}
             />
           ) : shared ? (
@@ -1566,6 +1575,7 @@ function BossPanel({
   working,
   onWorking,
   crews,
+  onDismissAll,
 }: {
   api: SceneModule | null;
   snapshot: OfficeSnapshot | null;
@@ -1578,6 +1588,8 @@ function BossPanel({
   onWorking: (item: WorkingProject) => void;
   /** 组长 id → 团队编队（组长 + 名册组员）。 */
   crews: Readonly<Record<string, Crew>>;
+  /** 待处理全部记为看过、送出老板办公室。 */
+  onDismissAll: () => void;
 }) {
   if (snapshot === null) return <div className="dso-empty">加载中…</div>;
   const pending = snapshot.members.filter((m) => m.boss !== "waiting");
@@ -1647,6 +1659,12 @@ function BossPanel({
         <Seal kind="report" size={16} />
         <span>待处理</span>
         <small>{pending.length}</small>
+        {pending.length > 1 && (
+          <button type="button" className="dso-mini-btn wide" title="全部记为看过，送出老板办公室" onClick={onDismissAll}>
+            <CheckIcon />
+            全部
+          </button>
+        )}
       </h3>
       {pending.length === 0 ? <div className="dso-empty">暂无汇报</div> : <div className="dso-cards">{pending.map(card)}</div>}
       <h3 className="dso-section dso-shared-project">

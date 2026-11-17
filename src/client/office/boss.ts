@@ -174,6 +174,21 @@ export function bossSnapshot(
   };
 }
 
+/** 老板办公室最多进屋的人数：待处理（等得最久的先进）与等组员各自封顶。 */
+export const ROOM_PENDING = 5;
+export const ROOM_WAITING = 3;
+
+/**
+ * 房间限流（纯函数）：快照里的人按顺序（待处理在前、等得最久的先）取前几个进屋，其余在门外——
+ * 只在左栏与墙屏列出，屋里不再挤满人。
+ */
+export function roomOf(snapshot: OfficeSnapshot): OfficeSnapshot {
+  const pending = snapshot.members.filter((m) => m.boss === "report" || m.boss === "error");
+  const waiting = snapshot.members.filter((m) => m.boss === "waiting");
+  const inside = [...pending.slice(0, ROOM_PENDING), ...waiting.slice(0, ROOM_WAITING)];
+  return { ...snapshot, members: inside, outside: snapshot.members.length - inside.length };
+}
+
 /** 左栏 / 墙屏上的一个「正在干活」项目。 */
 export interface WorkingProject extends OfficeWorking {
   readonly units?: Crew["units"];
