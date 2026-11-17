@@ -16,7 +16,7 @@ import { createElement } from "react";
 import { UsageTrigger } from "./UsageTrigger.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
 import { TurnNotify } from "./TurnNotify.tsx";
-import { OfficeOverlay, OfficeToggle, TEAM_PROMPT, officeHost, settingsHost } from "./office/OfficeShell.tsx";
+import { OfficeOverlay, OfficeToggle, TEAM_PROMPT, officeHost, settingsHost, nativeSettingsOpener } from "./office/OfficeShell.tsx";
 import { ComposerAvatar, HeroAvatar, avatarHost } from "./office/SessionAvatar.tsx";
 
 export const inject = ["slots"];
@@ -71,12 +71,9 @@ export function apply(ctx: Context): void {
     avatarHost.current = { loadDefault: async () => { const r = await remote.session.modelCatalog(); return r.ok ? r.value?.default : undefined; } };
     scoped.effect(() => () => { avatarHost.current = undefined; }, "dsh-config: avatar host");
   });
-  // 办公室「设置」入口调起原生设置弹窗。
-  ctx.inject(["shortcuts"], (scoped) => {
-    const shortcuts = (scoped as unknown as { shortcuts: { invoke(id: string, context: { source?: "menu"; region: "page"; modal: null; target: null }): void } }).shortcuts;
-    settingsHost.current = { open: () => shortcuts.invoke("settings.open", { source: "menu", region: "page", modal: null, target: null }) };
-    scoped.effect(() => () => { settingsHost.current = undefined; }, "dsh-config: office settings host");
-  });
+  // 办公室「设置」入口：经 sidebar.settings 槽位复用原生设置按钮的同一实例。
+  settingsHost.current = nativeSettingsOpener(ctx.slots as never);
+  ctx.effect(() => () => { settingsHost.current = undefined; }, "dsh-config: office settings host");
   // 布局服务（切回对话面板用）：可选。
   ctx.inject(["layout"], (scoped) => {
     layoutRef.current = (scoped as unknown as { layout: { selectPanel(panelId: null): void } }).layout;
