@@ -17,6 +17,7 @@ import { UsageTrigger } from "./UsageTrigger.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
 import { TurnNotify } from "./TurnNotify.tsx";
 import { OfficeOverlay, OfficeToggle, TEAM_PROMPT, officeHost } from "./office/OfficeShell.tsx";
+import { HeaderAvatar, HeroAvatar, avatarHost } from "./office/SessionAvatar.tsx";
 
 export const inject = ["slots"];
 
@@ -60,6 +61,15 @@ export function apply(ctx: Context): void {
   ctx.slots.inject("shell.overlay" as never, () =>
     ctx.slots.register({ name: "shell.overlay", id: "dsh-config-office" } as never, OfficeOverlay as never),
   );
+  // 对话标题左侧与新会话欢迎页的模型头像（office/SessionAvatar）。
+  ctx.slots.inject("conversation.header.leading", () => ctx.slots.register({ name: "conversation.header.leading" }, HeaderAvatar));
+  ctx.slots.inject("conversation.hero.brand.mark", () => ctx.slots.register({ name: "conversation.hero.brand.mark" }, HeroAvatar));
+  // 头像取全局默认模型。
+  ctx.inject(["remote"], (scoped) => {
+    const remote = (scoped as unknown as { remote: { session: { modelCatalog(): Promise<{ ok: boolean; value?: { default: { provider: string; model: string } } }> } } }).remote;
+    avatarHost.current = { loadDefault: async () => { const r = await remote.session.modelCatalog(); return r.ok ? r.value?.default : undefined; } };
+    scoped.effect(() => () => { avatarHost.current = undefined; }, "dsh-config: avatar host");
+  });
   // 布局服务（切回对话面板用）：可选。
   ctx.inject(["layout"], (scoped) => {
     layoutRef.current = (scoped as unknown as { layout: { selectPanel(panelId: null): void } }).layout;
