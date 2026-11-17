@@ -32,6 +32,14 @@ describe("共享办公室入选", () => {
     expect(pickSolo(state, new Set(["lead"]), NOW).ids).toEqual(["solo", "fork"]);
   });
 
+  it("父会话不在列表里（已归档等）的子代理也不入选", () => {
+    const state = list({
+      orphan: { parentSessionId: "gone", origin: "subagent", running: true, updatedAt: NOW },
+      solo: { updatedAt: NOW - HOUR },
+    });
+    expect(pickSolo(state, new Set(), NOW).ids).toEqual(["solo"]);
+  });
+
   it("在跑的优先，其次最近活跃；超出座位数只计数", () => {
     const rows: Record<string, SessionRowLike> = {};
     for (let i = 0; i < SOLO_CAP + 3; i += 1) rows[`s${i}`] = { updatedAt: NOW - i * 1000 };

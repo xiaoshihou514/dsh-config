@@ -87,13 +87,13 @@ const HEADER_VALUE = "agent-office";
 interface LiveSession {
   readonly id: string;
   readonly seq: number;
-  readonly header: { readonly cwd?: string; readonly parentSession?: string };
+  readonly header: { readonly cwd?: string; readonly parentSession?: string; readonly origin?: string };
   readonly inheritedEventCount: number;
   ownEvents(): readonly LooseEvent[];
 }
 
 interface ReadHandle {
-  readonly header: { readonly cwd?: string; readonly parentSession?: string };
+  readonly header: { readonly cwd?: string; readonly parentSession?: string; readonly origin?: string };
   readonly inheritedEventCount: number;
   read(): Promise<{ readonly events: readonly LooseEvent[] }>;
   close(): Promise<void>;
@@ -113,6 +113,8 @@ interface CachedDigest {
   readonly key: string;
   readonly digest: SessionDigest;
   readonly cwd?: string | undefined;
+  /** 会话文件头标明是派生的子代理（`origin: "subagent"`）。 */
+  readonly subagent?: boolean | undefined;
 }
 
 function respondJson(
@@ -162,14 +164,14 @@ export function apply(ctx: Context): void {
   async function digestOf(
     id: string,
     parentId: string | undefined,
-  ): Promise<{ digest: SessionDigest; key: string; cwd?: string | undefined; loaded: boolean } | undefined> {
+  ): Promise<{ digest: SessionDigest; key: string; cwd?: string | undefined; subagent?: boolean | undefined; loaded: boolean } | undefined> {
     const live = sessions.get(id);
     if (live !== undefined) {
       const key = `live:${live.seq}`;
       const hit = cache.get(id);
       if (hit?.key === key) return { ...hit, loaded: true };
       const digest = digestSession(id, live.ownEvents(), parentId);
-      const entry = { key, digest, cwd: live.header.cwd };
+      const entry = { key, digest, cwd: live.header.cwd, subagent: live.header.origin === "subagent" };
       cache.set(id, entry);
       return { ...entry, loaded: true };
     }
@@ -190,7 +192,7 @@ export function apply(ctx: Context): void {
       const { events } = await handle.read();
       const own = events.slice(handle.inheritedEventCount);
       const digest = digestSession(id, own, parentId);
-      const entry = { key, digest, cwd: handle.header.cwd };
+      const entry = { key, digest, cwd: handle.header.cwd, subagent: handle.header.origin === "subagent" };
       cache.set(id, entry);
       return { ...entry, loaded: false };
     } catch (error) {
@@ -441,7 +443,8 @@ export function apply(ctx: Context): void {
           return;
         }
         const members = results.flatMap(({ id, result }) => {
-          if (result === undefined) return [];
+          // 子代理不是单智能体：不入座、不来老板办公室（浏览器端判定兜不住父会话不在列表里的情况）
+          if (result === undefined || result.subagent === true) return [];
           const title = result.digest.title;
           const member = memberFromDigest(
             result.digest,

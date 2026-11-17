@@ -68,8 +68,9 @@ export function pickSolo(
   for (const id of ids) {
     const row = byId[id];
     if (row === undefined || row.blank === true) continue;
-    // 子代理（任意层级）不单独入选；组长（组建过团队）不入选
-    if (rootOf(byId, id) !== id || leads.has(id)) continue;
+    // 子代理（任意层级）不单独入选——父会话不在列表里（已归档、只保留了子会话）时链会断，
+    // 所以凡是 origin 为 subagent 的一律排除；组长（组建过团队）不入选
+    if (row.origin === "subagent" || rootOf(byId, id) !== id || leads.has(id)) continue;
     const running = row.running === true;
     const at = ms(row.updatedAt);
     if (!running && now - at > SOLO_WINDOW_MS) continue;
