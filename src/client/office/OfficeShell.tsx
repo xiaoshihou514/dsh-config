@@ -508,11 +508,18 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const solo = useSoloSnapshot(true, soloPick.ids, nameOfProject, shared);
   // 老板办公室：一直轮询（HUD 角标要用），在老板办公室里更勤
   const leadPick = useLeadPick(useSessions as never, leads);
+  const leadFacts = useLeadFacts(leadPick, bossView);
   // 项目忙闲总览（切换器用）：团队与单智能体项目，全在浏览器端算
-  const activity = useProjectActivity(useSessions as never, teams ?? [], soloPick.ids);
+  // 宿主按内存里的会话判定的「子代理在干活」：浏览器的会话状态只知道父会话自己停了，这里并进来
+  const hostDelegating = [
+    ...(snapshot?.members ?? []).filter((m) => m.delegating === true).map((m) => m.id),
+    ...(solo.snapshot?.members ?? []).filter((m) => m.delegating === true).map((m) => m.id),
+    ...(leadFacts.leads ?? []).flatMap((f) => f.delegatingIds ?? []),
+  ];
+  const hostKey = hostDelegating.sort().join(",");
+  const activity = useProjectActivity(useSessions as never, teams ?? [], soloPick.ids, hostKey === "" ? [] : hostKey.split(","));
   /** 从切换器点了某个单智能体项目：切到共享办公室后选中它。 */
   const pendingSelect = useRef<string | null>(null);
-  const leadFacts = useLeadFacts(leadPick, bossView);
 
   const viewIds = shared ? (solo.snapshot?.members.map((m) => m.id) ?? []) : (snapshot?.members.map((m) => m.id) ?? []);
   const bossIds = [...(leadFacts.leads ?? []).flatMap((f) => [f.member.id, ...f.memberIds]), ...soloPick.ids];
@@ -531,8 +538,9 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const live = useMemo(() => {
     const merged: Record<string, boolean> = { ...ownLive };
     for (const id of subBusy) merged[id] = true;
+    for (const id of hostKey === "" ? [] : hostKey.split(",")) merged[id] = true;
     return merged;
-  }, [ownLive, subBusy]);
+  }, [ownLive, subBusy, hostKey]);
   // 看过的汇报离开老板办公室：已看过记录变化时（useAttention 订阅了它）会重渲染，这里每次现算
   const bossRaw = bossSnapshot(leadFacts.leads, live, nameOfProject, solo.snapshot?.members ?? null, readAcks());
   // 老板办公室还要看「哪些组在干活」：复用项目总览的忙闲（整棵子代理树），屋里已有的组长不重复列

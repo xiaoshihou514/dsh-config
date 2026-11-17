@@ -24,6 +24,8 @@ export interface LeadFacts {
   readonly leadWaiting: boolean;
   readonly memberIds: readonly string[];
   readonly membersRunning: boolean;
+  /** 自己没在跑、但子代理在跑的单位（组长与组员，宿主按内存里的会话判定）。 */
+  readonly delegatingIds?: readonly string[] | undefined;
   /** 组员 → 厂商（已读到摘要的）。 */
   readonly memberVendors?: Readonly<Record<string, Vendor>> | undefined;
 }

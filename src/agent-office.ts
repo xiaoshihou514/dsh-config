@@ -107,6 +107,8 @@ interface PersistenceLike {
 
 interface SessionsLike {
   get(id: string): LiveSession | undefined;
+  /** 内存里的全部会话（正在跑的子代理一定在内存里）。 */
+  list?(): readonly LiveSession[];
 }
 
 interface CachedDigest {
@@ -203,6 +205,41 @@ export function apply(ctx: Context): void {
     }
   }
 
+  /**
+   * 子代理在跑的单位：遍历内存里有未结束步骤的子代理会话，沿派出链往上找到第一个单位（组长、组员、
+   * 单智能体）。只看内存里的会话，不读磁盘。
+   */
+  async function delegatingUnits(units: ReadonlySet<string>): Promise<Set<string>> {
+    const out = new Set<string>();
+    for (const live of sessions.list?.() ?? []) {
+      if (units.has(live.id) || live.header.origin !== "subagent") continue;
+      const result = await digestOf(live.id, live.header.parentSession);
+      if (result?.digest.open !== true) continue;
+      let id = live.header.parentSession;
+      for (let depth = 0; depth < 32 && id !== undefined; depth += 1) {
+        if (units.has(id)) {
+          out.add(id);
+          break;
+        }
+        const parent = sessions.get(id);
+        if (parent === undefined || parent.header.origin !== "subagent") break;
+        id = parent.header.parentSession;
+      }
+    }
+    return out;
+  }
+
+  /** 给自己没在跑、但子代理在跑的成员标上 delegating，并算作在干活。 */
+  function withDelegating(member: OfficeMember, delegating: ReadonlySet<string>): OfficeMember {
+    if (!delegating.has(member.id) || member.busy) return member;
+    return {
+      ...member,
+      busy: true,
+      delegating: true,
+      current: { kind: "tool", category: "wait", label: "子代理在干活", since: Date.now() },
+    };
+  }
+
   async function snapshot(leadId: string) {
     const lead = await digestOf(leadId, undefined);
     if (lead === undefined) return undefined;
@@ -219,12 +256,13 @@ export function apply(ctx: Context): void {
       }),
     );
     for (const entry of lead.digest.team) keys.push(cache.get(entry.id)?.key ?? "-");
+    const delegating = await delegatingUnits(new Set([leadId, ...lead.digest.team.map((e) => e.id)]));
     await overridesLoaded;
-    const etag = `"${hash(`${leadId}|${keys.join("|")}|${[...loaded].sort().join(",")}|o${overridesVersion}`)}"`;
+    const etag = `"${hash(`${leadId}|${keys.join("|")}|${[...loaded].sort().join(",")}|d${[...delegating].sort().join(",")}|o${overridesVersion}`)}"`;
     return {
       etag,
-      build: () =>
-        applyOverrides(
+      build: () => {
+        const assembled = applyOverrides(
           assembleSnapshot({
             leadId,
             lead: lead.digest,
@@ -234,7 +272,9 @@ export function apply(ctx: Context): void {
             now: Date.now(),
           }),
           overrides,
-        ),
+        );
+        return { ...assembled, members: assembled.members.map((m) => withDelegating(m, delegating)) };
+      },
     };
   }
 
@@ -435,9 +475,10 @@ export function apply(ctx: Context): void {
       );
       try {
         const results = await Promise.all(ids.map(async (id) => ({ id, result: await digestOf(id, undefined) })));
+        const delegating = await delegatingUnits(new Set(ids));
         await overridesLoaded;
         const keys = results.map(({ id, result }) => `${id}=${result?.key ?? "-"}${result?.loaded === true ? "+" : ""}`);
-        const etag = `"${hash(`solo|${keys.join("|")}|o${overridesVersion}`)}"`;
+        const etag = `"${hash(`solo|${keys.join("|")}|d${[...delegating].sort().join(",")}|o${overridesVersion}`)}"`;
         if (request.headers["if-none-match"] === etag) {
           response.writeHead(304, { etag }).end();
           return;
@@ -461,7 +502,12 @@ export function apply(ctx: Context): void {
           tasks: [],
           taskSource: "none",
         };
-        respondJson(response, 200, { ok: true, members: applyOverrides(snapshot, overrides).members }, etag);
+        respondJson(
+          response,
+          200,
+          { ok: true, members: applyOverrides(snapshot, overrides).members.map((m) => withDelegating(m, delegating)) },
+          etag,
+        );
       } catch (error) {
         logger.warn("生成共享办公室失败：%s", String(error));
         respondJson(response, 500, { ok: false, error: String(error) });
@@ -501,6 +547,9 @@ export function apply(ctx: Context): void {
             return { id, lead, members };
           }),
         );
+        const delegating = await delegatingUnits(
+          new Set(results.flatMap(({ id, members }) => [id, ...members.map((m) => m.id)])),
+        );
         await overridesLoaded;
         const keys = results.map(
           ({ id, lead, members }) =>
@@ -508,7 +557,7 @@ export function apply(ctx: Context): void {
               .map((m) => `${m.result?.key ?? "-"}${m.result?.loaded === true ? "+" : ""}`)
               .join(",")}`,
         );
-        const etag = `"${hash(`leads|${keys.join("|")}|o${overridesVersion}`)}"`;
+        const etag = `"${hash(`leads|${keys.join("|")}|d${[...delegating].sort().join(",")}|o${overridesVersion}`)}"`;
         if (request.headers["if-none-match"] === etag) {
           response.writeHead(304, { etag }).end();
           return;
@@ -527,7 +576,7 @@ export function apply(ctx: Context): void {
           ).members;
           return [
             {
-              member: { ...withOverride!, cwd: lead.cwd },
+              member: { ...withDelegating(withOverride!, delegating), cwd: lead.cwd },
               leadWaiting: lead.digest.current?.kind === "waiting",
               memberIds: members.map((m) => m.id),
               memberVendors: Object.fromEntries(
@@ -535,7 +584,11 @@ export function apply(ctx: Context): void {
                   m.result?.digest.model === undefined ? [] : [[m.id, vendorOf(m.result.digest.provider, m.result.digest.model)]],
                 ),
               ),
-              membersRunning: members.some((m) => m.result !== undefined && m.result.loaded && m.result.digest.open),
+              membersRunning: members.some(
+                (m) => delegating.has(m.id) || (m.result !== undefined && m.result.loaded && m.result.digest.open),
+              ),
+              /** 自己没在跑、但子代理在跑的单位（组长与组员）：浏览器并进在跑判定。 */
+              delegatingIds: [id, ...members.map((m) => m.id)].filter((x) => delegating.has(x)),
             },
           ];
         });

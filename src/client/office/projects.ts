@@ -87,9 +87,12 @@ export function projectActivity(
   state: SessionListLike | undefined,
   teams: readonly TeamRoster[],
   soloIds: readonly string[],
+  /** 额外算在跑的单位（宿主按内存会话判定的「子代理在干活」，浏览器会话列表看不全时补上）。 */
+  extraBusy: readonly string[] = [],
 ): ProjectActivity {
   const byId = (state?.byId ?? {}) as Readonly<Record<string, (SessionRowLike & { cwd?: string }) | undefined>>;
   const busy = busyUnits(state, unitSet(teams, soloIds));
+  for (const id of extraBusy) busy.add(id);
   const out: Record<string, Crew> = {};
   for (const team of teams) {
     const members = team.memberIds ?? [];
@@ -123,10 +126,11 @@ export function useProjectActivity(
   useSessions: UseSessions | undefined,
   teams: readonly TeamRoster[],
   soloIds: readonly string[],
+  extraBusy: readonly string[] = [],
 ): ProjectActivity {
   const key =
-    useSessions?.((state) => JSON.stringify(projectActivity(state, teams, soloIds))) ??
-    JSON.stringify(projectActivity(undefined, teams, soloIds));
+    useSessions?.((state) => JSON.stringify(projectActivity(state, teams, soloIds, extraBusy))) ??
+    JSON.stringify(projectActivity(undefined, teams, soloIds, extraBusy));
   return useMemo(() => JSON.parse(key) as ProjectActivity, [key]);
 }
 

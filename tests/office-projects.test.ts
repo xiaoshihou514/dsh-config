@@ -49,4 +49,9 @@ describe("项目忙闲：单位只有组长、组员、单智能体，子代理�
     expect(act.shared.running).toBe(2);
     expect(act.shared.units?.map((u) => u.id)).toEqual(["a", "b", "c"]);
   });
+  it("宿主判定的「子代理在干活」（浏览器列表里看不到子代理时）也让父单位亮", () => {
+    const quiet = { byId: { a: { cwd: "/p/sheji" } } };
+    expect(projectActivity(quiet, [], ["a"]).soloProjects[0]?.running).toBe(0);
+    expect(projectActivity(quiet, [], ["a"], ["a"]).soloProjects[0]?.running).toBe(1);
+  });
 });

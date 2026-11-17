@@ -19,6 +19,7 @@ Agent Teams 的 3D 可视化，以「办公室模式」呈现：侧边栏左下�
 
 - 可视化的单位只有三种：组长、组员（在组长 `team/member` 名册里，`/office/teams` 返回 `memberIds`）、单智能体（顶层独立会话）。组员技术上也是派生的子会话，但不算子代理。
 - 子代理 = 不在名册里的 subagent 会话（组长、组员、单智能体用工具临时派的，任意层级）。子代理不单独出现：不占编队格子、不入座、不去老板办公室汇报。
+- 宿主兜底（`agent-office.ts` 的 `delegatingUnits`）：浏览器会话列表不一定收录子代理（如它的父会话没在侧边栏展开），所以宿主遍历内存里的会话（`sessions.list()`，正在跑的子代理一定在内存里），对有未结束步骤的子代理沿派出链找到第一个单位，给它标 `delegating`（`/office` 与 `/office/solo` 的成员、`/office/leads` 的 `delegatingIds`，并计入 `membersRunning`），ETag 一起变。浏览器把这些标记并进在跑判定与项目忙闲（`projectActivity` 的 `extraBusy`）——否则浏览器自己的会话状态只看到父会话停了，会把它显示成休息。
 - 子代理在跑 = 派它的单位在跑（`projects.ts` 的 `unitOf` 沿子代理链往上找最近的单位，`busyUnits`）。办公室把它并进在跑判定（`useBusyUnits` 合进 `live`）：场景动作、老板办公室判定（组长 / 单智能体的子代理还在跑就不算这一轮结束）、项目忙闲都按这个口径。
 
 ## 项目切换器 = 势力面板
