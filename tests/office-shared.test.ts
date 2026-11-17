@@ -18,17 +18,18 @@ describe("共享办公室入选", () => {
       child: { parentSessionId: "lead", origin: "subagent", updatedAt: NOW },
       lead: { updatedAt: NOW },
     });
-    expect(pickSolo(state, new Set(), NOW).ids).toEqual(["run", "recent"]);
+    expect(pickSolo(state, new Set(["lead"]), NOW).ids).toEqual(["run", "recent"]);
   });
 
-  it("组长双重排除：有子会话的、在团队列表里的（刚组建还没招人）", () => {
+  it("组长以团队列表为准；派过子代理的单智能体照样入选，子代理与组员不入选，普通分叉入选", () => {
     const state = list({
-      withKids: { updatedAt: NOW },
-      kid: { parentSessionId: "withKids", updatedAt: NOW },
-      fresh: { running: true, updatedAt: NOW },
+      lead: { updatedAt: NOW },
+      member: { parentSessionId: "lead", origin: "subagent", updatedAt: NOW },
       solo: { updatedAt: NOW - HOUR },
+      soloKid: { parentSessionId: "solo", origin: "subagent", running: true, updatedAt: NOW },
+      fork: { parentSessionId: "solo", updatedAt: NOW - 2 * HOUR },
     });
-    expect(pickSolo(state, new Set(["fresh"]), NOW).ids).toEqual(["solo"]);
+    expect(pickSolo(state, new Set(["lead"]), NOW).ids).toEqual(["solo", "fork"]);
   });
 
   it("在跑的优先，其次最近活跃；超出座位数只计数", () => {

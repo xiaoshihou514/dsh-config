@@ -116,16 +116,25 @@ body[data-dsh-office] [class*="_centerCol"] {
 .dso-shared-project { margin-top: 10px; }
 .dso-card.sel { outline: 2px solid var(--role, #8a93a3); outline-offset: -2px; }
 .dso-card-acts { display: flex; flex-direction: column; justify-content: center; gap: 2px; }
-/* ---- 项目忙闲总览（切换器） ---- */
-.dso-busy {
-  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: 999px; white-space: nowrap;
-  font-size: 11px; font-weight: 600; color: var(--dsw-alias-label-tertiary, #86909c);
-  background: var(--dsw-alias-bg-layer-2, #f4f5f7); box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l2);
+/* ---- 项目忙闲总览（切换器）：像素人手点阵 ---- */
+.dso-crew { display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 2px; }
+.dso-crew i {
+  width: 8px; height: 8px; border-radius: 2px; flex: none;
+  background: color-mix(in srgb, var(--dsw-alias-label-tertiary, #8a919c) 35%, transparent);
+  box-shadow: inset 0 -2px 0 rgba(0,0,0,.12);
 }
-.dso-busy i { width: 7px; height: 7px; border-radius: 50%; background: #b3b9c4; flex: none; }
-.dso-busy.on { color: #157a43; background: color-mix(in srgb, #3fd07a 14%, var(--dsw-alias-bg-layer-1, #fff)); box-shadow: inset 0 0 0 1px color-mix(in srgb, #3fd07a 45%, transparent); }
-.dso-busy.on i { background: #3fd07a; box-shadow: 0 0 0 2px rgba(63,208,122,.22), 0 0 6px #3fd07a; animation: dso-blink 1.6s infinite; }
-.dso-busy.trigger { margin-left: 4px; }
+.dso-crew i.on {
+  background: linear-gradient(160deg, #7ff0a8, #2fbf68);
+  box-shadow: inset 0 -2px 0 rgba(0,0,0,.18), 0 0 6px rgba(63,208,122,.55);
+  animation: dso-crew-pulse 1.6s ease-in-out infinite;
+}
+.dso-crew i.on:nth-child(2n) { animation-delay: .4s; }
+.dso-crew i.on:nth-child(3n) { animation-delay: .8s; }
+@keyframes dso-crew-pulse { 50% { filter: brightness(1.25); box-shadow: inset 0 -2px 0 rgba(0,0,0,.18), 0 0 9px rgba(63,208,122,.8); } }
+.dso-crew small { margin-left: 3px; font-size: 10px; font-weight: 700; color: var(--dsw-alias-label-tertiary, #8a919c); }
+.dso-crew.busy small { color: #2b9a5a; }
+.dso-crew.strip { margin-left: 4px; padding: 0 6px; height: 20px; border-radius: 6px; background: var(--dsw-alias-bg-layer-2, #f4f5f7); box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l2); }
+.dso-crew.strip i { width: 7px; height: 10px; }
 .dso-overview {
   display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 2px 8px;
   font-size: 13px;

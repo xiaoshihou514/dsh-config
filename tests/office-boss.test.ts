@@ -25,20 +25,21 @@ describe("老板办公室：状态判定", () => {
 });
 
 describe("老板办公室：挑组长", () => {
-  it("团队列表里的组长与有子会话的会话，只留 24 小时内团队有活动的，最近的在前", () => {
+  it("团队以团队列表为准，只留 24 小时内整棵子代理树有活动的，最近的在前", () => {
     const state = {
       byId: {
         fresh: { updatedAt: NOW - HOUR },
         old: { updatedAt: NOW - 30 * HOUR },
-        oldKid: { parentSessionId: "old", running: true, updatedAt: NOW - 30 * HOUR },
+        oldKid: { parentSessionId: "old", origin: "subagent", updatedAt: NOW - 30 * HOUR },
+        oldGrandKid: { parentSessionId: "oldKid", origin: "subagent", running: true, updatedAt: NOW - 30 * HOUR },
         stale: { updatedAt: NOW - 40 * HOUR },
-        staleKid: { parentSessionId: "stale", updatedAt: NOW - 40 * HOUR },
-        nested: { parentSessionId: "oldKid", updatedAt: NOW },
-        solo: { updatedAt: NOW },
+        staleKid: { parentSessionId: "stale", origin: "subagent", updatedAt: NOW - 40 * HOUR },
+        soloWithKid: { updatedAt: NOW },
+        soloKid: { parentSessionId: "soloWithKid", origin: "subagent", updatedAt: NOW },
       },
     };
-    // old：组长自己 30 小时没动，但组员正在跑 → 算活跃，排最前；fresh 只在团队列表里（还没招人）
-    expect(pickLeads(state, new Set(["fresh"]), NOW)).toEqual(["old", "fresh"]);
+    // old：组长 30 小时没动，但组员派的子代理正在跑 → 算活跃排最前；派过子代理的单智能体不是组长
+    expect(pickLeads(state, new Set(["fresh", "old", "stale"]), NOW)).toEqual(["old", "fresh"]);
   });
 });
 

@@ -1,8 +1,9 @@
 /**
  * 共享办公室：所有项目的单智能体（非团队会话）坐一个大办公室。
  *
- * - 入选（浏览器端，零扫描）：原生会话列表里顶层、非子智能体、非空白、不是组长
- *   （没有子会话，且不在 /office/teams 团队列表里），并且正在运行或 24 小时内有活动。
+ * - 入选（浏览器端，零扫描）：原生会话列表里的顶层会话（不是任何会话派出的子代理）、非空白、
+ *   不是组长（不在 /office/teams 团队列表里），并且正在运行或 24 小时内有活动。派过子代理的单智能体
+ *   照样入选——子代理本身不入选，但算进它所属项目的忙闲（见 projects.ts）。
  *   在跑的优先，其次按最近活动；最多 {@link SOLO_CAP} 人，多出的只在 HUD 提示人数。
  * - 详情：`GET /dsh-config/office/solo?ids=…` 只为入选者补模型、当前动作、最近一轮（宿主按存储版本缓存摘要），
  *   带 ETag 轮询：在共享办公室里每 3 秒，其他时候每 15 秒（老板办公室的单智能体汇报与 HUD 角标要用）。
@@ -30,6 +31,21 @@ export interface SessionListLike {
   readonly byId?: Readonly<Record<string, SessionRowLike | undefined>>;
 }
 
+/**
+ * 子代理链上的顶层会话：只沿 `origin === "subagent"` 往上走（普通分叉也可能带 parentSessionId，
+ * 但它是独立会话）；父会话不在列表里时停在自己。
+ */
+export function rootOf(byId: Readonly<Record<string, SessionRowLike | undefined>>, id: string): string {
+  let current = id;
+  for (let depth = 0; depth < 32; depth += 1) {
+    const row = byId[current];
+    const parent = row?.parentSessionId;
+    if (row?.origin !== "subagent" || parent === undefined || byId[parent] === undefined) return current;
+    current = parent;
+  }
+  return current;
+}
+
 /** 宿主的时间可能是秒或毫秒：统一成毫秒。 */
 function ms(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return 0;
@@ -38,7 +54,7 @@ function ms(value: number | undefined): number {
 
 /**
  * 从会话列表选出共享办公室的人（纯函数）。
- * @param leads - 组建过团队的会话（组长），即使暂时还没有子会话也排除。
+ * @param leads - 组建过团队的会话（组长，以 /office/teams 的名册为准）。
  * @returns 入选 id（在跑的在前，其次最近活跃的在前）与未显示的人数。
  */
 export function pickSolo(
@@ -48,14 +64,12 @@ export function pickSolo(
 ): { ids: string[]; overflow: number } {
   const byId = state?.byId ?? {};
   const ids = state?.ids ?? Object.keys(byId);
-  const parents = new Set<string>();
-  for (const row of Object.values(byId)) if (row?.parentSessionId !== undefined) parents.add(row.parentSessionId);
   const picked: { id: string; running: boolean; at: number }[] = [];
   for (const id of ids) {
     const row = byId[id];
     if (row === undefined || row.blank === true) continue;
-    if (row.parentSessionId !== undefined || row.origin === "subagent") continue;
-    if (parents.has(id) || leads.has(id)) continue;
+    // 子代理（任意层级）不单独入选；组长（组建过团队）不入选
+    if (rootOf(byId, id) !== id || leads.has(id)) continue;
     const running = row.running === true;
     const at = ms(row.updatedAt);
     if (!running && now - at > SOLO_WINDOW_MS) continue;

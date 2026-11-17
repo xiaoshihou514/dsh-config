@@ -13,7 +13,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { bossStateOf, type BossState } from "../../office/boss.ts";
 import type { OfficeMember, OfficeSnapshot } from "../../office/types.ts";
-import { SOLO_WINDOW_MS, type SessionListLike } from "./shared.ts";
+import { SOLO_WINDOW_MS, rootOf, type SessionListLike } from "./shared.ts";
 
 export const BOSS_CAP = 24;
 
@@ -31,22 +31,19 @@ function ms(value: number | undefined): number {
 }
 
 /**
- * 挑出 24 小时内有活动的团队的组长（纯函数）。
- * @param teamLeads - 组建过团队的会话（还没招人的组长没有子会话，靠它补上）。
+ * 挑出 24 小时内有活动的团队的组长（纯函数）：团队以 /office/teams 的名册为准；活动看组长整棵
+ * 子代理树（组员、组员派的子代理……）里最近的一次，正在运行的算「此刻」。
  */
 export function pickLeads(state: SessionListLike | undefined, teamLeads: ReadonlySet<string>, now: number): string[] {
   const byId = state?.byId ?? {};
   const activity = new Map<string, number>();
-  const bump = (id: string, at: number) => activity.set(id, Math.max(activity.get(id) ?? 0, at));
   const score = (row: { running?: boolean; updatedAt?: number } | undefined) =>
     row === undefined ? 0 : row.running === true ? now : ms(row.updatedAt);
-  for (const id of teamLeads) bump(id, score(byId[id]));
+  for (const id of teamLeads) activity.set(id, score(byId[id]));
   for (const [id, row] of Object.entries(byId)) {
-    if (row?.parentSessionId === undefined) continue;
-    const parent = row.parentSessionId;
-    // 子会话的父会话是组长（多级子会话只认顶层父）
-    if (byId[parent]?.parentSessionId !== undefined) continue;
-    bump(parent, Math.max(score(byId[parent]), score(row)));
+    const root = rootOf(byId, id);
+    if (root === id || !activity.has(root)) continue;
+    activity.set(root, Math.max(activity.get(root)!, score(row)));
   }
   return [...activity]
     .filter(([, at]) => now - at <= SOLO_WINDOW_MS)

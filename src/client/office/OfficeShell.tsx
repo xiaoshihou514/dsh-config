@@ -17,7 +17,7 @@ import { currentSession, getOffice, setOffice, useOffice } from "./store.ts";
 import { CSS } from "./styles.ts";
 import { useSoloPick, useSoloSnapshot } from "./shared.ts";
 import { bossSnapshot, useLeadFacts, useLeadPick } from "./boss.ts";
-import { useProjectActivity, type ProjectActivity } from "./projects.ts";
+import { useProjectActivity, type Crew, type ProjectActivity } from "./projects.ts";
 import { BOSS_LABEL } from "../../office/boss.ts";
 
 type Selector<T> = (selector: (state: any) => T) => T;
@@ -1133,6 +1133,41 @@ function Stat({ label, value, tone }: { label: string; value: ReactNode; tone?: 
 // ---------------------------------------------------------------- 项目选择
 
 /**
+ * 人手点阵：一个像素方块一个智能体（组长、组员、单智能体及它们派的子代理），在跑的亮绿、空闲的灰；
+ * 最多画 max 个，多出的标「+N」。具体数字在悬停提示里。
+ */
+function CrewDots({ crew, max = 8 }: { crew: Crew; max?: number }) {
+  const shown = Math.max(1, Math.min(crew.total, max));
+  const lit = Math.min(crew.running, shown);
+  return (
+    <span
+      className={`dso-crew${crew.running > 0 ? " busy" : ""}`}
+      title={crew.running > 0 ? `${crew.running} / ${crew.total} 个智能体在跑（含子代理）` : `${crew.total} 个智能体，都空闲（含子代理）`}
+    >
+      {Array.from({ length: shown }, (_, i) => (
+        <i key={i} className={i < lit ? "on" : ""} />
+      ))}
+      {crew.total > max && <small>+{crew.total - max}</small>}
+    </span>
+  );
+}
+
+/** 切换器按钮上的项目条：一个方块一个项目，有人在跑的亮绿。 */
+function ProjectStrip({ busy, total, max = 10 }: { busy: number; total: number; max?: number }) {
+  const shown = Math.min(total, max);
+  return (
+    <span className={`dso-crew strip${busy > 0 ? " busy" : ""}`} title={`${busy} / ${total} 个项目在干活（点开看总览）`}>
+      {Array.from({ length: shown }, (_, i) => (
+        <i key={i} className={i < busy ? "on" : ""} />
+      ))}
+      <small>
+        {busy}/{total}
+      </small>
+    </span>
+  );
+}
+
+/**
  * 项目切换器兼项目忙闲总览：触发按钮上显示几个项目在干活；面板里共享办公室与各团队并列可切换，
  * 团队按在跑优先排、带忙闲状态，单智能体项目按文件夹列出（点了去共享办公室并选中）。
  */
@@ -1186,18 +1221,13 @@ function ProjectPicker({
   const currentTeam = (teams ?? []).find((t) => t.leadId === leadId);
   const path = view === "team" ? (currentTeam?.cwd ?? current?.cwd) : undefined;
   // 忙闲：团队按在跑优先、其次最近活跃；单智能体项目由 activity 排好
-  const busyOf = (t: TeamEntry) => activity.teamRunning[t.leadId] ?? 0;
+  const crewOf = (t: TeamEntry): Crew => activity.teams[t.leadId] ?? { total: t.members, running: 0 };
+  const busyOf = (t: TeamEntry) => crewOf(t).running;
   const sortedTeams = teams === null ? null : [...teams].sort((a, b) => Number(busyOf(b) > 0) - Number(busyOf(a) > 0) || (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
   const soloTotal = activity.soloProjects.reduce((n, p) => n + p.ids.length, 0);
-  const soloRunning = activity.soloProjects.reduce((n, p) => n + p.running, 0);
   const busyProjects = (teams ?? []).filter((t) => busyOf(t) > 0).length + activity.soloProjects.filter((p) => p.running > 0).length;
   const allProjects = (teams ?? []).length + activity.soloProjects.length;
-  const status = (running: number, idle = "空闲", unit = "在跑") => (
-    <span className={`dso-busy${running > 0 ? " on" : ""}`}>
-      <i />
-      {running > 0 ? `${running} ${unit}` : idle}
-    </span>
-  );
+
   const create = async (target: string) => {
     if (host === undefined) return;
     setBusy(target);
@@ -1220,10 +1250,7 @@ function ProjectPicker({
           <b>{view === "shared" ? "共享办公室" : view === "boss" ? "老板办公室" : leadId === null ? "选择项目" : nameOf(path)}</b>
           {path && <small>{path}</small>}
         </span>
-        <span className={`dso-busy trigger${busyProjects > 0 ? " on" : ""}`} title="项目忙闲（点开看总览）">
-          <i />
-          {busyProjects > 0 ? `${busyProjects} 个项目在干活` : "全部空闲"}
-        </span>
+        <ProjectStrip busy={busyProjects} total={allProjects} />
         <span className="dso-caret">▾</span>
       </button>
       {open && (
@@ -1257,7 +1284,9 @@ function ProjectPicker({
                   单人团队：{activity.soloProjects.length} 个项目 · {soloTotal} 人在座
                 </small>
               </span>
-              <span className="dso-team-meta">{status(soloRunning)}</span>
+              <span className="dso-team-meta">
+                <CrewDots crew={activity.shared} max={10} />
+              </span>
             </div>
           </div>
           <div className="dso-picker-head">
@@ -1321,7 +1350,7 @@ function ProjectPicker({
                     </button>
                   )}
                   <span className="dso-team-meta">
-                    {status(busyOf(team), "全员空闲", "人在跑")}
+                    <CrewDots crew={crewOf(team)} />
                     <small>
                       {team.members} 人 · {agoShort(team.lastActiveAt)}
                     </small>
@@ -1360,7 +1389,7 @@ function ProjectPicker({
                       <small>{project.cwd}</small>
                     </span>
                     <span className="dso-team-meta">
-                      {status(project.running)}
+                      <CrewDots crew={project} />
                       <small>{project.ids.length} 个单智能体</small>
                     </span>
                   </div>
