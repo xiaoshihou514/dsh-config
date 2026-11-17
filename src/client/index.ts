@@ -16,7 +16,7 @@ import { createElement } from "react";
 import { UsageTrigger } from "./UsageTrigger.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
 import { TurnNotify } from "./TurnNotify.tsx";
-import { OfficeOverlay, OfficeToggle, TEAM_PROMPT, officeHost } from "./office/OfficeShell.tsx";
+import { OfficeOverlay, OfficeToggle, TEAM_PROMPT, officeHost, settingsHost } from "./office/OfficeShell.tsx";
 import { HeaderAvatar, HeroAvatar, avatarHost } from "./office/SessionAvatar.tsx";
 
 export const inject = ["slots"];
@@ -69,6 +69,12 @@ export function apply(ctx: Context): void {
     const remote = (scoped as unknown as { remote: { session: { modelCatalog(): Promise<{ ok: boolean; value?: { default: { provider: string; model: string } } }> } } }).remote;
     avatarHost.current = { loadDefault: async () => { const r = await remote.session.modelCatalog(); return r.ok ? r.value?.default : undefined; } };
     scoped.effect(() => () => { avatarHost.current = undefined; }, "dsh-config: avatar host");
+  });
+  // 办公室「设置」入口调起原生设置弹窗。
+  ctx.inject(["shortcuts"], (scoped) => {
+    const shortcuts = (scoped as unknown as { shortcuts: { invoke(id: string, context: { source?: "menu"; region: "page"; modal: null; target: null }): void } }).shortcuts;
+    settingsHost.current = { open: () => shortcuts.invoke("settings.open", { source: "menu", region: "page", modal: null, target: null }) };
+    scoped.effect(() => () => { settingsHost.current = undefined; }, "dsh-config: office settings host");
   });
   // 布局服务（切回对话面板用）：可选。
   ctx.inject(["layout"], (scoped) => {
