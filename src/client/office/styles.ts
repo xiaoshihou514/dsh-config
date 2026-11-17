@@ -103,7 +103,15 @@ body[data-dsh-office] [class*="_centerCol"] {
   box-shadow: inset 0 -2px 0 rgba(0,0,0,.22), 0 1px 3px rgba(0,0,0,.18);
 }
 .dso-btn.ghost { background: transparent; box-shadow: none; }
-.dso-hud-entry { padding-inline: 10px; white-space: nowrap; }
+.dso-hud-entry { padding: 0 11px 0 5px; gap: 7px; white-space: nowrap; }
+/* HUD 入口的小图标块：与左上角办公室徽标同一种渐变方块 + 底部压边 */
+.dso-hud-ico {
+  width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; flex: none;
+  box-shadow: inset 0 -2px 0 rgba(0,0,0,.2), 0 1px 2px rgba(0,0,0,.18);
+}
+.dso-hud-ico.usage { color: #073b35; background: linear-gradient(160deg, #6fe0cf, #2fb3a3); }
+.dso-hud-ico.settings { color: #14224a; background: linear-gradient(160deg, #a9c1ff, #5b7fd6); }
+.dso-icon-btn { display: inline-grid; place-items: center; box-shadow: inset 0 -2px 0 rgba(0,0,0,.08); }
 .dso-shared-hint { margin: 0 2px 10px; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-tertiary, #86909c); }
 .dso-shared-project { margin-top: 10px; }
 .dso-card.sel { outline: 2px solid var(--role, #8a93a3); outline-offset: -2px; }

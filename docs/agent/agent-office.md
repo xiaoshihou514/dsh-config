@@ -34,7 +34,7 @@ Agent Teams 的 3D 可视化，以「办公室模式」呈现：侧边栏左下�
 
 ## 用量 / 设置入口
 
-- HUD 右侧「📊 用量」「⚙️ 设置」，都不离开办公室。
+- HUD 右侧「用量」「设置」，都不离开办公室。图标自绘（`UsageIcon` 柱状图、`SettingsIcon` 齿轮，与 `OfficeIcon` 同一套 16 格 1.3 线宽描边），放在与左上角办公室徽标同款的渐变小方块里（用量青绿、设置蓝灰），按钮用 HUD 的凸起压边样式；全屏按钮也换成同款描边图标。
 - 用量：直接用 usage 面板导出的受控 `UsageDialog`（`open` / `onClose`），用 portal 挂到 body，覆盖层收成左侧成员栏时也铺满窗口。
 - 设置：原生设置弹窗的开关归侧边栏外壳所有，外部可用的入口是快捷命令 `settings.open`。入口注入 `settingsHost.open = () => ctx.shortcuts.invoke("settings.open", { source: "menu", region: "page", modal: null, target: null })`。弹窗挂在 body、层级 1000，盖在办公室覆盖层（40）之上。没注入时退回点击原生侧边栏的设置按钮（`button[aria-haspopup="dialog"][class*="_trigger"]`，被覆盖层挡住也能点），再找不到才关掉办公室。
 - 用量弹窗或原生弹窗（`[data-shortcut-modal]`）开着时，Esc 交给弹窗，不收起对话。
@@ -42,7 +42,7 @@ Agent Teams 的 3D 可视化，以「办公室模式」呈现：侧边栏左下�
 ## 对话界面角色头像
 
 - `SessionAvatar.tsx`：当前会话所用模型对应厂商的角色头像（像素版，与办公室体素角色同一张正视图），模型切换时实时更新。同一时刻只出现一处（入口 `client/index.ts` 注册）：
-  - `conversation.input.overlay` 的 `ComposerAvatar`：已开始的会话，作为独立元素站在消息输入框左侧外沿（48px，间距 12px，不与框重叠），与输入框垂直居中，输入框随草稿变高时跟着重新居中（每 0.7 秒复查）。左侧放不下（窄窗口）时站到输入框左上方；那里紧挨着有停靠条（待办、排队消息）时仍留在左侧贴边，不压停靠条。会话还是空白时不显示。
+  - `conversation.input.overlay` 的 `ComposerAvatar`：已开始的会话，作为独立元素站在消息输入框左侧外沿（48px，间距 12px，不与框重叠），与输入框垂直居中，输入框随草稿变高时跟着重新居中（每 0.7 秒复查）。左侧放不下时站到输入框上方（左对齐），上方紧挨着有停靠条（待办、排队消息）时站到最上面那条停靠条的上方。「放得下」按真正露出来的区域算：左边界取输入框所在列的左沿与办公室覆盖层（对话展开时固定在左侧、盖在原生对话之上）右沿中靠右的那个——办公室里打开对话时原生对话列被挤窄，头像不会躲到覆盖层底下。会话还是空白时不显示。
   - `conversation.hero.brand.mark` 的 `HeroAvatar`：新会话欢迎页标语左侧（40px，替换内置鱼标）。
   - 原先会话标题左侧那处（`conversation.header.leading` 的 `HeaderAvatar`）已撤掉，导出保留为空实现。
 - 当前会话：输入框处直接用槽位给的会话 id；欢迎页只看默认模型。

@@ -222,12 +222,12 @@ export function ComposerAvatar({
   const blank = useSession?.((state) => state?.blank === true) ?? false;
   const info = useAvatar(useSessions, false, sessionId);
   const ref = useRef<HTMLImageElement>(null);
-  const [place, setPlace] = useState<Placement>({ at: "side", top: 0 });
+  const [place, setPlace] = useState<Placement>({ at: "above", top: -(COMPOSER_SIZE + 6) });
   useLayoutEffect(() => {
     if (blank) return;
     const check = () => {
       const card = ref.current?.closest<HTMLElement>("[data-composer-card]");
-      const next: Placement = card === null || card === undefined ? { at: "side", top: 0 } : placeFor(card);
+      const next: Placement = card === null || card === undefined ? { at: "above", top: -(COMPOSER_SIZE + 6) } : placeFor(card);
       setPlace((prev) => (prev.at === next.at && prev.top === next.top ? prev : next));
     };
     check();
@@ -240,32 +240,40 @@ export function ComposerAvatar({
     };
   }, [blank]);
   if (blank) return null;
-  return <Avatar info={info} size={place.at} imgRef={ref} top={place.at === "side" ? place.top : undefined} />;
+  return <Avatar info={info} size={place.at} imgRef={ref} top={place.top} />;
 }
 
-interface Placement {
+export interface Placement {
   readonly at: "side" | "above";
-  /** side 时相对卡片顶边的位置（使头像与输入框垂直居中）。 */
+  /** 相对卡片顶边的位置：side 时与输入框垂直居中，above 时站在输入框（或最上面的停靠条）上方。 */
   readonly top: number;
 }
 
 /**
- * 默认站在输入框左侧外沿、与输入框垂直居中。左侧放不下（窄窗口）时站到输入框左上方——
- * 但上方紧挨着有停靠条（输入框根节点之前的兄弟节点、有高度、贴近卡片顶边）时那里会压住停靠条，
- * 仍留在左侧（贴边）。
+ * 默认站在输入框左侧外沿、与输入框垂直居中。左侧放不下时站到输入框上方（左对齐）；
+ * 上方紧挨着有停靠条（待办、排队消息）时站到最上面那条停靠条的上方，不压停靠条。
+ *
+ * 「放得下」看的是真正露出来的区域：左边界取输入框所在列的左沿，以及办公室覆盖层
+ * （对话展开时固定在左侧、盖在原生对话之上）的右沿，二者取右——否则头像会被覆盖层挡住。
  */
-function placeFor(card: HTMLElement): Placement {
+export function placeFor(card: HTMLElement): Placement {
   const rect = card.getBoundingClientRect();
   const top = Math.round((rect.height - COMPOSER_SIZE) / 2);
   const root = card.parentElement;
-  const bound = (card.closest<HTMLElement>('[class*="_composerSeat"]') ?? root?.parentElement ?? null)?.getBoundingClientRect();
-  const room = rect.left - (bound?.left ?? 0);
-  if (room >= COMPOSER_SIZE + COMPOSER_GAP) return { at: "side", top };
+  const seat = (card.closest<HTMLElement>('[class*="_composerSeat"]') ?? root?.parentElement ?? null)?.getBoundingClientRect();
+  const office = document.body.hasAttribute("data-dsh-office")
+    ? document.querySelector<HTMLElement>(".dso-root")?.getBoundingClientRect()
+    : undefined;
+  const left = Math.max(seat?.left ?? 0, office?.right ?? 0);
+  if (rect.left - left >= COMPOSER_SIZE + COMPOSER_GAP) return { at: "side", top };
+  // 紧挨着的停靠条一路往上找，站到最上面那条的上方
+  let ceiling = rect.top;
   for (let el = root?.previousElementSibling ?? null; el !== null; el = el.previousElementSibling) {
     const r = el.getBoundingClientRect();
-    if (r.height > 0 && rect.top - r.bottom < 24) return { at: "side", top };
+    if (r.height <= 0 || ceiling - r.bottom >= 24) break;
+    ceiling = r.top;
   }
-  return { at: "above", top: 0 };
+  return { at: "above", top: Math.round(ceiling - rect.top) - (COMPOSER_SIZE + 6) };
 }
 
 /** @deprecated 标题左侧的头像已移到输入框左上角（{@link ComposerAvatar}）；保留空实现，入口撤掉注册前不显示。 */

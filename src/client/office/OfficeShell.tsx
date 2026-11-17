@@ -161,6 +161,51 @@ function OfficeIcon({ size = 14 }: { size?: number }) {
   );
 }
 
+/** HUD 图标：与 OfficeIcon 同一套 16 格、1.3 线宽的描边画法。 */
+function UsageIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+      <path d="M1.8 14h12.4" />
+      <rect x="3" y="8.6" width="2.4" height="5.4" rx=".5" />
+      <rect x="6.8" y="5.6" width="2.4" height="8.4" rx=".5" />
+      <rect x="10.6" y="2.6" width="2.4" height="11.4" rx=".5" />
+    </svg>
+  );
+}
+
+/** 齿轮：8 齿，外圈齿顶 / 齿根交替。 */
+const GEAR_PATH = (() => {
+  const points: string[] = [];
+  const teeth = 8;
+  for (let i = 0; i < teeth * 4; i += 1) {
+    const a = (i / (teeth * 4)) * Math.PI * 2 - Math.PI / 2;
+    const r = i % 4 === 1 || i % 4 === 2 ? 6.4 : 4.9;
+    points.push(`${(8 + Math.cos(a) * r).toFixed(2)},${(8 + Math.sin(a) * r).toFixed(2)}`);
+  }
+  return `M${points.join("L")}Z`;
+})();
+
+function SettingsIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round">
+      <path d={GEAR_PATH} />
+      <circle cx="8" cy="8" r="2" />
+    </svg>
+  );
+}
+
+function FullscreenIcon({ exit, size = 14 }: { exit: boolean; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      {exit ? (
+        <path d="M6 2v4H2M10 2v4h4M6 14v-4H2M10 14v-4h4" />
+      ) : (
+        <path d="M2 6V2h4M10 2h4v4M2 10v4h4M14 10v4h-4" />
+      )}
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------- 数据
 
 interface TeamEntry {
@@ -711,11 +756,17 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
             );
           })}
         </div>
-        <button type="button" className="dso-btn ghost dso-hud-entry" title="查看词元用量与费用" onClick={() => setUsageOpen(true)}>
-          📊 用量
+        <button type="button" className="dso-btn dso-hud-entry" title="查看词元用量与费用" onClick={() => setUsageOpen(true)}>
+          <span className="dso-hud-ico usage">
+            <UsageIcon size={13} />
+          </span>
+          用量
         </button>
-        <button type="button" className="dso-btn ghost dso-hud-entry" title="打开设置（不离开办公室）" onClick={openNativeSettings}>
-          ⚙️ 设置
+        <button type="button" className="dso-btn dso-hud-entry" title="打开设置（不离开办公室）" onClick={openNativeSettings}>
+          <span className="dso-hud-ico settings">
+            <SettingsIcon size={13} />
+          </span>
+          设置
         </button>
         {/* 用量弹窗挂到 body：覆盖层收成左侧成员栏时也能铺满窗口 */}
         {usageOpen && createPortal(<UsageDialog open onClose={() => setUsageOpen(false)} />, document.body)}
@@ -728,7 +779,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
             else void document.documentElement.requestFullscreen?.();
           }}
         >
-          {fullscreen ? "⤡" : "⤢"}
+          <FullscreenIcon exit={fullscreen} />
         </button>
         <button type="button" className="dso-btn ghost" title="回到原生对话界面" onClick={() => setOffice({ on: false, chatOpen: false })}>
           ← 返回对话界面
