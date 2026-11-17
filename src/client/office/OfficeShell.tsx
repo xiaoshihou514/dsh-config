@@ -60,19 +60,39 @@ export interface OfficeHost {
 export const officeHost: { current: OfficeHost | undefined } = { current: undefined };
 
 /**
- * 入口注入：打开原生设置（`ctx.shortcuts.invoke("settings.open", …)`）。设置弹窗挂在 body、
- * 层级 1000，盖在办公室覆盖层（40）之上，所以不必离开办公室。
+ * 入口注入：打开原生设置。设置弹窗挂在 body、层级 1000，盖在办公室覆盖层（40）之上，所以不必离开办公室。
  */
 export const settingsHost: { current: { open(): void } | undefined } = { current: undefined };
 
-/** 办公室里开着的弹窗数（用量）：开着时 Esc 交给弹窗，不收起对话。 */
-let dialogsOpen = 0;
-/** 原生弹窗（设置等）开着：它们自己处理 Esc。 */
-const nativeModalOpen = () => document.querySelector("[data-shortcut-modal]") !== null;
+/** `ctx.slots` 里用到的部分。 */
+interface SlotsLike {
+  entries(key: string): readonly { readonly options?: unknown }[];
+}
 
 /**
- * HUD「设置」：优先走入口注入的命令；没有时点原生侧边栏的设置按钮（被覆盖层挡住也能点）；
- * 再不行就退回对话界面，让用户自己点。
+ * 与原生侧边栏设置按钮完全一致的打开方式：原生设置外壳把自己的状态仓库挂在 `sidebar.settings`
+ * 槽位的注册选项上（`store.create()` 返回侧边栏用的同一个实例），侧边栏设置按钮、账户菜单里的「设置」、
+ * `settings.open` 快捷键都是调它的 `actions.open()`。这里在点击时现查，外壳重载后也能找到新实例。
+ */
+export function nativeSettingsOpener(slots: SlotsLike): { open(): void } {
+  return {
+    open() {
+      for (const entry of slots.entries("sidebar.settings")) {
+        const store = (entry.options as { store?: { create?: () => { actions?: { open?: () => void } } } } | undefined)?.store;
+        const open = store?.create?.().actions?.open;
+        if (typeof open === "function") {
+          open();
+          return;
+        }
+      }
+      throw new Error("找不到原生设置外壳");
+    },
+  };
+}
+
+/**
+ * HUD「设置」：走与原生侧边栏设置按钮相同的打开方式；拿不到时退出办公室，让你用侧边栏的设置
+ * （不再去点页面上别的弹窗按钮——那会打开别的面板）。
  */
 function openNativeSettings(): void {
   try {
@@ -80,16 +100,16 @@ function openNativeSettings(): void {
       settingsHost.current.open();
       return;
     }
-  } catch {
-    // 命令被拦（如另有弹窗）时走下面的退路
-  }
-  const trigger = document.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"][class*="_trigger"]');
-  if (trigger !== null) {
-    trigger.click();
-    return;
+  } catch (error) {
+    console.warn("[dsh-config] 打开原生设置失败：", error);
   }
   setOffice({ on: false, chatOpen: false });
 }
+
+/** 办公室里开着的弹窗数（用量）：开着时 Esc 交给弹窗，不收起对话。 */
+let dialogsOpen = 0;
+/** 原生弹窗（设置等）开着：它们自己处理 Esc。 */
+const nativeModalOpen = () => document.querySelector("[data-shortcut-modal]") !== null;
 
 const POLL_MS = 1500;
 

@@ -42,7 +42,7 @@ Agent Teams 的 3D 可视化，以「办公室模式」呈现：侧边栏左下�
 
 - HUD 右侧「用量」「设置」，都不离开办公室。图标自绘（`UsageIcon` 柱状图、`SettingsIcon` 齿轮，与 `OfficeIcon` 同一套 16 格 1.3 线宽描边），放在与左上角办公室徽标同款的渐变小方块里（用量青绿、设置蓝灰），按钮用 HUD 的凸起压边样式；全屏按钮也换成同款描边图标。
 - 用量：直接用 usage 面板导出的受控 `UsageDialog`（`open` / `onClose`），用 portal 挂到 body，覆盖层收成左侧成员栏时也铺满窗口。
-- 设置：原生设置弹窗的开关归侧边栏外壳所有，外部可用的入口是快捷命令 `settings.open`。入口注入 `settingsHost.open = () => ctx.shortcuts.invoke("settings.open", { source: "menu", region: "page", modal: null, target: null })`。弹窗挂在 body、层级 1000，盖在办公室覆盖层（40）之上。没注入时退回点击原生侧边栏的设置按钮（`button[aria-haspopup="dialog"][class*="_trigger"]`，被覆盖层挡住也能点），再找不到才关掉办公室。
+- 设置：与原生侧边栏设置按钮完全一致。原生设置外壳把状态仓库挂在 `sidebar.settings` 槽位的注册选项上（`store.create()` 返回侧边栏用的同一个实例），侧边栏设置按钮、账户菜单里的「设置」、`settings.open` 快捷键都调它的 `actions.open()`；`OfficeShell.tsx` 导出 `nativeSettingsOpener(ctx.slots)`，点击时经 `ctx.slots.entries("sidebar.settings")` 现查该实例并 `open()`，入口注入为 `settingsHost`。弹窗挂在 body、层级 1000，盖在办公室覆盖层（40）之上。拿不到时退出办公室，让你用侧边栏的设置。（早先用 `ctx.shortcuts.invoke` 不成立：公开的 shortcuts 服务没有 `invoke`，它只在内部注册表上；抛错后旧的回退去点页面上第一个 `[aria-haspopup="dialog"][class*="_trigger"]` 按钮——装了账户启动器时侧边栏没有那颗设置按钮，点到的是别的弹窗。）
 - 用量弹窗或原生弹窗（`[data-shortcut-modal]`）开着时，Esc 交给弹窗，不收起对话。
 
 ## 对话界面角色头像
