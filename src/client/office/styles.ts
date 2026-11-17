@@ -116,6 +116,24 @@ body[data-dsh-office] [class*="_centerCol"] {
 .dso-shared-project { margin-top: 10px; }
 .dso-card.sel { outline: 2px solid var(--role, #8a93a3); outline-offset: -2px; }
 .dso-card-acts { display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+/* ---- 项目忙闲总览（切换器） ---- */
+.dso-busy {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: 999px; white-space: nowrap;
+  font-size: 11px; font-weight: 600; color: var(--dsw-alias-label-tertiary, #86909c);
+  background: var(--dsw-alias-bg-layer-2, #f4f5f7); box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l2);
+}
+.dso-busy i { width: 7px; height: 7px; border-radius: 50%; background: #b3b9c4; flex: none; }
+.dso-busy.on { color: #157a43; background: color-mix(in srgb, #3fd07a 14%, var(--dsw-alias-bg-layer-1, #fff)); box-shadow: inset 0 0 0 1px color-mix(in srgb, #3fd07a 45%, transparent); }
+.dso-busy.on i { background: #3fd07a; box-shadow: 0 0 0 2px rgba(63,208,122,.22), 0 0 6px #3fd07a; animation: dso-blink 1.6s infinite; }
+.dso-busy.trigger { margin-left: 4px; }
+.dso-overview {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 2px 8px;
+  font-size: 13px;
+}
+.dso-overview span { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dso-picker-head small { font-weight: 500; letter-spacing: 0; color: var(--dsw-alias-label-tertiary, #86909c); }
+.dso-team-badge.shared { background: linear-gradient(160deg, #a9c1ff, #5b7fd6); color: #14224a; }
+.dso-team-badge.solo { background: linear-gradient(160deg, #6fe0cf, #2fb3a3); color: #073b35; }
 .dso-tab-badge { display: inline-block; min-width: 16px; height: 16px; margin-left: 5px; padding: 0 4px; border-radius: 999px; background: #ff3b30; color: #fff; font-size: 10px; line-height: 16px; text-align: center; font-weight: 700; }
 .dso-btn.sm { height: 26px; padding: 0 10px; font-size: 11px; }
 .dso-link { border: 0; background: transparent; padding: 0; cursor: pointer; font: inherit; font-size: 11px; color: var(--dsw-alias-state-business-primary); }
@@ -123,7 +141,7 @@ body[data-dsh-office] [class*="_centerCol"] {
 /* ---- 项目选择 ---- */
 .dso-picker-wrap { position: relative; min-width: 0; }
 .dso-project {
-  display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 380px; height: 38px; padding: 0 10px 0 6px;
+  display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 480px; height: 38px; padding: 0 10px 0 6px;
   border-radius: 10px; border: 1px solid var(--dsw-alias-border-l2); cursor: pointer;
   background: var(--dsw-alias-bg-layer-1); color: inherit; font: inherit; text-align: left;
   box-shadow: inset 0 -2px 0 rgba(0,0,0,.06);

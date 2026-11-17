@@ -17,6 +17,7 @@ import { currentSession, getOffice, setOffice, useOffice } from "./store.ts";
 import { CSS } from "./styles.ts";
 import { useSoloPick, useSoloSnapshot } from "./shared.ts";
 import { bossSnapshot, useLeadFacts, useLeadPick } from "./boss.ts";
+import { useProjectActivity, type ProjectActivity } from "./projects.ts";
 import { BOSS_LABEL } from "../../office/boss.ts";
 
 type Selector<T> = (selector: (state: any) => T) => T;
@@ -465,6 +466,11 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const solo = useSoloSnapshot(true, soloPick.ids, nameOfProject, shared);
   // 老板办公室：一直轮询（HUD 角标要用），在老板办公室里更勤
   const leadPick = useLeadPick(useSessions as never, leads);
+  // 项目忙闲总览（切换器用）：团队与单智能体项目，全在浏览器端算
+  const teamLeadIds = useMemo(() => (teams ?? []).map((t) => t.leadId), [teams]);
+  const activity = useProjectActivity(useSessions as never, teamLeadIds, soloPick.ids);
+  /** 从切换器点了某个单智能体项目：切到共享办公室后选中它。 */
+  const pendingSelect = useRef<string | null>(null);
   const leadFacts = useLeadFacts(leadPick, bossView);
 
   const viewIds = shared ? (solo.snapshot?.members.map((m) => m.id) ?? []) : (snapshot?.members.map((m) => m.id) ?? []);
@@ -484,7 +490,10 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
     setSelected(null);
     setError(null);
   }, [leadId]);
-  useEffect(() => setSelected(null), [view]);
+  useEffect(() => {
+    setSelected(pendingSelect.current);
+    pendingSelect.current = null;
+  }, [view]);
   /** 场景随「团队 / 共享办公室 / 老板办公室」重建（布局不同）。 */
   const sceneKey = shared ? "__shared__" : bossView ? "__boss__" : leadId;
 
@@ -607,6 +616,19 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
       if (!already) officeHost.current?.openSession(leadId, id);
     }, 0);
   };
+  const goShared = (cwd?: string) => {
+    const target = cwd === undefined ? null : (activity.soloProjects.find((p) => p.cwd === cwd)?.ids[0] ?? null);
+    setMode("office");
+    if (view === "shared") {
+      if (target !== null) {
+        setSelected(target);
+        scene.current?.focus(target);
+      }
+      return;
+    }
+    pendingSelect.current = target;
+    setView("shared");
+  };
   const pickTeam = (id: string) => {
     setView("team");
     setOffice({ lead: id });
@@ -670,7 +692,10 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
             teamsError={teamsError}
             leadId={leadId}
             current={snapshot}
+            activity={activity}
+            view={view}
             onPick={pickTeam}
+            onShared={goShared}
             onCreated={(id) => {
               pickTeam(id);
               reloadTeams();
@@ -690,7 +715,10 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
           teamsError={teamsError}
           leadId={leadId}
           current={snapshot}
+          activity={activity}
+          view={view}
           onPick={pickTeam}
+          onShared={goShared}
           onCreated={(id) => {
             pickTeam(id);
             reloadTeams();
@@ -1084,19 +1112,30 @@ function Stat({ label, value, tone }: { label: string; value: ReactNode; tone?: 
 
 // ---------------------------------------------------------------- 项目选择
 
+/**
+ * 项目切换器兼项目忙闲总览：触发按钮上显示几个项目在干活；面板里共享办公室与各团队并列可切换，
+ * 团队按在跑优先排、带忙闲状态，单智能体项目按文件夹列出（点了去共享办公室并选中）。
+ */
 function ProjectPicker({
   teams,
   teamsError,
   leadId,
   current,
+  activity,
+  view,
   onPick,
+  onShared,
   onCreated,
 }: {
   teams: TeamEntry[] | null;
   teamsError: string | null;
   leadId: string | null;
   current: { cwd?: string | undefined } | null;
+  activity: ProjectActivity;
+  view: "team" | "shared" | "boss";
   onPick: (leadId: string) => void;
+  /** 去共享办公室；给了项目文件夹时选中该项目的第一个单智能体。 */
+  onShared: (cwd?: string) => void;
   onCreated: (leadId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1125,7 +1164,20 @@ function ProjectPicker({
   const teamPaths = new Set((teams ?? []).map((t) => t.cwd).filter((c): c is string => c !== undefined));
   const free = open && host !== undefined ? host.listWorkspaces().filter((w) => !teamPaths.has(w.path)) : [];
   const currentTeam = (teams ?? []).find((t) => t.leadId === leadId);
-  const path = currentTeam?.cwd ?? current?.cwd;
+  const path = view === "team" ? (currentTeam?.cwd ?? current?.cwd) : undefined;
+  // 忙闲：团队按在跑优先、其次最近活跃；单智能体项目由 activity 排好
+  const busyOf = (t: TeamEntry) => activity.teamRunning[t.leadId] ?? 0;
+  const sortedTeams = teams === null ? null : [...teams].sort((a, b) => Number(busyOf(b) > 0) - Number(busyOf(a) > 0) || (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+  const soloTotal = activity.soloProjects.reduce((n, p) => n + p.ids.length, 0);
+  const soloRunning = activity.soloProjects.reduce((n, p) => n + p.running, 0);
+  const busyProjects = (teams ?? []).filter((t) => busyOf(t) > 0).length + activity.soloProjects.filter((p) => p.running > 0).length;
+  const allProjects = (teams ?? []).length + activity.soloProjects.length;
+  const status = (running: number, idle = "空闲", unit = "在跑") => (
+    <span className={`dso-busy${running > 0 ? " on" : ""}`}>
+      <i />
+      {running > 0 ? `${running} ${unit}` : idle}
+    </span>
+  );
   const create = async (target: string) => {
     if (host === undefined) return;
     setBusy(target);
@@ -1145,24 +1197,60 @@ function ProjectPicker({
       <button type="button" className={`dso-project${open ? " open" : ""}`} onClick={() => setOpen(!open)} aria-expanded={open}>
         <span className="dso-project-flag" />
         <span className="dso-project-text">
-          <b>{leadId === null ? "选择项目" : nameOf(path)}</b>
+          <b>{view === "shared" ? "共享办公室" : view === "boss" ? "老板办公室" : leadId === null ? "选择项目" : nameOf(path)}</b>
           {path && <small>{path}</small>}
+        </span>
+        <span className={`dso-busy trigger${busyProjects > 0 ? " on" : ""}`} title="项目忙闲（点开看总览）">
+          <i />
+          {busyProjects > 0 ? `${busyProjects} 个项目在干活` : "全部空闲"}
         </span>
         <span className="dso-caret">▾</span>
       </button>
       {open && (
         <div className="dso-picker" role="dialog" aria-label="选择项目">
+          <div className="dso-overview">
+            <b>项目总览</b>
+            <span>
+              {busyProjects} 个在干活 / 共 {allProjects} 个
+            </span>
+          </div>
+          <div className="dso-cards">
+            <div
+              role="button"
+              tabIndex={0}
+              className={`dso-team-card shared${view === "shared" ? " on" : ""}`}
+              onClick={() => {
+                onShared();
+                setOpen(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  onShared();
+                  setOpen(false);
+                }
+              }}
+            >
+              <span className="dso-team-badge shared">共</span>
+              <span className="dso-team-text">
+                <b>共享办公室</b>
+                <small>
+                  单人团队：{activity.soloProjects.length} 个项目 · {soloTotal} 人在座
+                </small>
+              </span>
+              <span className="dso-team-meta">{status(soloRunning)}</span>
+            </div>
+          </div>
           <div className="dso-picker-head">
             <span>团队</span>
             {teamsError && <em title={teamsError}>⚠ {teamsError}</em>}
           </div>
           <div className="dso-cards">
-            {teams === null ? (
+            {sortedTeams === null ? (
               <div className="dso-empty">加载中…</div>
-            ) : teams.length === 0 ? (
+            ) : sortedTeams.length === 0 ? (
               <div className="dso-empty">还没有组建过团队</div>
             ) : (
-              teams.map((team) => (
+              sortedTeams.map((team) => (
                 <div
                   key={team.leadId}
                   role="button"
@@ -1213,13 +1301,53 @@ function ProjectPicker({
                     </button>
                   )}
                   <span className="dso-team-meta">
-                    <span className="dso-pill">{team.members} 人</span>
-                    <small>{agoShort(team.lastActiveAt)}</small>
+                    {status(busyOf(team), "全员空闲", "人在跑")}
+                    <small>
+                      {team.members} 人 · {agoShort(team.lastActiveAt)}
+                    </small>
                   </span>
                 </div>
               ))
             )}
           </div>
+          {activity.soloProjects.length > 0 && (
+            <>
+              <div className="dso-picker-head">
+                <span>单智能体项目</span>
+                <small>24 小时内活跃，在共享办公室里</small>
+              </div>
+              <div className="dso-cards">
+                {activity.soloProjects.map((project) => (
+                  <div
+                    key={project.cwd}
+                    role="button"
+                    tabIndex={0}
+                    className="dso-team-card solo"
+                    onClick={() => {
+                      onShared(project.cwd);
+                      setOpen(false);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        onShared(project.cwd);
+                        setOpen(false);
+                      }
+                    }}
+                  >
+                    <span className="dso-team-badge solo">{nameOf(project.cwd || undefined).slice(0, 1).toUpperCase()}</span>
+                    <span className="dso-team-text">
+                      <b>{project.cwd ? nameOf(project.cwd) : "未知文件夹"}</b>
+                      <small>{project.cwd}</small>
+                    </span>
+                    <span className="dso-team-meta">
+                      {status(project.running)}
+                      <small>{project.ids.length} 个单智能体</small>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
           <div className="dso-picker-head">
             <span>组建新团队</span>
             <button type="button" className="dso-link" onClick={() => setShowPrompt(!showPrompt)}>
