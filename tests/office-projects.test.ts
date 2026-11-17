@@ -1,39 +1,40 @@
 import { describe, expect, it } from "vitest";
-import { projectActivity, rootOf } from "../src/client/office/projects.ts";
+import { busyUnits, projectActivity, unitOf } from "../src/client/office/projects.ts";
 
-const NOW = 1_800_000_000_000;
-const HOUR = 60 * 60 * 1000;
-const sub = (parent: string, extra: object = {}) => ({ parentSessionId: parent, origin: "subagent", updatedAt: NOW - HOUR, ...extra });
+const sub = (parent: string, extra: object = {}) => ({ parentSessionId: parent, origin: "subagent", ...extra });
 
-describe("项目忙闲总览（含子代理）", () => {
+describe("项目忙闲：单位只有组长、组员、单智能体，子代理只让派它的单位亮", () => {
   const state = {
     byId: {
-      L1: { updatedAt: NOW - HOUR },
-      m1: sub("L1", { running: true }),
+      L1: {},
+      m1: sub("L1"), // 组员（在名册里）
       m2: sub("L1"),
-      m1x: sub("m1", { running: true }), // 组员派的子代理
-      oldKid: sub("L1", { updatedAt: NOW - 30 * HOUR }), // 早就结束的子代理：不算人
-      a: { cwd: "/p/notes", running: true, updatedAt: NOW },
-      ax: sub("a", { running: true }), // 单智能体派的子代理
-      b: { cwd: "/p/notes", updatedAt: NOW - HOUR },
-      c: { cwd: "/p/paper", updatedAt: NOW - HOUR },
-      fork: { parentSessionId: "c", cwd: "/p/paper", updatedAt: NOW - HOUR }, // 普通分叉：独立会话
+      m1x: sub("m1", { running: true }), // 组员派的子代理在跑 → 组员 m1 在跑
+      lx: sub("L1"), // 组长派的子代理（不在名册），空闲
+      lxx: sub("lx", { running: true }), // 子代理的子代理在跑 → 组长在跑
+      a: { cwd: "/p/notes" },
+      ax: sub("a", { running: true }), // 单智能体派的子代理在跑 → a 在跑
+      b: { cwd: "/p/notes", running: true },
+      c: { cwd: "/p/paper" },
     },
   };
-  it("沿子代理链归到顶层会话；普通分叉是独立会话", () => {
-    expect(rootOf(state.byId, "m1x")).toBe("L1");
-    expect(rootOf(state.byId, "ax")).toBe("a");
-    expect(rootOf(state.byId, "fork")).toBe("fork");
+  const teams = [{ leadId: "L1", memberIds: ["m1", "m2"] }];
+  it("沿子代理链找最近的单位", () => {
+    const units = new Set(["L1", "m1", "m2", "a"]);
+    expect(unitOf(state.byId, "m1x", units)).toBe("m1");
+    expect(unitOf(state.byId, "lxx", units)).toBe("L1");
+    expect(unitOf(state.byId, "ax", units)).toBe("a");
+    expect([...busyUnits(state, units)].sort()).toEqual(["L1", "a", "m1"]);
   });
-  it("团队 = 组长 + 整棵子代理树里 24 小时内活跃的，在跑的含组员派的子代理", () => {
-    expect(projectActivity(state, ["L1"], [], NOW).teams.L1).toEqual({ total: 4, running: 2 });
+  it("团队人手 = 组长 + 名册组员，子代理不占位", () => {
+    expect(projectActivity(state, teams, []).teams.L1).toEqual({ total: 3, running: 2, leadOn: true });
   });
-  it("单智能体项目连同它们的子代理，按文件夹分组；共享办公室合计", () => {
-    const act = projectActivity(state, [], ["a", "b", "c", "fork"], NOW);
+  it("单智能体项目按文件夹分组，子代理不占位；共享办公室合计", () => {
+    const act = projectActivity(state, teams, ["a", "b", "c"]);
     expect(act.soloProjects).toEqual([
-      { cwd: "/p/notes", ids: ["a", "b"], total: 3, running: 2 },
-      { cwd: "/p/paper", ids: ["c", "fork"], total: 2, running: 0 },
+      { cwd: "/p/notes", ids: ["a", "b"], total: 2, running: 2 },
+      { cwd: "/p/paper", ids: ["c"], total: 1, running: 0 },
     ]);
-    expect(act.shared).toEqual({ total: 5, running: 2 });
+    expect(act.shared).toEqual({ total: 3, running: 2 });
   });
 });

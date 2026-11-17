@@ -193,7 +193,7 @@ export function workingProjects(
   for (const team of teams) {
     const crew = crews[team.leadId];
     if (crew === undefined || crew.running === 0 || inRoom.has(team.leadId)) continue;
-    out.push({ key: team.leadId, kind: "team", name: nameOf(team.cwd), running: crew.running, total: crew.total });
+    out.push({ key: team.leadId, kind: "team", name: nameOf(team.cwd), running: crew.running, total: crew.total, leadOn: crew.leadOn });
   }
   for (const project of soloProjects) {
     if (project.running === 0) continue;

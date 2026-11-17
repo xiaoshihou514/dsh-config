@@ -1,29 +1,19 @@
 /**
- * 项目忙闲总览（项目切换器用）：哪些项目正在干活。全部在浏览器端从原生会话列表算，零扫描。
+ * 项目忙闲（浏览器端，从原生会话列表算，零扫描）。
  *
- * 子代理：原生会话列表含任意层级的子代理会话（`origin === "subagent"`、`parentSessionId` 指向派它的会话；
- * 团队组员是组长的子代理，组员 / 单智能体自己派的子代理挂在它们下面）。普通分叉也可能带 parentSessionId，
- * 但不是子代理，是独立会话。这里沿子代理链把每个会话归到它的顶层会话：
- *
- * - 团队：组长及其整棵子代理树（组员、组员派的子代理……）。
- * - 单智能体项目：共享办公室的入选者（顶层会话）按文件夹分组，各自连同它们派的子代理。
- *
- * 一个项目的「人」= 顶层会话 + 24 小时内活跃（或正在运行）的子孙；「在跑」= 其中正在运行的。
+ * 概念模型：可视化的单位只有组长、组员（在组长 `team/member` 名册里）、单智能体（顶层独立会话）。
+ * 子代理 = 不在名册里的 subagent 会话（组长、组员、单智能体用工具临时派的），不单独出现——
+ * 不占格子、不入座、不去老板办公室；它在跑，就算派它的那个单位在跑（沿子代理链往上找最近的单位）。
  */
 
 import { useMemo } from "react";
-import { SOLO_WINDOW_MS, rootOf, type SessionListLike, type SessionRowLike } from "./shared.ts";
+import type { SessionListLike, SessionRowLike } from "./shared.ts";
 
-export { rootOf };
-
-interface RowWithCwd extends SessionRowLike {
-  readonly cwd?: string;
-}
-
-/** 一个项目里的智能体：几个人、几个在跑。 */
+/** 一组单位的人手：几个、几个在跑；团队另记组长是否在跑（组长单位排第一个）。 */
 export interface Crew {
   readonly total: number;
   readonly running: number;
+  readonly leadOn?: boolean | undefined;
 }
 
 export interface SoloProject extends Crew {
@@ -33,7 +23,7 @@ export interface SoloProject extends Crew {
 }
 
 export interface ProjectActivity {
-  /** 组长 id → 团队（组长 + 整棵子代理树）。 */
+  /** 组长 id → 团队（组长 + 名册组员）。 */
   readonly teams: Readonly<Record<string, Crew>>;
   /** 单智能体项目：在跑的在前，其次人多的在前。 */
   readonly soloProjects: readonly SoloProject[];
@@ -41,71 +31,97 @@ export interface ProjectActivity {
   readonly shared: Crew;
 }
 
-function ms(value: number | undefined): number {
-  if (value === undefined || !Number.isFinite(value)) return 0;
-  return value < 1e12 ? value * 1000 : value;
+export interface TeamRoster {
+  readonly leadId: string;
+  readonly memberIds?: readonly string[] | undefined;
 }
 
-/** 每个顶层会话的人手（顶层会话本身 + 24 小时内活跃或在跑的子孙）。 */
-export function crews(state: SessionListLike | undefined, now: number): Map<string, { total: number; running: number }> {
-  const byId = state?.byId ?? {};
-  const out = new Map<string, { total: number; running: number }>();
-  for (const [id, row] of Object.entries(byId)) {
-    if (row === undefined) continue;
-    const root = rootOf(byId, id);
-    const running = row.running === true;
-    if (root !== id && !running && now - ms(row.updatedAt) > SOLO_WINDOW_MS) continue;
-    const crew = out.get(root) ?? { total: 0, running: 0 };
-    crew.total += 1;
-    if (running) crew.running += 1;
-    out.set(root, crew);
+/**
+ * 会话归属的单位：自己是单位就是自己；否则沿子代理链（`origin === "subagent"`）往上，
+ * 第一个是单位的祖先；链断了（父会话不在列表里）就停在链顶。
+ */
+export function unitOf(byId: Readonly<Record<string, SessionRowLike | undefined>>, id: string, units: ReadonlySet<string>): string {
+  let current = id;
+  for (let depth = 0; depth < 32; depth += 1) {
+    if (units.has(current)) return current;
+    const row = byId[current];
+    const parent = row?.parentSessionId;
+    if (row?.origin !== "subagent" || parent === undefined || byId[parent] === undefined) return current;
+    current = parent;
   }
-  return out;
+  return current;
+}
+
+/** 在跑的单位：自己在跑，或它的任意层级子代理在跑。 */
+export function busyUnits(state: SessionListLike | undefined, units: ReadonlySet<string>): Set<string> {
+  const byId = state?.byId ?? {};
+  const busy = new Set<string>();
+  for (const [id, row] of Object.entries(byId)) {
+    if (row?.running !== true) continue;
+    const unit = unitOf(byId, id, units);
+    if (units.has(unit)) busy.add(unit);
+  }
+  return busy;
+}
+
+/** 所有单位：各团队的组长与名册组员、单智能体。 */
+export function unitSet(teams: readonly TeamRoster[], soloIds: readonly string[]): Set<string> {
+  const units = new Set<string>(soloIds);
+  for (const team of teams) {
+    units.add(team.leadId);
+    for (const id of team.memberIds ?? []) units.add(id);
+  }
+  return units;
 }
 
 /** 纯函数：从会话列表算项目忙闲。 */
 export function projectActivity(
   state: SessionListLike | undefined,
-  teamLeads: readonly string[],
+  teams: readonly TeamRoster[],
   soloIds: readonly string[],
-  now: number,
 ): ProjectActivity {
-  const byId = (state?.byId ?? {}) as Readonly<Record<string, RowWithCwd | undefined>>;
-  const all = crews(state, now);
-  const crewOf = (id: string): Crew => all.get(id) ?? { total: 1, running: 0 };
-  const teams: Record<string, Crew> = {};
-  for (const lead of teamLeads) teams[lead] = crewOf(lead);
-  const groups = new Map<string, { ids: string[]; total: number; running: number }>();
+  const byId = (state?.byId ?? {}) as Readonly<Record<string, (SessionRowLike & { cwd?: string }) | undefined>>;
+  const busy = busyUnits(state, unitSet(teams, soloIds));
+  const out: Record<string, Crew> = {};
+  for (const team of teams) {
+    const members = team.memberIds ?? [];
+    const leadOn = busy.has(team.leadId);
+    out[team.leadId] = { total: 1 + members.length, running: Number(leadOn) + members.filter((id) => busy.has(id)).length, leadOn };
+  }
+  const groups = new Map<string, { ids: string[]; running: number }>();
   for (const id of soloIds) {
     const cwd = byId[id]?.cwd ?? "";
-    const group = groups.get(cwd) ?? { ids: [], total: 0, running: 0 };
-    const crew = crewOf(id);
+    const group = groups.get(cwd) ?? { ids: [], running: 0 };
     group.ids.push(id);
-    group.total += crew.total;
-    group.running += crew.running;
+    if (busy.has(id)) group.running += 1;
     groups.set(cwd, group);
   }
   const soloProjects = [...groups]
-    .map(([cwd, g]) => ({ cwd, ids: g.ids, total: g.total, running: g.running }))
+    .map(([cwd, g]) => ({ cwd, ids: g.ids, total: g.ids.length, running: g.running }))
     .sort((a, b) => Number(b.running > 0) - Number(a.running > 0) || b.total - a.total || a.cwd.localeCompare(b.cwd));
   const shared = soloProjects.reduce((sum, p) => ({ total: sum.total + p.total, running: sum.running + p.running }), {
     total: 0,
     running: 0,
   });
-  return { teams, soloProjects, shared };
+  return { teams: out, soloProjects, shared };
 }
 
 type UseSessions = (selector: (state: SessionListLike | undefined) => string) => string;
 
-/** 订阅会话列表：选择器只返回结果的 JSON，会话列表其他变化不触发重渲染（「24 小时」按分钟取整）。 */
+/** 订阅会话列表：选择器只返回结果 JSON，会话列表其他变化不触发重渲染。 */
 export function useProjectActivity(
   useSessions: UseSessions | undefined,
-  teamLeads: readonly string[],
+  teams: readonly TeamRoster[],
   soloIds: readonly string[],
 ): ProjectActivity {
-  const now = () => Math.floor(Date.now() / 60_000) * 60_000;
   const key =
-    useSessions?.((state) => JSON.stringify(projectActivity(state, teamLeads, soloIds, now()))) ??
-    JSON.stringify(projectActivity(undefined, teamLeads, soloIds, now()));
+    useSessions?.((state) => JSON.stringify(projectActivity(state, teams, soloIds))) ??
+    JSON.stringify(projectActivity(undefined, teams, soloIds));
   return useMemo(() => JSON.parse(key) as ProjectActivity, [key]);
+}
+
+/** 这些单位里哪些因子代理（或自己）在跑而算在跑——并进场景、老板办公室的在跑判定。 */
+export function useBusyUnits(useSessions: UseSessions | undefined, units: ReadonlySet<string>): ReadonlySet<string> {
+  const key = useSessions?.((state) => [...busyUnits(state, units)].sort().join(",")) ?? "";
+  return useMemo(() => new Set(key === "" ? [] : key.split(",")), [key]);
 }

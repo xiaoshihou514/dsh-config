@@ -160,4 +160,6 @@ export interface OfficeWorking {
   readonly kind: "team" | "solo";
   readonly running: number;
   readonly total: number;
+  /** 团队：组长自己（或他派的子代理）在跑。 */
+  readonly leadOn?: boolean | undefined;
 }

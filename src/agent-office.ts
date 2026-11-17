@@ -297,6 +297,8 @@ export function apply(ctx: Context): void {
           title?: string | undefined;
           cwd?: string | undefined;
           members: number;
+          /** 名册：正式组员的会话 id（不在名册里的子会话是临时派的子代理）。 */
+          memberIds: string[];
           lastActiveAt?: number | undefined;
           /** 组建时间：最早一名成员的加入时间。 */
           formedAt: number;
@@ -314,6 +316,7 @@ export function apply(ctx: Context): void {
               title: result.digest.title,
               cwd: result.cwd,
               members: result.digest.team.length + 1,
+              memberIds: result.digest.team.map((m) => m.id),
               lastActiveAt: Math.max(result.digest.lastActiveAt ?? 0, ...memberTimes),
               formedAt: Math.min(...result.digest.team.map((m) => m.at)),
               replaces: [],

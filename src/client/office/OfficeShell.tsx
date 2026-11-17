@@ -17,7 +17,8 @@ import { currentSession, getOffice, setOffice, useOffice } from "./store.ts";
 import { CSS } from "./styles.ts";
 import { useSoloPick, useSoloSnapshot } from "./shared.ts";
 import { bossSnapshot, useLeadFacts, useLeadPick, workingProjects, type WorkingProject } from "./boss.ts";
-import { useProjectActivity, type Crew, type ProjectActivity } from "./projects.ts";
+import { unitSet, useBusyUnits, useProjectActivity, type Crew, type ProjectActivity } from "./projects.ts";
+import { Seal, Squad, Tally } from "./squad.tsx";
 import { BOSS_LABEL } from "../../office/boss.ts";
 
 type Selector<T> = (selector: (state: any) => T) => T;
@@ -234,6 +235,8 @@ interface TeamEntry {
   readonly title?: string;
   readonly cwd?: string;
   readonly members: number;
+  /** 名册：正式组员（不在名册里的子会话是子代理，不单独显示）。 */
+  readonly memberIds?: readonly string[];
   readonly lastActiveAt?: number;
   /** 同一文件夹里被这个团队取代的旧 Lead（重新组队后）。 */
   readonly replaces?: readonly string[];
@@ -487,8 +490,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   // 老板办公室：一直轮询（HUD 角标要用），在老板办公室里更勤
   const leadPick = useLeadPick(useSessions as never, leads);
   // 项目忙闲总览（切换器用）：团队与单智能体项目，全在浏览器端算
-  const teamLeadIds = useMemo(() => (teams ?? []).map((t) => t.leadId), [teams]);
-  const activity = useProjectActivity(useSessions as never, teamLeadIds, soloPick.ids);
+  const activity = useProjectActivity(useSessions as never, teams ?? [], soloPick.ids);
   /** 从切换器点了某个单智能体项目：切到共享办公室后选中它。 */
   const pendingSelect = useRef<string | null>(null);
   const leadFacts = useLeadFacts(leadPick, bossView);
@@ -498,7 +500,20 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const idKey = [...viewIds, "|", ...bossIds].join(",");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const memberIds = useMemo(() => [...new Set([...viewIds, ...bossIds])], [idKey]);
-  const live = useLive(memberIds, useSessions, useSessionStatus);
+  const ownLive = useLive(memberIds, useSessions, useSessionStatus);
+  // 子代理不单独显示：它在跑就算派它的那个单位（组长 / 组员 / 单智能体）在跑
+  const units = useMemo(() => {
+    const set = unitSet(teams ?? [], soloPick.ids);
+    for (const id of memberIds) set.add(id);
+    return set;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [teams, idKey, soloPick.ids.join(",")]);
+  const subBusy = useBusyUnits(useSessions as never, units);
+  const live = useMemo(() => {
+    const merged: Record<string, boolean> = { ...ownLive };
+    for (const id of subBusy) merged[id] = true;
+    return merged;
+  }, [ownLive, subBusy]);
   // 看过的汇报离开老板办公室：已看过记录变化时（useAttention 订阅了它）会重渲染，这里每次现算
   const bossRaw = bossSnapshot(leadFacts.leads, live, nameOfProject, solo.snapshot?.members ?? null, readAcks());
   // 老板办公室还要看「哪些组在干活」：复用项目总览的忙闲（整棵子代理树），屋里已有的组长不重复列
@@ -1145,41 +1160,6 @@ function Stat({ label, value, tone }: { label: string; value: ReactNode; tone?: 
 // ---------------------------------------------------------------- 项目选择
 
 /**
- * 人手点阵：一个像素方块一个智能体（组长、组员、单智能体及它们派的子代理），在跑的亮绿、空闲的灰；
- * 最多画 max 个，多出的标「+N」。具体数字在悬停提示里。
- */
-function CrewDots({ crew, max = 8 }: { crew: Crew; max?: number }) {
-  const shown = Math.max(1, Math.min(crew.total, max));
-  const lit = Math.min(crew.running, shown);
-  return (
-    <span
-      className={`dso-crew${crew.running > 0 ? " busy" : ""}`}
-      title={crew.running > 0 ? `${crew.running} / ${crew.total} 个智能体在跑（含子代理）` : `${crew.total} 个智能体，都空闲（含子代理）`}
-    >
-      {Array.from({ length: shown }, (_, i) => (
-        <i key={i} className={i < lit ? "on" : ""} />
-      ))}
-      {crew.total > max && <small>+{crew.total - max}</small>}
-    </span>
-  );
-}
-
-/** 切换器按钮上的项目条：一个方块一个项目，有人在跑的亮绿。 */
-function ProjectStrip({ busy, total, max = 10 }: { busy: number; total: number; max?: number }) {
-  const shown = Math.min(total, max);
-  return (
-    <span className={`dso-crew strip${busy > 0 ? " busy" : ""}`} title={`${busy} / ${total} 个项目在干活（点开看总览）`}>
-      {Array.from({ length: shown }, (_, i) => (
-        <i key={i} className={i < busy ? "on" : ""} />
-      ))}
-      <small>
-        {busy}/{total}
-      </small>
-    </span>
-  );
-}
-
-/**
  * 项目切换器兼项目忙闲总览：触发按钮上显示几个项目在干活；面板里共享办公室与各团队并列可切换，
  * 团队按在跑优先排、带忙闲状态，单智能体项目按文件夹列出（点了去共享办公室并选中）。
  */
@@ -1262,22 +1242,29 @@ function ProjectPicker({
           <b>{view === "shared" ? "共享办公室" : view === "boss" ? "老板办公室" : leadId === null ? "选择项目" : nameOf(path)}</b>
           {path && <small>{path}</small>}
         </span>
-        <ProjectStrip busy={busyProjects} total={allProjects} />
+        <span className="dso-tallies">
+          <Tally busy count={busyProjects} title={`${busyProjects} 个项目在干活`} />
+          <Tally busy={false} count={allProjects - busyProjects} title={`${allProjects - busyProjects} 个项目在休整`} />
+        </span>
         <span className="dso-caret">▾</span>
       </button>
       {open && (
         <div className="dso-picker" role="dialog" aria-label="选择项目">
-          <div className="dso-overview">
-            <b>项目总览</b>
-            <span>
-              {busyProjects} 个在干活 / 共 {allProjects} 个
+          <div className="dso-plate">
+            <span className="dso-logo-mark">
+              <OfficeIcon size={14} />
             </span>
+            <b>项目</b>
+            <span style={{ flex: 1 }} />
+            <Tally busy count={busyProjects} title={`${busyProjects} 个项目在干活`} />
+            <Tally busy={false} count={allProjects - busyProjects} title={`${allProjects - busyProjects} 个项目在休整`} />
           </div>
           <div className="dso-cards">
             <div
               role="button"
               tabIndex={0}
-              className={`dso-team-card shared${view === "shared" ? " on" : ""}`}
+              className={`dso-team-card shared${view === "shared" ? " on" : ""}${activity.shared.running > 0 ? " busy" : ""}`}
+              title={`单人团队：${activity.soloProjects.length} 个项目 · ${soloTotal} 人在座`}
               onClick={() => {
                 onShared();
                 setOpen(false);
@@ -1292,12 +1279,10 @@ function ProjectPicker({
               <span className="dso-team-badge shared">共</span>
               <span className="dso-team-text">
                 <b>共享办公室</b>
-                <small>
-                  单人团队：{activity.soloProjects.length} 个项目 · {soloTotal} 人在座
-                </small>
+                <Squad crew={activity.shared} max={10} />
               </span>
               <span className="dso-team-meta">
-                <CrewDots crew={activity.shared} max={10} />
+                <Seal busy={activity.shared.running > 0} />
               </span>
             </div>
           </div>
@@ -1316,7 +1301,8 @@ function ProjectPicker({
                   key={team.leadId}
                   role="button"
                   tabIndex={0}
-                  className={`dso-team-card${team.leadId === leadId ? " on" : ""}`}
+                  className={`dso-team-card${team.leadId === leadId && view === "team" ? " on" : ""}${busyOf(team) > 0 ? " busy" : ""}`}
+                  title={team.cwd}
                   onClick={() => {
                     if (editing !== null) return;
                     onPick(team.leadId);
@@ -1346,7 +1332,7 @@ function ProjectPicker({
                     ) : (
                       <b>{nameOf(team.cwd)}</b>
                     )}
-                    <small>{team.cwd}</small>
+                    <Squad crew={crewOf(team)} lead />
                   </span>
                   {host !== undefined && team.cwd !== undefined && editing !== team.leadId && (
                     <button
@@ -1362,10 +1348,8 @@ function ProjectPicker({
                     </button>
                   )}
                   <span className="dso-team-meta">
-                    <CrewDots crew={crewOf(team)} />
-                    <small>
-                      {team.members} 人 · {agoShort(team.lastActiveAt)}
-                    </small>
+                    <Seal busy={busyOf(team) > 0} />
+                    <small>{agoShort(team.lastActiveAt)}</small>
                   </span>
                 </div>
               ))
@@ -1374,8 +1358,7 @@ function ProjectPicker({
           {activity.soloProjects.length > 0 && (
             <>
               <div className="dso-picker-head">
-                <span>单智能体项目</span>
-                <small>24 小时内活跃，在共享办公室里</small>
+                <span>单智能体</span>
               </div>
               <div className="dso-cards">
                 {activity.soloProjects.map((project) => (
@@ -1383,7 +1366,8 @@ function ProjectPicker({
                     key={project.cwd}
                     role="button"
                     tabIndex={0}
-                    className="dso-team-card solo"
+                    className={`dso-team-card solo${project.running > 0 ? " busy" : ""}`}
+                    title={project.cwd}
                     onClick={() => {
                       onShared(project.cwd);
                       setOpen(false);
@@ -1398,11 +1382,10 @@ function ProjectPicker({
                     <span className="dso-team-badge solo">{nameOf(project.cwd || undefined).slice(0, 1).toUpperCase()}</span>
                     <span className="dso-team-text">
                       <b>{project.cwd ? nameOf(project.cwd) : "未知文件夹"}</b>
-                      <small>{project.cwd}</small>
+                      <Squad crew={project} />
                     </span>
                     <span className="dso-team-meta">
-                      <CrewDots crew={project} />
-                      <small>{project.ids.length} 个单智能体</small>
+                      <Seal busy={project.running > 0} />
                     </span>
                   </div>
                 ))}
@@ -1625,7 +1608,7 @@ function BossPanel({
               key={`${item.kind}:${item.key}`}
               role="button"
               tabIndex={0}
-              className={`dso-team-card ${item.kind} compact`}
+              className={`dso-team-card ${item.kind} busy`}
               title={item.kind === "team" ? "去这个团队的办公室" : "去共享办公室"}
               onClick={() => onWorking(item)}
               onKeyDown={(event) => {
@@ -1635,10 +1618,10 @@ function BossPanel({
               <span className={`dso-team-badge${item.kind === "solo" ? " solo" : ""}`}>{item.name.slice(0, 1).toUpperCase()}</span>
               <span className="dso-team-text">
                 <b>{item.name}</b>
-                <small>{item.kind === "team" ? "团队" : "单智能体"}</small>
+                <Squad crew={item} lead={item.kind === "team"} />
               </span>
               <span className="dso-team-meta">
-                <CrewDots crew={item} />
+                <Seal busy />
               </span>
             </div>
           ))}
