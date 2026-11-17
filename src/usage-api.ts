@@ -14,6 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -718,9 +719,134 @@ export function normalizeCopilotUsage(parsed: unknown): CopilotUsage {
   };
 }
 
-/** Copilot 凭据里的 GitHub OAuth 长效令牌（copilot_internal API 用它鉴权）。 */
-async function readCopilotRefreshToken(): Promise<string | undefined> {
+// ===== opencodex 配额（spawn 本地 CLI 读 JSON，凭据零接触）=====
+
+/** opencodex 一个供应商的限额窗口：5 小时 / 本周 / 本月。 */
+export interface OpencodexWindow {
+  /** fiveHour | weekly | monthly。 */
+  id: string;
+  label: string;
+  /** 已用百分比 0-100。 */
+  percent: number;
+  /** 重置时刻（epoch ms），未知为 0。 */
+  resetAt: number;
+}
+
+export interface OpencodexProviderQuota {
+  provider: string;
+  windows: OpencodexWindow[];
+  /** 附加小字窗口（如 cursor 的 First-party models / API usage）。 */
+  extras: { label: string; percent: number; resetAt: number }[];
+}
+
+export interface OpencodexQuota {
+  ok: boolean;
+  /** cli（CLI 不存在或执行失败）/ parse（输出不是预期 JSON）。 */
+  reason?: string;
+  providers: OpencodexProviderQuota[];
+}
+
+/** 把 `opencodex provider quota --json` 报告精简成前端需要的窗口（测试出口）。 */
+export function normalizeOpencodexQuota(parsed: unknown): OpencodexQuota {
+  if (parsed === null || typeof parsed !== "object") return { ok: false, reason: "parse", providers: [] };
+  const reports = (parsed as { reports?: unknown }).reports;
+  if (!Array.isArray(reports)) return { ok: false, reason: "parse", providers: [] };
+  const number = (value: unknown): number =>
+    typeof value === "number" && Number.isFinite(value) ? value : 0;
+  const providers: OpencodexProviderQuota[] = [];
+  for (const entry of reports) {
+    if (entry === null || typeof entry !== "object") continue;
+    const report = entry as {
+      provider?: unknown;
+      quota?: Record<string, unknown> | undefined;
+    };
+    if (typeof report.provider !== "string" || report.quota === undefined)
+      continue;
+    const quota = report.quota;
+    const windows: OpencodexWindow[] = [];
+    const push = (
+      id: string,
+      label: string,
+      percent: unknown,
+      resetAt: unknown,
+    ): void => {
+      if (typeof percent !== "number" || !Number.isFinite(percent)) return;
+      windows.push({
+        id,
+        label,
+        percent: Math.max(0, Math.min(100, percent)),
+        resetAt: number(resetAt),
+      });
+    };
+    if (report.provider === "anthropic") {
+      push("fiveHour", "5小时", quota.fiveHourPercent, quota.fiveHourResetAt);
+      push("weekly", "本周", quota.weeklyPercent, quota.weeklyResetAt);
+    } else if (report.provider === "openai") {
+      push("fiveHour", "5小时", quota.fiveHourPercent, quota.fiveHourResetAt);
+      push("weekly", "本周", quota.weeklyPercent, quota.weeklyResetAt);
+    } else if (report.provider === "cursor") {
+      push("monthly", "本月", quota.monthlyPercent, quota.monthlyResetAt);
+    } else {
+      continue;
+    }
+    if (windows.length === 0) continue;
+    const extras: OpencodexProviderQuota["extras"] = [];
+    const custom = quota.customWindows;
+    if (Array.isArray(custom)) {
+      for (const item of custom) {
+        if (item === null || typeof item !== "object") continue;
+        const extra = item as { label?: unknown; percent?: unknown; resetAt?: unknown };
+        if (typeof extra.label !== "string") continue;
+        extras.push({
+          label: extra.label,
+          percent: Math.max(0, Math.min(100, number(extra.percent))),
+          resetAt: number(extra.resetAt),
+        });
+      }
+    }
+    providers.push({ provider: report.provider, windows, extras });
+  }
+  return { ok: true, providers };
+}
+
+/** 定位 opencodex CLI（DSH_OPENCODEX_BIN 可覆盖，默认取 PATH）。 */
+function opencodexBin(): string {
+  return process.env.DSH_OPENCODEX_BIN?.trim() || "opencodex";
+}
+
+/** 执行本地 CLI 取配额报告；失败抛错由调用方降级。 */
+async function fetchOpencodexReport(): Promise<unknown> {
+  const output = await new Promise<string>((resolve, reject) => {
+    const child = spawn(opencodexBin(), ["provider", "quota", "--json"], {
+      timeout: 8_000,
+    });
+    let out = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      out += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) =>
+      code === 0 ? resolve(out) : reject(new Error(`opencodex 退出码 ${code}`)),
+    );
+  });
+  return JSON.parse(output) as unknown;
+}
+
+async function fetchOpencodexQuota(lastGood: {
+  value: OpencodexQuota | null;
+}): Promise<OpencodexQuota> {
   try {
+    const quota = normalizeOpencodexQuota(await fetchOpencodexReport());
+    if (quota.ok) lastGood.value = quota;
+    return quota.ok ? quota : (lastGood.value ?? quota);
+  } catch {
+    return lastGood.value ?? { ok: false, reason: "cli", providers: [] };
+  }
+}
+
+/** Copilot 凭据里的 GitHub OAuth 长效令牌（copilot_internal API 用它鉴权）。 */
+async function readCopilotRefreshToken(): Promise<string | undefined> {  try {
     const parsed: unknown = JSON.parse(
       await readFile(copilotAuthFile(), "utf8"),
     );
@@ -927,6 +1053,8 @@ export function apply(ctx: Context): void {
   const deepseekBalance = cached(() => fetchDeepseekBalance(ctx));
   const zaiQuota = cached(() => fetchZaiQuota(ctx));
   const copilotUsage = cached(() => fetchCopilotUsage());
+  const opencodexLastGood: { value: OpencodexQuota | null } = { value: null };
+  const opencodexQuota = cached(() => fetchOpencodexQuota(opencodexLastGood));
   const providerRoute: WebRoute = {
     kind: "exact",
     path: PROVIDER_ROUTE,
@@ -947,7 +1075,9 @@ export function apply(ctx: Context): void {
           ? await zaiQuota()
           : kind === "copilot"
             ? await copilotUsage()
-            : await deepseekBalance();
+            : kind === "opencodex"
+              ? await opencodexQuota()
+              : await deepseekBalance();
       respondJson(response, payload);
     },
   };

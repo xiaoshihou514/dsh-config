@@ -1,7 +1,12 @@
 /** usage-api 计费拆分：智谱 GLM Coding Plan 按牌价估算 + DeepSeek 峰谷回归 + 裸名桶归一 + Copilot 配额精简。 */
 
 import { describe, expect, it } from "vitest";
-import { migration, normalizeCopilotUsage, pricing } from "../src/usage-api.ts";
+import {
+  migration,
+  normalizeCopilotUsage,
+  normalizeOpencodexQuota,
+  pricing,
+} from "../src/usage-api.ts";
 
 const record = (over: {
   inputTokens?: number;
@@ -332,5 +337,64 @@ describe("美元牌价估算档（claude / gpt / grok / kimi）", () => {
       record({ inputTokens: 15_033, outputTokens: 143 }),
     );
     expect(costs.cost).toBe(0);
+  });
+});
+
+describe("opencodex 配额映射与圆环布局", () => {
+  it("openai 报告映射为 5 小时 + 本周双窗口", () => {
+    const quota = normalizeOpencodexQuota({
+      reports: [
+        {
+          provider: "openai",
+          quota: { fiveHourPercent: 42.6, weeklyPercent: 87, updatedAt: 1 },
+        },
+      ],
+    });
+    expect(quota.ok).toBe(true);
+    expect(quota.providers[0]?.windows).toEqual([
+      { id: "fiveHour", label: "5小时", percent: 42.6, resetAt: 0 },
+      { id: "weekly", label: "本周", percent: 87, resetAt: 0 },
+    ]);
+  });
+
+  it("anthropic 只有周窗口时映射为单窗口，越界百分比截断", () => {
+    const quota = normalizeOpencodexQuota({
+      reports: [
+        { provider: "anthropic", quota: { weeklyPercent: 120, weeklyResetAt: 5 } },
+      ],
+    });
+    expect(quota.providers[0]?.windows).toEqual([
+      { id: "weekly", label: "本周", percent: 100, resetAt: 5 },
+    ]);
+  });
+
+  it("cursor 的 customWindows 落入 extras 小字", () => {
+    const quota = normalizeOpencodexQuota({
+      reports: [
+        {
+          provider: "cursor",
+          quota: {
+            monthlyPercent: 81.9,
+            monthlyResetAt: 1796628760000,
+            customWindows: [
+              { label: "First-party models", percent: 79.86, resetAt: 1 },
+              { label: "API usage", percent: 100, resetAt: 1 },
+            ],
+          },
+        },
+      ],
+    });
+    expect(quota.providers[0]?.windows[0]).toMatchObject({ id: "monthly", percent: 81.9 });
+    expect(quota.providers[0]?.extras).toHaveLength(2);
+    expect(quota.providers[0]?.extras[0]).toMatchObject({ label: "First-party models", percent: 79.86 });
+  });
+
+  it("非预期结构安全降级为不可用", () => {
+    expect(normalizeOpencodexQuota(null).ok).toBe(false);
+    expect(normalizeOpencodexQuota({}).ok).toBe(false);
+    expect(
+      normalizeOpencodexQuota({ reports: [{ provider: "unknown-provider", quota: {} }] })
+        .providers,
+    ).toEqual([]);
   });
 });

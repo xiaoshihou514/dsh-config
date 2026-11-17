@@ -1536,6 +1536,26 @@ interface CopilotUsage {
   quotas?: CopilotQuotaWindow[];
 }
 
+/** opencodex 限额（与宿主侧 OpencodexQuota 对应）。 */
+interface OpencodexWindow {
+  id: string;
+  label: string;
+  percent: number;
+  resetAt: number;
+}
+
+interface OpencodexProviderQuota {
+  provider: string;
+  windows: OpencodexWindow[];
+  extras: { label: string; percent: number; resetAt: number }[];
+}
+
+interface OpencodexQuota {
+  ok: boolean;
+  reason?: string;
+  providers: OpencodexProviderQuota[];
+}
+
 /** 峰谷时段（北京时间 UTC+8：9:00-12:00、14:00-18:00 高峰）与下一边界倒计时。 */
 function peakPhase(now = Date.now()): { peak: boolean; nextInMs: number } {
   const beijing = new Date(now + 8 * 3_600_000);
@@ -1564,6 +1584,7 @@ function ProviderCards() {
   const [deepseek, setDeepseek] = useState<DeepseekBalance | null>(null);
   const [zai, setZai] = useState<ZaiQuota | null>(null);
   const [copilot, setCopilot] = useState<CopilotUsage | null>(null);
+  const [opencodex, setOpencodex] = useState<OpencodexQuota | null>(null);
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -1579,15 +1600,17 @@ function ProviderCards() {
           return { ok: false, reason: "network" };
         }
       };
-      const [d, z, c] = await Promise.all([
+      const [d, z, c, o] = await Promise.all([
         json("/dsh-config/provider-status?kind=deepseek"),
         json("/dsh-config/provider-status?kind=zai"),
         json("/dsh-config/provider-status?kind=copilot"),
+        json("/dsh-config/provider-status?kind=opencodex"),
       ]);
       if (stale) return;
       setDeepseek(d as DeepseekBalance | null);
       setZai(z as ZaiQuota | null);
       setCopilot(c as CopilotUsage | null);
+      setOpencodex(o as OpencodexQuota | null);
     };
     void pull();
     const pullTimer = setInterval(() => void pull(), 60_000);
@@ -1604,6 +1627,7 @@ function ProviderCards() {
     <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginTop: 16 }}>
       <DeepseekBalanceCard data={deepseek} />
       <ZaiQuotaCard data={zai} />
+      <OpencodexQuotaCard data={opencodex} />
       <CopilotUsageCard data={copilot} />
     </div>
   );
@@ -1675,6 +1699,180 @@ function DeepseekBalanceCard({ data }: { data: DeepseekBalance | null }) {
   );
 }
 
+// ===== 限额圆环（5 小时窗口占上半环，周/月窗口占下半环）=====
+
+/** 圆环的一个窗口：与宿主侧 OpencodexWindow 同形。 */
+export interface RingWindow {
+  id: string;
+  label: string;
+  percent: number;
+  resetAt: number;
+}
+
+export interface RingLayout {
+  /** 上半环（5 小时窗口）；无 5 小时窗口时为 null（整环展示下半环）。 */
+  top: RingWindow | null;
+  /** 下半环；只有单一窗口时它占整环。 */
+  bottom: RingWindow;
+  /** true = 单一窗口整环；false = 上 5 小时 + 下周/月双半环。 */
+  fullCircle: boolean;
+}
+
+/** 布局决策（测试出口）：有 5 小时窗口就上/下半环，否则单一窗口占整环。 */
+export function ringLayout(windows: readonly RingWindow[]): RingLayout | null {
+  const usable = windows.filter((w) => Number.isFinite(w.percent));
+  if (usable.length === 0) return null;
+  const fiveHour = usable.find((w) => w.id === "fiveHour");
+  if (fiveHour === undefined) {
+    const window = usable[0]!;
+    return { top: null, bottom: window, fullCircle: true };
+  }
+  const rest = usable.find((w) => w !== fiveHour);
+  if (rest === undefined)
+    return { top: null, bottom: fiveHour, fullCircle: true };
+  return { top: fiveHour, bottom: rest, fullCircle: false };
+}
+
+/** 已用百分比对应的窗口色：剩余越少越红（与既有进度条口径一致）。 */
+function ringColor(percent: number): string {
+  const remain = 100 - percent;
+  if (remain <= 20) return "var(--dsw-alias-state-error-primary)";
+  if (remain <= 50) return "var(--dsw-alias-state-warn-primary)";
+  return "var(--dsw-alias-state-success-primary)";
+}
+
+/** 半圆弧路径：上半环（左→右越过顶部）与下半环（左→右越过底部）。 */
+export const RING_TOP_ARC = "M 12 50 A 38 38 0 0 1 88 50";
+export const RING_BOTTOM_ARC = "M 12 50 A 38 38 0 0 0 88 50";
+
+function QuotaRing({
+  windows,
+  size = 64,
+  unavailable,
+}: {
+  windows: readonly RingWindow[];
+  size?: number;
+  unavailable?: boolean;
+}) {
+  const layout = unavailable ? null : ringLayout(windows);
+  const stroke = "var(--dsw-alias-interactive-bg-hover)";
+  const track = (
+    <circle
+      cx="50"
+      cy="50"
+      r="38"
+      fill="none"
+      stroke={stroke}
+      strokeWidth="9"
+    />
+  );
+  let arcs: ReactNode = null;
+  let center: string = "—";
+  if (layout !== null) {
+    const color = ringColor(layout.bottom.percent);
+    if (layout.fullCircle) {
+      arcs = (
+        <circle
+          cx="50"
+          cy="50"
+          r="38"
+          fill="none"
+          stroke={color}
+          strokeWidth="9"
+          strokeLinecap="round"
+          pathLength={100}
+          strokeDasharray={`${Math.max(layout.bottom.percent, 1.5)} 100`}
+          transform="rotate(-90 50 50)"
+        />
+      );
+      center = `${Math.round(layout.bottom.percent)}%`;
+    } else {
+      const top = layout.top;
+      arcs = (
+        <>
+          <path
+            d={RING_TOP_ARC}
+            fill="none"
+            stroke={ringColor(top!.percent)}
+            strokeWidth="9"
+            strokeLinecap="round"
+            pathLength={100}
+            strokeDasharray={`${Math.max(top!.percent, 2)} 100`}
+          />
+          <path
+            d={RING_BOTTOM_ARC}
+            fill="none"
+            stroke={color}
+            strokeWidth="9"
+            strokeLinecap="round"
+            pathLength={100}
+            strokeDasharray={`${Math.max(layout.bottom.percent, 2)} 100`}
+          />
+        </>
+      );
+      center = `${Math.round(layout.bottom.percent)}%`;
+    }
+  }
+  return (
+    <div
+      style={{ position: "relative", width: size, height: size, flex: "none" }}
+      role="img"
+      aria-label={
+        unavailable
+          ? "配额不可用"
+          : layout !== null
+            ? `${layout.top ? `${layout.top.label} ${Math.round(layout.top.percent)}%、` : ""}${layout.bottom.label} ${Math.round(layout.bottom.percent)}%`
+            : "暂无配额数据"
+      }
+    >
+      <svg width={size} height={size} viewBox="0 0 100 100">
+        {track}
+        {arcs}
+      </svg>
+      <span
+        style={{
+          position: "absolute",
+          inset: 0,
+          display: "grid",
+          placeItems: "center",
+          fontSize: Math.round(size * 0.22),
+          fontWeight: 700,
+          letterSpacing: "-0.02em",
+          color:
+            layout === null
+              ? "var(--dsw-alias-label-tertiary)"
+              : "var(--dsw-alias-label-primary)",
+        }}
+      >
+        {layout === null ? (unavailable ? "不可用" : "—") : center}
+      </span>
+    </div>
+  );
+}
+
+/** 圆环下的小字：窗口标签 + 已用 + 重置倒计时。 */
+function RingLegend({
+  windows,
+}: {
+  windows: readonly RingWindow[];
+}) {
+  return (
+    <div style={{ fontSize: 11, lineHeight: 1.7, marginTop: 4 }}>
+      {windows.map((w) => (
+        <div key={w.id} style={{ whiteSpace: "nowrap" }}>
+          <span style={{ color: "var(--dsw-alias-label-secondary)" }}>
+            {w.label}
+          </span>
+          <span style={{ color: ringColor(w.percent) }}>{` 已用 ${Math.round(w.percent)}%`}</span>
+          {w.resetAt > 0 ? (
+            <Muted>{` · 重置 ${countdown(w.resetAt - Date.now())}`}</Muted>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
   if (data === null)
     return (
@@ -1694,6 +1892,14 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
     );
   const windows = data.windows ?? [];
   const phase = zaiPhase();
+  // zai 窗口标签形如「5时」「周」：映射为圆环的 5 小时 / 本周窗口。
+  const ringWindows: RingWindow[] = windows.map((w) => ({
+    id: w.label.includes("周") ? "weekly" : "fiveHour",
+    label: w.label.includes("周") ? "本周" : "5小时",
+    percent: w.pct,
+    resetAt: w.resetAt,
+  }));
+  const layout = ringLayout(ringWindows);
   return (
     <CardFrame label={`智谱 GLM${data.level ? ` · ${data.level}` : ""}`}>
       <div style={{ marginBottom: 6 }}>
@@ -1708,53 +1914,91 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
             : `积分 5 折抵扣 · 距高峰 ${countdown(phase.nextInMs)}`}
         </div>
       </div>
-      {windows.length === 0 ? (
+      {layout === null ? (
         <Muted>暂无配额窗口</Muted>
       ) : (
-        windows.map((w) => {
-          const remainPct = 100 - w.pct;
-          // 剩余条长 + 剩余量分档：剩余越少越红。
-          const color =
-            remainPct <= 20
-              ? "var(--dsw-alias-state-error-primary)"
-              : remainPct <= 50
-                ? "var(--dsw-alias-state-warn-primary)"
-                : "var(--dsw-alias-state-success-primary)";
-          return (
-            <div
-              key={w.label}
-              style={{ marginBottom: w !== windows.at(-1) ? 8 : 0 }}
-            >
-              <div style={{ whiteSpace: "nowrap" }}>
-                <span
-                  style={{ color: "var(--dsw-alias-label-secondary)" }}
-                >{`${w.label}额度`}</span>{" "}
-                {cnDigits(w.remaining)} / {cnDigits(w.total)}
-                <span style={{ color }}>{` · 已用 ${w.pct}%`}</span>
-                <Muted>{` · 重置 ${countdown(w.resetAt - Date.now())}`}</Muted>
-              </div>
-              <div
-                style={{
-                  height: 5,
-                  borderRadius: 3,
-                  marginTop: 3,
-                  background: "var(--dsw-alias-interactive-bg-hover)",
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    width: `${remainPct}%`,
-                    height: "100%",
-                    borderRadius: 3,
-                    background: color,
-                  }}
-                />
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <QuotaRing windows={ringWindows} />
+          <RingLegend windows={layout.top ? [layout.top, layout.bottom] : [layout.bottom]} />
+        </div>
+      )}
+    </CardFrame>
+  );
+}
+
+/** opencodex 限额卡：anthropic / openai / cursor 各一个圆环。 */
+function OpencodexQuotaCard({ data }: { data: OpencodexQuota | null }) {
+  const LABELS: Record<string, string> = {
+    anthropic: "Claude",
+    openai: "ChatGPT",
+    cursor: "Cursor",
+  };
+  const body = () => {
+    if (data === null) return <Muted>读取中…</Muted>;
+    // 旧版宿主没有 kind=opencodex 分支会落 DeepSeek 余额结构。
+    if ((data as { balances?: unknown }).balances !== undefined)
+      return <Muted>宿主需重启加载新版后显示</Muted>;
+    if (!data.ok)
+      return (
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          {["anthropic", "openai", "cursor"].map((provider) => (
+            <div key={provider} style={{ textAlign: "center" }}>
+              <QuotaRing windows={[]} unavailable />
+              <div style={{ fontSize: 11, marginTop: 3 }}>
+                {LABELS[provider] ?? provider}
               </div>
             </div>
+          ))}
+        </div>
+      );
+    const providers = [...data.providers].sort(
+      (a, b) =>
+        ["anthropic", "openai", "cursor"].indexOf(a.provider) -
+        ["anthropic", "openai", "cursor"].indexOf(b.provider),
+    );
+    if (providers.length === 0) return <Muted>opencodex 未配置供应商</Muted>;
+    return (
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        {providers.map((provider) => {
+          const layout = ringLayout(provider.windows);
+          return (
+            <div key={provider.provider} style={{ minWidth: 0 }}>
+              <QuotaRing windows={provider.windows} />
+              <div style={{ fontSize: 11, marginTop: 3, textAlign: "center" }}>
+                {LABELS[provider.provider] ?? provider.provider}
+              </div>
+              {layout !== null ? (
+                <RingLegend
+                  windows={layout.top ? [layout.top, layout.bottom] : [layout.bottom]}
+                />
+              ) : null}
+              {/* cursor 等供应商的附加小窗口：圆环旁小字补充，不丢信息。 */}
+              {provider.extras.length > 0 ? (
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: "var(--dsw-alias-label-tertiary)",
+                    lineHeight: 1.6,
+                    marginTop: 2,
+                    maxWidth: 120,
+                  }}
+                >
+                  {provider.extras.map((extra) => (
+                    <div key={extra.label} style={{ whiteSpace: "nowrap" }}>
+                      {`${extra.label} ${Math.round(extra.percent)}%`}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           );
-        })
-      )}
+        })}
+      </div>
+    );
+  };
+  return (
+    <CardFrame label="opencodex 限额" grow="1 1 0">
+      {body()}
     </CardFrame>
   );
 }
