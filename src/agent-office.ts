@@ -31,7 +31,7 @@ import {
   type LooseEvent,
   type SessionDigest,
 } from "./office/derive.ts";
-import { ROLE_LABEL, TIER_LABEL, VENDOR_LABEL } from "./office/classify.ts";
+import { ROLE_LABEL, TIER_LABEL, VENDOR_LABEL, vendorOf } from "./office/classify.ts";
 import { registerMemberModelRoutes } from "./office/member-model.ts";
 import type { OfficeMember, OfficeSnapshot, RoleKind, Tier, Vendor } from "./office/types.ts";
 
@@ -299,6 +299,8 @@ export function apply(ctx: Context): void {
           members: number;
           /** 名册：正式组员的会话 id（不在名册里的子会话是临时派的子代理）。 */
           memberIds: string[];
+          /** 单位 → 厂商（编队头像用）：组长取自身摘要，组员只取已缓存的摘要（不为此多读）。 */
+          vendors: Record<string, Vendor>;
           lastActiveAt?: number | undefined;
           /** 组建时间：最早一名成员的加入时间。 */
           formedAt: number;
@@ -317,6 +319,13 @@ export function apply(ctx: Context): void {
               cwd: result.cwd,
               members: result.digest.team.length + 1,
               memberIds: result.digest.team.map((m) => m.id),
+              vendors: Object.fromEntries([
+                [id, vendorOf(result.digest.provider, result.digest.model)],
+                ...result.digest.team.flatMap((m) => {
+                  const d = cache.get(m.id)?.digest;
+                  return d?.model === undefined ? [] : [[m.id, vendorOf(d.provider, d.model)] as const];
+                }),
+              ]),
               lastActiveAt: Math.max(result.digest.lastActiveAt ?? 0, ...memberTimes),
               formedAt: Math.min(...result.digest.team.map((m) => m.at)),
               replaces: [],
@@ -518,6 +527,11 @@ export function apply(ctx: Context): void {
               member: { ...withOverride!, cwd: lead.cwd },
               leadWaiting: lead.digest.current?.kind === "waiting",
               memberIds: members.map((m) => m.id),
+              memberVendors: Object.fromEntries(
+                members.flatMap((m) =>
+                  m.result?.digest.model === undefined ? [] : [[m.id, vendorOf(m.result.digest.provider, m.result.digest.model)]],
+                ),
+              ),
               membersRunning: members.some((m) => m.result !== undefined && m.result.loaded && m.result.digest.open),
             },
           ];

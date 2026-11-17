@@ -12,7 +12,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { bossStateOf, type BossState } from "../../office/boss.ts";
-import type { OfficeMember, OfficeSnapshot, OfficeWorking } from "../../office/types.ts";
+import type { OfficeMember, OfficeSnapshot, OfficeWorking, Vendor } from "../../office/types.ts";
 import type { Crew, SoloProject } from "./projects.ts";
 import { SOLO_WINDOW_MS, rootOf, type SessionListLike } from "./shared.ts";
 
@@ -24,6 +24,8 @@ export interface LeadFacts {
   readonly leadWaiting: boolean;
   readonly memberIds: readonly string[];
   readonly membersRunning: boolean;
+  /** 组员 → 厂商（已读到摘要的）。 */
+  readonly memberVendors?: Readonly<Record<string, Vendor>> | undefined;
 }
 
 function ms(value: number | undefined): number {
@@ -174,6 +176,7 @@ export function bossSnapshot(
 
 /** 左栏 / 墙屏上的一个「正在干活」项目。 */
 export interface WorkingProject extends OfficeWorking {
+  readonly units?: Crew["units"];
   /** 团队：组长 id；单智能体项目：文件夹。 */
   readonly key: string;
 }
@@ -193,11 +196,11 @@ export function workingProjects(
   for (const team of teams) {
     const crew = crews[team.leadId];
     if (crew === undefined || crew.running === 0 || inRoom.has(team.leadId)) continue;
-    out.push({ key: team.leadId, kind: "team", name: nameOf(team.cwd), running: crew.running, total: crew.total, leadOn: crew.leadOn });
+    out.push({ key: team.leadId, kind: "team", name: nameOf(team.cwd), running: crew.running, total: crew.total, leadOn: crew.leadOn, units: crew.units });
   }
   for (const project of soloProjects) {
     if (project.running === 0) continue;
-    out.push({ key: project.cwd, kind: "solo", name: nameOf(project.cwd || undefined), running: project.running, total: project.total });
+    out.push({ key: project.cwd, kind: "solo", name: nameOf(project.cwd || undefined), running: project.running, total: project.total, units: project.units });
   }
   return out.sort((a, b) => b.running - a.running || a.name.localeCompare(b.name, "zh"));
 }

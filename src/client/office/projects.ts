@@ -14,6 +14,14 @@ export interface Crew {
   readonly total: number;
   readonly running: number;
   readonly leadOn?: boolean | undefined;
+  /** 单位清单（编队逐个画头像）：组长在最前。 */
+  readonly units?: readonly CrewUnit[] | undefined;
+}
+
+export interface CrewUnit {
+  readonly id: string;
+  readonly on: boolean;
+  readonly lead?: boolean | undefined;
 }
 
 export interface SoloProject extends Crew {
@@ -86,7 +94,8 @@ export function projectActivity(
   for (const team of teams) {
     const members = team.memberIds ?? [];
     const leadOn = busy.has(team.leadId);
-    out[team.leadId] = { total: 1 + members.length, running: Number(leadOn) + members.filter((id) => busy.has(id)).length, leadOn };
+    const units: CrewUnit[] = [{ id: team.leadId, on: leadOn, lead: true }, ...members.map((id) => ({ id, on: busy.has(id) }))];
+    out[team.leadId] = { total: units.length, running: units.filter((u) => u.on).length, leadOn, units };
   }
   const groups = new Map<string, { ids: string[]; running: number }>();
   for (const id of soloIds) {
@@ -97,12 +106,13 @@ export function projectActivity(
     groups.set(cwd, group);
   }
   const soloProjects = [...groups]
-    .map(([cwd, g]) => ({ cwd, ids: g.ids, total: g.ids.length, running: g.running }))
+    .map(([cwd, g]) => ({ cwd, ids: g.ids, total: g.ids.length, running: g.running, units: g.ids.map((id) => ({ id, on: busy.has(id) })) }))
     .sort((a, b) => Number(b.running > 0) - Number(a.running > 0) || b.total - a.total || a.cwd.localeCompare(b.cwd));
-  const shared = soloProjects.reduce((sum, p) => ({ total: sum.total + p.total, running: sum.running + p.running }), {
-    total: 0,
-    running: 0,
-  });
+  const shared = {
+    total: soloProjects.reduce((n, p) => n + p.total, 0),
+    running: soloProjects.reduce((n, p) => n + p.running, 0),
+    units: soloProjects.flatMap((p) => p.units),
+  };
   return { teams: out, soloProjects, shared };
 }
 

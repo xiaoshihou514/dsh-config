@@ -18,7 +18,7 @@ import { CSS } from "./styles.ts";
 import { useSoloPick, useSoloSnapshot } from "./shared.ts";
 import { bossSnapshot, useLeadFacts, useLeadPick, workingProjects, type WorkingProject } from "./boss.ts";
 import { unitSet, useBusyUnits, useProjectActivity, type Crew, type ProjectActivity } from "./projects.ts";
-import { Seal, Squad, Tally } from "./squad.tsx";
+import { Seal, Squad, SquadVendors, Tally } from "./squad.tsx";
 import { PERSONA_AVATARS } from "./avatars.generated.ts";
 import { BOSS_LABEL } from "../../office/boss.ts";
 
@@ -254,6 +254,8 @@ interface TeamEntry {
   readonly members: number;
   /** 名册：正式组员（不在名册里的子会话是子代理，不单独显示）。 */
   readonly memberIds?: readonly string[];
+  /** 单位 → 厂商（组长与已读过摘要的组员）。 */
+  readonly vendors?: Readonly<Record<string, Vendor>>;
   readonly lastActiveAt?: number;
   /** 同一文件夹里被这个团队取代的旧 Lead（重新组队后）。 */
   readonly replaces?: readonly string[];
@@ -542,6 +544,19 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
     nameOfProject,
   );
   const boss = bossRaw === null ? null : { ...bossRaw, working };
+  // 编队头像：每个单位所用模型的厂商——团队列表（组长 + 已缓存组员）、老板办公室事实（读过的组员）、
+  // 当前团队与共享办公室快照（最全）依次覆盖
+  const vendors = useMemo(() => {
+    const map: Record<string, Vendor> = {};
+    for (const t of teams ?? []) Object.assign(map, t.vendors ?? {});
+    for (const f of leadFacts.leads ?? []) {
+      Object.assign(map, f.memberVendors ?? {});
+      map[f.member.id] = f.member.vendor;
+    }
+    for (const m of snapshot?.members ?? []) map[m.id] = m.vendor;
+    for (const m of solo.snapshot?.members ?? []) map[m.id] = m.vendor;
+    return map;
+  }, [teams, leadFacts.leads, snapshot, solo.snapshot]);
   const bossPending = boss?.members.filter((m) => m.boss === "report" || m.boss === "error").length ?? 0;
   /** 场景与左栏显示的那份快照。 */
   const shown = shared ? solo.snapshot : bossView ? boss : snapshot;
@@ -740,6 +755,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
           : null;
 
   return (
+    <SquadVendors.Provider value={vendors}>
     <div ref={rootRef} className={`dso-office${chatOpen ? " chat" : ""}`}>
       {chatOpen && (
         <header className="dso-chathead">
@@ -964,6 +980,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
         </main>
       </div>
     </div>
+    </SquadVendors.Provider>
   );
 }
 
@@ -1568,7 +1585,10 @@ function BossPanel({
   // 任务卡：像素头像徽标、项目名、编队（组长戴金冠；单智能体就一人）、状态徽章 + 时间、小方块按钮
   const card = (m: OfficeMember) => {
     const state = m.boss ?? "waiting";
-    const crew = m.role === "lead" ? (crews[m.id] ?? { total: 1, running: 0 }) : { total: 1, running: 0 };
+    const crew: Crew =
+      m.role === "lead"
+        ? (crews[m.id] ?? { total: 1, running: 0, units: [{ id: m.id, on: false, lead: true }] })
+        : { total: 1, running: 0, units: [{ id: m.id, on: false }] };
     return (
       <div
         key={m.id}

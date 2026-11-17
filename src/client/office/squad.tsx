@@ -8,46 +8,51 @@
  * - `Tally`：计数徽章（徽章 + 数字），用于触发按钮与面板抬头。
  */
 
+import { createContext, useContext } from "react";
+import type { Vendor } from "../../office/types.ts";
+import { PERSONA_AVATARS } from "./avatars.generated.ts";
 import type { Crew } from "./projects.ts";
 
-/** 7×8 像素小人（X = 身体，C = 金冠）。 */
-const PERSON = ["..CCC..", "..XXX..", "..XXX..", "...X...", ".XXXXX.", "X.XXX.X", "..X.X..", "..X.X.."];
+/** 单位 → 厂商（编队头像用）；不知道的显示兜帽旅人。由办公室主体提供。 */
+export const SquadVendors = createContext<Readonly<Record<string, Vendor>>>({});
 
-function PixelPerson({ on, lead }: { on: boolean; lead: boolean }) {
-  const cells: JSX.Element[] = [];
-  PERSON.forEach((row, y) =>
-    [...row].forEach((ch, x) => {
-      if (ch === ".") return;
-      if (ch === "C" && !lead) return;
-      const cls = ch === "C" ? "c" : y < 3 ? "h" : "b";
-      cells.push(<rect key={`${x},${y}`} x={x} y={y} width="1" height="1" className={cls} />);
-    }),
-  );
+/** 7×4 像素小金冠（组长标记）。 */
+function Crown() {
   return (
-    <svg className={`dso-px${on ? " on" : ""}${lead ? " lead" : ""}`} viewBox="0 0 7 8" width="12" height="14" shapeRendering="crispEdges">
-      {cells}
+    <svg className="dso-crown" viewBox="0 0 7 4" width="10" height="6" shapeRendering="crispEdges" aria-hidden="true">
+      <path d="M0 0h1v1h1v1h1V0h1v2h1V1h1V0h1v4H0z" />
     </svg>
   );
 }
 
-/** 编队：最多画 max 个小人，多出的标「+N」。 */
+/** 一个单位：所用模型的像素头像（与对话界面同一套素材），在跑的全彩亮绿底边，空闲的去色。 */
+function Unit({ vendor, on, lead }: { vendor: Vendor; on: boolean; lead: boolean }) {
+  return (
+    <span className={`dso-unit${on ? " on" : ""}${lead ? " lead" : ""}`}>
+      <img src={PERSONA_AVATARS[vendor]} alt="" draggable={false} />
+      {lead && <Crown />}
+    </span>
+  );
+}
+
+/** 编队：最多画 max 个头像，多出的标「+N」。组长戴金冠排第一。 */
 export function Squad({ crew, lead = false, max = 8 }: { crew: Crew; lead?: boolean; max?: number }) {
-  const shown = Math.max(1, Math.min(crew.total, max));
-  // 亮哪些：团队里组长单独看 leadOn，组员按在跑数从前往后亮
-  const people: { on: boolean; lead: boolean }[] = [];
-  let rest = crew.running - (lead && crew.leadOn === true ? 1 : 0);
-  for (let i = 0; i < shown; i += 1) {
-    const isLead = lead && i === 0;
-    const on = isLead ? crew.leadOn === true : rest > 0;
-    if (!isLead && on) rest -= 1;
-    people.push({ on, lead: isLead });
-  }
+  const vendors = useContext(SquadVendors);
+  const units =
+    crew.units ??
+    // 没有单位清单（兜底）：按数字排，组长单独看 leadOn
+    Array.from({ length: crew.total }, (_, i) => ({
+      id: "",
+      lead: lead && i === 0,
+      on: lead && i === 0 ? crew.leadOn === true : i - (lead ? 1 : 0) < crew.running - (lead && crew.leadOn ? 1 : 0),
+    }));
+  const shown = units.slice(0, max);
   return (
     <span className="dso-squad" title={`${crew.running} / ${crew.total} 在干活`}>
-      {people.map((p, i) => (
-        <PixelPerson key={i} on={p.on} lead={p.lead} />
+      {shown.map((u, i) => (
+        <Unit key={u.id || i} vendor={vendors[u.id] ?? "other"} on={u.on} lead={u.lead === true} />
       ))}
-      {crew.total > max && <small>+{crew.total - max}</small>}
+      {units.length > max && <small>+{units.length - max}</small>}
     </span>
   );
 }

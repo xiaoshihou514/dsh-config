@@ -27,14 +27,26 @@ describe("项目忙闲：单位只有组长、组员、单智能体，子代理�
     expect([...busyUnits(state, units)].sort()).toEqual(["L1", "a", "m1"]);
   });
   it("团队人手 = 组长 + 名册组员，子代理不占位", () => {
-    expect(projectActivity(state, teams, []).teams.L1).toEqual({ total: 3, running: 2, leadOn: true });
+    expect(projectActivity(state, teams, []).teams.L1).toEqual({
+      total: 3,
+      running: 2,
+      leadOn: true,
+      units: [
+        { id: "L1", on: true, lead: true },
+        { id: "m1", on: true },
+        { id: "m2", on: false },
+      ],
+    });
   });
   it("单智能体项目按文件夹分组，子代理不占位；共享办公室合计", () => {
     const act = projectActivity(state, teams, ["a", "b", "c"]);
-    expect(act.soloProjects).toEqual([
+    expect(act.soloProjects.map(({ units: _u, ...rest }) => rest)).toEqual([
       { cwd: "/p/notes", ids: ["a", "b"], total: 2, running: 2 },
       { cwd: "/p/paper", ids: ["c"], total: 1, running: 0 },
     ]);
-    expect(act.shared).toEqual({ total: 3, running: 2 });
+    expect(act.soloProjects[1]?.units).toEqual([{ id: "c", on: false }]);
+    expect(act.shared.total).toBe(3);
+    expect(act.shared.running).toBe(2);
+    expect(act.shared.units?.map((u) => u.id)).toEqual(["a", "b", "c"]);
   });
 });
