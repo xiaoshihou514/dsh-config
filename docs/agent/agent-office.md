@@ -23,10 +23,13 @@ Agent Teams 的 3D 可视化，以「办公室模式」呈现：侧边栏左下�
 
 ## 对话界面角色头像
 
-- `SessionAvatar.tsx`：当前会话所用模型对应厂商的角色头像，模型切换时实时更新。两处挂载（入口 `client/index.ts` 注册）：`conversation.header.leading` 的 `HeaderAvatar`（会话标题左侧，30px）、`conversation.hero.brand.mark` 的 `HeroAvatar`（新会话欢迎页标语左侧，40px，替换内置鱼标）。两个槽位原本都没人占用。
-- 当前会话：会话列表里被主视图持有（`retainedBy.mainView`）的那条，与原生页面标题同一判定；取不到时退回 `dsh.sessions.current`。
+- `SessionAvatar.tsx`：当前会话所用模型对应厂商的角色头像（像素版，与办公室体素角色同一张正视图），模型切换时实时更新。同一时刻只出现一处（入口 `client/index.ts` 注册）：
+  - `conversation.input.overlay` 的 `ComposerAvatar`：已开始的会话，贴在消息输入框左上角（48px，叠在框角上，下沿只压住卡片顶部内边距，不挡文字）。输入框上方有停靠条（待办、排队消息）时，挪到卡片左侧外沿、与顶边对齐；左侧放不下时仍叠在框角上。会话还是空白时不显示。
+  - `conversation.hero.brand.mark` 的 `HeroAvatar`：新会话欢迎页标语左侧（40px，替换内置鱼标）。
+  - 原先会话标题左侧那处（`conversation.header.leading` 的 `HeaderAvatar`）已撤掉，导出保留为空实现。
+- 当前会话：输入框处直接用槽位给的会话 id；欢迎页只看默认模型。
 - 模型：会话的 `modelSelection` 投影（`projectionsBySession[id].values.modelSelection.next`）；会话没自选过模型、或欢迎页还没有会话时，用宿主模型目录的全局默认模型（入口注入 `avatarHost.loadDefault`，即 `remote.session.modelCatalog().default`，读一次缓存）；都拿不到时显示兜帽旅人。厂商按 `classify.ts` 的 `vendorOf` 认。鼠标悬停显示「厂商（档位）· 模型名」，默认模型注明「默认模型」。
-- 头像素材：`scripts/build-persona-avatars.py` 从 `../人设/` 立绘按手工标注的头部框裁出 96×96 WebP，兜帽旅人取 `assets/personas/other.png` 正视图头部（最近邻缩放），以 data URL 写入 `avatars.generated.ts`（约 34KB，不额外请求图片）。换图后重跑脚本再构建。
+- 头像素材：`scripts/build-persona-avatars.py` 取 `sprites.generated.ts` 的正视图网格（即 `人设/体素/` 三视图降采样结果，兜帽旅人来自 `assets/personas/other.png`），从头顶裁到脖子（与 3D 角色同一切分），水平以 `FACE_SPEC` 的两眼外沿中点居中，一格一像素输出透明底 PNG，以 data URL 写入 `avatars.generated.ts`（约 20KB）。显示时 `image-rendering: pixelated` 最近邻放大，不做平滑。换图或重跑体素化后重跑脚本再构建。
 
 ## 数据来源
 

@@ -1,77 +1,99 @@
 #!/usr/bin/env python3
 """
-生成对话界面的角色头像：从 `../人设/` 的立绘裁出头部，缩成 96×96 的 WebP，
-以 data URL 内联到 `src/client/office/avatars.generated.ts`（不额外请求图片）。
+生成对话界面的角色头像（像素版，与办公室 3D 场景里的角色一致）：取
+`src/office-scene/sprites.generated.ts` 的正视图网格（由 `scripts/voxelize-personas.py`
+从 `../人设/体素/` 三视图降采样而来，兜帽旅人来自 `assets/personas/other.png`），
+裁出头部，一格一像素输出 PNG，以 data URL 写入 `src/client/office/avatars.generated.ts`。
 
-- 八家立绘按 BOX 手工标注的头部框裁剪（中心与边长都是相对原图宽度的比例）。
-- 未知模型（兜帽旅人）用 `assets/personas/other.png` 像素三视图的正视图头部，
-  按最近邻缩放保持像素风。
+- 头部：从头顶到脖子（与 3D 角色同一切分：脖子在离脚 57% 高度处）。
+- 水平中心：`sprite-character.ts` 里 `FACE_SPEC` 手工标注的两眼外沿中点。
+- 空白处保持透明；浏览器端按最近邻放大（`image-rendering: pixelated`），不做平滑。
 
-换图后重跑：python3 scripts/build-persona-avatars.py（需要 Pillow）。
+换图或重跑体素化后：python3 scripts/build-persona-avatars.py（需要 Pillow）。
 """
 
 from __future__ import annotations
 
 import base64
 import io
+import json
+import re
 from pathlib import Path
 
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
-PERSONAS = ROOT.parent / "人设"
+SPRITES = ROOT / "src" / "office-scene" / "sprites.generated.ts"
+CHARACTER = ROOT / "src" / "office-scene" / "sprite-character.ts"
 OUT = ROOT / "src" / "client" / "office" / "avatars.generated.ts"
-SIZE = 96
-
-# 厂商 → (文件名, 中心 x, 中心 y, 边长)；均为相对原图宽度的比例。
-BOX: dict[str, tuple[str, float, float, float]] = {
-    "deepseek": ("deepseek.png", 0.44, 0.24, 0.36),
-    "glm": ("glm.png", 0.45, 0.235, 0.36),
-    "kimi": ("kimi.png", 0.48, 0.225, 0.34),
-    "claude": ("claude.jpeg", 0.465, 0.19, 0.30),
-    "gemini": ("gemini.jpeg", 0.535, 0.235, 0.34),
-    "gpt": ("gpt.jpeg", 0.475, 0.20, 0.32),
-    "grok": ("grok.jpeg", 0.565, 0.30, 0.32),
-    "qwen": ("qwen.jpeg", 0.545, 0.215, 0.32),
-}
-
-# 兜帽旅人：正视图头部的像素框（左、上、边长），原图坐标。
-OTHER = ("other.png", 134, 48, 420)
+VENDORS = ["claude", "gpt", "gemini", "grok", "kimi", "qwen", "glm", "deepseek", "other"]
 
 
-def webp(image: Image.Image) -> str:
+def load_sprites() -> tuple[str, dict]:
+    text = SPRITES.read_text(encoding="utf-8")
+    alphabet = re.search(r'SPRITE_ALPHABET = "([^"]+)"', text).group(1)
+    body = text[text.index("= {", text.index("export const SPRITES")) + 2 :].rstrip().rstrip(";")
+    return alphabet, json.loads(body)
+
+
+def load_face_spec() -> dict[str, tuple[int, int]]:
+    """各家两眼外沿的列（左眼左列、右眼右列）。"""
+    text = CHARACTER.read_text(encoding="utf-8")
+    spec: dict[str, tuple[int, int]] = {}
+    for vendor, left, right in re.findall(
+        r"(\w+): \{ L: \[\d+, \d+, (\d+), \d+\], R: \[\d+, \d+, \d+, (\d+)\]", text
+    ):
+        spec[vendor] = (int(left), int(right))
+    return spec
+
+
+def head_image(alphabet: str, sheet: dict, eyes: tuple[int, int]) -> Image.Image:
+    rows: list[str] = sheet["front"]
+    height = len(rows)
+    width = len(rows[0])
+    neck_row = height - 1 - round(height * 0.57)
+    top = next(r for r, row in enumerate(rows) if row.strip(".") != "")
+    side = neck_row - top + 2
+    center = (eyes[0] + eyes[1]) / 2
+    left = round(center - side / 2)
+    image = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    pixels = image.load()
+    for y in range(side):
+        row = top + y
+        if row >= height:
+            break
+        for x in range(side):
+            col = left + x
+            if col < 0 or col >= width:
+                continue
+            ch = rows[row][col]
+            if ch == ".":
+                continue
+            color = sheet["palette"][alphabet.index(ch)]
+            pixels[x, y] = (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16), 255)
+    return image
+
+
+def png(image: Image.Image) -> str:
     buffer = io.BytesIO()
-    image.save(buffer, "WEBP", quality=82, method=6)
-    return "data:image/webp;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
-
-
-def crop_portrait(name: str, cx: float, cy: float, side: float) -> Image.Image:
-    image = Image.open(PERSONAS / name).convert("RGB")
-    width = image.size[0]
-    x0 = round((cx - side / 2) * width)
-    y0 = round((cy - side / 2) * width)
-    edge = round(side * width)
-    return image.crop((x0, y0, x0 + edge, y0 + edge)).resize((SIZE, SIZE), Image.LANCZOS)
-
-
-def crop_other() -> Image.Image:
-    name, x0, y0, edge = OTHER
-    image = Image.open(ROOT / "assets" / "personas" / name).convert("RGB")
-    return image.crop((x0, y0, x0 + edge, y0 + edge)).resize((SIZE, SIZE), Image.NEAREST)
+    image.save(buffer, "PNG", optimize=True)
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def main() -> None:
-    urls = {vendor: webp(crop_portrait(*spec)) for vendor, spec in BOX.items()}
-    urls["other"] = webp(crop_other())
+    alphabet, sprites = load_sprites()
+    faces = load_face_spec()
+    urls = {vendor: png(head_image(alphabet, sprites[vendor], faces[vendor])) for vendor in VENDORS}
     lines = [
         "/* 由 scripts/build-persona-avatars.py 生成，勿手改。",
-        " * 各厂商角色头像（96×96 WebP data URL），对话界面头像与办公室共用。 */",
+        " * 各厂商角色头像（像素版：办公室体素角色正视图的头部，一格一像素 PNG data URL，",
+        " * 显示时按最近邻放大）。 */",
         "",
         'import type { Vendor } from "../../office/types.ts";',
         "",
         "export const PERSONA_AVATARS: Readonly<Record<Vendor, string>> = {",
     ]
-    for vendor in ["claude", "gpt", "gemini", "grok", "kimi", "qwen", "glm", "deepseek", "other"]:
+    for vendor in VENDORS:
         lines.append(f'  {vendor}: "{urls[vendor]}",')
     lines.append("};")
     OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")

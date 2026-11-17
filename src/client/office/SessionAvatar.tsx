@@ -1,16 +1,17 @@
 /**
- * 对话界面角色头像：当前会话所用模型对应厂商的角色头像（人设立绘头部），
+ * 对话界面角色头像：当前会话所用模型对应厂商的角色头像（像素版，与办公室体素角色同一张正视图），
  * 模型切换时实时更新。
  *
- * 挂两处（由客户端入口注册）：
- * - `conversation.header.leading`：已开会话时在标题左侧；
- * - `conversation.hero.brand.mark`：新会话欢迎页在标语左侧（替换内置鱼标）。
+ * 挂两处（由客户端入口注册），同一时刻只出现一处：
+ * - `conversation.input.overlay`：已开始的会话，贴在消息输入框左上角、半悬浮在框角上（48px）；
+ * - `conversation.hero.brand.mark`：新会话欢迎页在标语左侧（40px，替换内置鱼标），
+ *   此时输入框那处不显示。
  *
  * 模型来源：当前会话的模型选择投影 `modelSelection.next`（会话自选的模型）；
  * 会话没选过、或还没有会话时，用宿主模型目录的全局默认模型；都拿不到时显示兜帽旅人。
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { TIER_LABEL, VENDOR_LABEL, tierOf, vendorOf } from "../../office/classify.ts";
 import type { Vendor } from "../../office/types.ts";
 import { PERSONA_AVATARS } from "./avatars.generated.ts";
@@ -109,11 +110,15 @@ export function avatarFor(model: ModelChoice | undefined, fromDefault: boolean):
   };
 }
 
-function useAvatar(useSessions: UseSessions | undefined, hero: boolean): AvatarInfo {
+/**
+ * @param explicit - 槽位给出的会话 id（会话作用域槽位）；缺省时按原生当前会话推断。
+ * @param hero - 欢迎页：还没有会话，只看默认模型。
+ */
+function useAvatar(useSessions: UseSessions | undefined, hero: boolean, explicit?: string): AvatarInfo {
   const fallback = useDefaultModel();
-  // 欢迎页还没有会话：只看默认模型
-  const sessionId = useSessions?.((state) => (hero ? undefined : currentId(state)));
-  const key = useSessions?.((state) => selectedKey(state, hero ? undefined : currentId(state))) ?? "";
+  const pick = (state: SessionsLike | undefined) => (hero ? undefined : (explicit ?? currentId(state)));
+  const sessionId = useSessions?.(pick);
+  const key = useSessions?.((state) => selectedKey(state, pick(state))) ?? "";
   // localStorage 里的选择变化（另一标签页或宿主未提供 mainView 时）也要跟上
   const [, bump] = useState(0);
   useEffect(() => {
@@ -133,11 +138,27 @@ function useAvatar(useSessions: UseSessions | undefined, hero: boolean): AvatarI
   }, [key, fallback, sessionId]);
 }
 
-const STYLE = {
-  header: {
-    width: 30,
-    height: 30,
-    margin: "0 4px 0 2px",
+/** 头像边长（输入框处）。 */
+const COMPOSER_SIZE = 48;
+
+const STYLE: Record<"composer" | "side" | "hero", CSSProperties> = {
+  /** 输入框左上角：叠在框角上，下沿只压住卡片顶部的内边距，不挡文字。 */
+  composer: {
+    width: COMPOSER_SIZE,
+    height: COMPOSER_SIZE,
+    position: "absolute",
+    left: -6,
+    top: -42,
+    zIndex: 2,
+  },
+  /** 输入框上方有停靠条（待办、排队消息）时：挪到卡片左侧外沿、与顶边对齐，不压停靠条。 */
+  side: {
+    width: COMPOSER_SIZE,
+    height: COMPOSER_SIZE,
+    position: "absolute",
+    left: -(COMPOSER_SIZE + 8),
+    top: -4,
+    zIndex: 2,
   },
   hero: {
     width: 40,
@@ -146,11 +167,11 @@ const STYLE = {
   },
 } as const;
 
-function Avatar({ info, size }: { info: AvatarInfo; size: "header" | "hero" }) {
+function Avatar({ info, size, imgRef }: { info: AvatarInfo; size: "composer" | "side" | "hero"; imgRef?: RefObject<HTMLImageElement> }) {
   const box = STYLE[size];
-  const pixel = info.vendor === "other";
   return (
     <img
+      ref={imgRef}
       src={PERSONA_AVATARS[info.vendor]}
       alt={info.title}
       title={info.title}
@@ -164,19 +185,76 @@ function Avatar({ info, size }: { info: AvatarInfo; size: "header" | "hero" }) {
         objectFit: "cover",
         boxShadow: "0 0 0 1.5px var(--dsw-alias-border-l2, rgba(0,0,0,.12)), 0 1px 3px rgba(0,0,0,.12)",
         background: "var(--dsw-alias-bg-base, #fff)",
-        imageRendering: pixel ? "pixelated" : "auto",
+        // 像素头像一格一像素：最近邻放大，保持锐利
+        imageRendering: "pixelated",
         userSelect: "none",
-        // 头部是可拖动的窗口区域：头像本身不拦拖动
         pointerEvents: "auto",
       }}
     />
   );
 }
 
-/** `conversation.header.leading`：会话标题左侧的头像。 */
-export function HeaderAvatar({ useSessions }: { useSessions?: UseSessions }) {
-  const info = useAvatar(useSessions, false);
-  return <Avatar info={info} size="header" />;
+/**
+ * `conversation.input.overlay`：消息输入框左上角的头像。新会话（还没发过消息）时不显示——
+ * 欢迎页标语旁已有一处。
+ */
+export function ComposerAvatar({
+  sessionId,
+  useSession,
+  useSessions,
+}: {
+  sessionId?: string;
+  useSession?: <T>(selector: (state: { readonly blank?: boolean } | undefined) => T) => T;
+  useSessions?: UseSessions;
+}) {
+  const blank = useSession?.((state) => state?.blank === true) ?? false;
+  const info = useAvatar(useSessions, false, sessionId);
+  const ref = useRef<HTMLImageElement>(null);
+  const [place, setPlace] = useState<"composer" | "side">("composer");
+  useLayoutEffect(() => {
+    if (blank) return;
+    const check = () => {
+      const card = ref.current?.closest<HTMLElement>("[data-composer-card]");
+      const next = card === null || card === undefined ? "composer" : placeFor(card);
+      setPlace((prev) => (prev === next ? prev : next));
+    };
+    check();
+    // 停靠条随时出现 / 消失（待办、排队消息）：低频复查即可
+    const timer = setInterval(check, 700);
+    window.addEventListener("resize", check);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("resize", check);
+    };
+  }, [blank]);
+  if (blank) return null;
+  return <Avatar info={info} size={place} imgRef={ref} />;
+}
+
+/**
+ * 卡片上方紧挨着有停靠条（输入框根节点之前的兄弟节点、有高度、贴近卡片顶边）时，
+ * 左侧外沿放得下就挪到外沿；否则仍叠在框角上。
+ */
+function placeFor(card: HTMLElement): "composer" | "side" {
+  const root = card.parentElement;
+  const top = card.getBoundingClientRect().top;
+  let docked = false;
+  for (let el = root?.previousElementSibling ?? null; el !== null; el = el.previousElementSibling) {
+    const rect = el.getBoundingClientRect();
+    if (rect.height > 0 && top - rect.bottom < 24) {
+      docked = true;
+      break;
+    }
+  }
+  if (!docked) return "composer";
+  const stack = root?.parentElement?.getBoundingClientRect();
+  const room = card.getBoundingClientRect().left - (stack?.left ?? 0);
+  return room >= COMPOSER_SIZE + 10 ? "side" : "composer";
+}
+
+/** @deprecated 标题左侧的头像已移到输入框左上角（{@link ComposerAvatar}）；保留空实现，入口撤掉注册前不显示。 */
+export function HeaderAvatar(_props: { useSessions?: UseSessions }) {
+  return null;
 }
 
 /** `conversation.hero.brand.mark`：新会话欢迎页标语左侧的头像（替换内置鱼标）。 */

@@ -7,7 +7,7 @@ const VENDORS: Vendor[] = ["claude", "gpt", "gemini", "grok", "kimi", "qwen", "g
 
 describe("对话界面角色头像", () => {
   it("每家都有内联头像", () => {
-    for (const vendor of VENDORS) expect(PERSONA_AVATARS[vendor]).toMatch(/^data:image\/webp;base64,/);
+    for (const vendor of VENDORS) expect(PERSONA_AVATARS[vendor]).toMatch(/^data:image\/png;base64,/);
   });
 
   it("按模型认厂商，转售渠道以模型名为准", () => {
