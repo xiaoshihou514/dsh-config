@@ -19,6 +19,7 @@ import { useSoloPick, useSoloSnapshot } from "./shared.ts";
 import { bossSnapshot, useLeadFacts, useLeadPick, workingProjects, type WorkingProject } from "./boss.ts";
 import { unitSet, useBusyUnits, useProjectActivity, type Crew, type ProjectActivity } from "./projects.ts";
 import { Seal, Squad, Tally } from "./squad.tsx";
+import { PERSONA_AVATARS } from "./avatars.generated.ts";
 import { BOSS_LABEL } from "../../office/boss.ts";
 
 type Selector<T> = (selector: (state: any) => T) => T;
@@ -191,6 +192,22 @@ function UsageIcon({ size = 14 }: { size?: number }) {
       <rect x="3" y="8.6" width="2.4" height="5.4" rx=".5" />
       <rect x="6.8" y="5.6" width="2.4" height="8.4" rx=".5" />
       <rect x="10.6" y="2.6" width="2.4" height="11.4" rx=".5" />
+    </svg>
+  );
+}
+
+function ChatIcon() {
+  return (
+    <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
+      <path d="M2.5 3h11v7.5h-6l-3.5 3v-3h-1.5z" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width={12} height={12} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 8.5l3.2 3L13 4.5" />
     </svg>
   );
 }
@@ -769,11 +786,11 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
           }}
         />
         {bossView ? (
-          <div className="dso-stats">
-            <Stat label="待处理" value={bossPending} tone={bossPending > 0 ? "good" : undefined} />
-            <Stat label="等组员" value={(boss?.members.length ?? 0) - bossPending} />
-            <Stat label="在干活" value={working.length} tone={working.length > 0 ? "good" : undefined} />
-          </div>
+          <span className="dso-tallies hud">
+            <Tally kind="report" count={bossPending} title={`${bossPending} 个待处理（汇报 / 出错）`} />
+            <Tally kind="waiting" count={(boss?.members.length ?? 0) - bossPending} title="派完活、等组员" />
+            <Tally busy count={working.length} title={`${working.length} 个项目在干活`} />
+          </span>
         ) : shared ? (
           <div className="dso-stats">
             <Stat label="在座" value={members.length} />
@@ -862,6 +879,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
               api={api}
               snapshot={boss}
               working={working}
+              crews={activity.teams}
               onWorking={(item) => (item.kind === "team" ? pickTeam(item.key) : goShared(item.key))}
               selected={selected}
               onPick={(id) => {
@@ -1530,6 +1548,7 @@ function BossPanel({
   onDismiss,
   working,
   onWorking,
+  crews,
 }: {
   api: SceneModule | null;
   snapshot: OfficeSnapshot | null;
@@ -1540,62 +1559,84 @@ function BossPanel({
   /** 正在干活、没在屋里的项目；点了切过去看。 */
   working: readonly WorkingProject[];
   onWorking: (item: WorkingProject) => void;
+  /** 组长 id → 团队编队（组长 + 名册组员）。 */
+  crews: Readonly<Record<string, Crew>>;
 }) {
   if (snapshot === null) return <div className="dso-empty">加载中…</div>;
   const pending = snapshot.members.filter((m) => m.boss !== "waiting");
   const waiting = snapshot.members.filter((m) => m.boss === "waiting");
-  const card = (m: OfficeMember) => (
-    <div
-      key={m.id}
-      className={`dso-card ${m.boss === "error" ? "bad" : m.boss === "report" ? "good" : "idle"}${m.id === selected ? " sel" : ""}`}
-      style={{ ["--role" as string]: ROLE_COLOR.lead }}
-    >
-      <button type="button" className="dso-card-main" onClick={() => onPick(m.id)}>
-        <Avatar api={api} member={m} size={44} />
-        <span className="dso-card-text">
-          <span className="dso-card-name">
-            <b>{m.project ?? "项目"}</b>
-            <span className="dso-role-tag">
-              {m.role === "lead" ? "组长" : "单智能体"} · {VENDOR_LABEL[m.vendor]}
-            </span>
-          </span>
-          <span className="dso-card-sub dso-ellipsis" title={m.description}>
-            {m.description ?? "组长"}
-          </span>
-          <span className="dso-card-status">
-            <span className="dso-led" />
-            <span className="dso-ellipsis">
-              {m.boss === undefined ? "" : BOSS_LABEL[m.boss]}
-              {m.lastTurn !== undefined && m.boss !== "waiting" ? ` · ${agoShort(m.lastTurn.at)}` : ""}
-            </span>
-          </span>
+  // 任务卡：像素头像徽标、项目名、编队（组长戴金冠；单智能体就一人）、状态徽章 + 时间、小方块按钮
+  const card = (m: OfficeMember) => {
+    const state = m.boss ?? "waiting";
+    const crew = m.role === "lead" ? (crews[m.id] ?? { total: 1, running: 0 }) : { total: 1, running: 0 };
+    return (
+      <div
+        key={m.id}
+        role="button"
+        tabIndex={0}
+        className={`dso-team-card ${state}${m.id === selected ? " sel" : ""}`}
+        title={`${m.role === "lead" ? "组长" : "单智能体"} · ${VENDOR_LABEL[m.vendor]} · ${m.description ?? ""}`}
+        onClick={() => onPick(m.id)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") onPick(m.id);
+        }}
+      >
+        <span className={`dso-team-badge face${m.role === "lead" ? "" : " solo"}`}>
+          <img src={PERSONA_AVATARS[m.vendor]} alt="" draggable={false} />
         </span>
-      </button>
-      <span className="dso-card-acts">
-        <button type="button" className="dso-card-chat" title="打开对话" onClick={() => onOpen(m.id)}>
-          💬
-        </button>
-        {m.boss !== "waiting" && (
-          <button type="button" className="dso-card-chat" title="知道了（不打开对话，从老板办公室移走）" onClick={() => onDismiss(m.id)}>
-            ✓
+        <span className="dso-team-text">
+          <b>{m.project ?? "项目"}</b>
+          <Squad crew={crew} lead={m.role === "lead"} />
+        </span>
+        <span className="dso-team-meta">
+          <Seal kind={state} />
+          {m.lastTurn !== undefined && state !== "waiting" && <small>{agoShort(m.lastTurn.at)}</small>}
+        </span>
+        <span className="dso-quest-acts">
+          <button
+            type="button"
+            className="dso-mini-btn"
+            title="打开对话"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpen(m.id);
+            }}
+          >
+            <ChatIcon />
           </button>
-        )}
-      </span>
-    </div>
-  );
+          {state !== "waiting" && (
+            <button
+              type="button"
+              className="dso-mini-btn"
+              title="知道了（不打开对话，从老板办公室移走）"
+              onClick={(event) => {
+                event.stopPropagation();
+                onDismiss(m.id);
+              }}
+            >
+              <CheckIcon />
+            </button>
+          )}
+        </span>
+      </div>
+    );
+  };
   return (
     <>
       <h3 className="dso-section">
+        <Seal kind="report" size={16} />
         <span>待处理</span>
         <small>{pending.length}</small>
       </h3>
-      {pending.length === 0 ? <div className="dso-empty">暂无汇报</div> : <div className="dso-roster">{pending.map(card)}</div>}
+      {pending.length === 0 ? <div className="dso-empty">暂无汇报</div> : <div className="dso-cards">{pending.map(card)}</div>}
       <h3 className="dso-section dso-shared-project">
-        <span>派完活、等组员</span>
+        <Seal kind="waiting" size={16} />
+        <span>等组员</span>
         <small>{waiting.length}</small>
       </h3>
-      {waiting.length === 0 ? <div className="dso-empty">没有</div> : <div className="dso-roster">{waiting.map(card)}</div>}
+      {waiting.length === 0 ? <div className="dso-empty">没有</div> : <div className="dso-cards">{waiting.map(card)}</div>}
       <h3 className="dso-section dso-shared-project">
+        <Seal busy size={16} />
         <span>正在干活</span>
         <small>{working.length}</small>
       </h3>

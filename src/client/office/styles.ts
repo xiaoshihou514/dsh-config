@@ -142,6 +142,35 @@ body[data-dsh-office] [class*="_centerCol"] {
 .dso-tally { display: inline-flex; align-items: center; gap: 4px; }
 .dso-tally b { font-size: 13px; font-weight: 800; min-width: 10px; color: var(--dsw-alias-label-tertiary, #8a919c); }
 .dso-tally.busy b { color: #1f9a52; }
+.dso-tally.report b { color: #b07a10; }
+.dso-tally.error b { color: #c43a3a; }
+.dso-tally.waiting b { color: #3f63c4; }
+.dso-tally.zero { opacity: .55; }
+.dso-tally.zero .dso-seal { filter: grayscale(.7); }
+.dso-seal.report { color: #5a3a02; background: linear-gradient(160deg, #ffd76a, #e3a52e); box-shadow: inset 0 -2px 0 rgba(0,0,0,.2), 0 0 8px rgba(242,182,50,.45); }
+.dso-seal.error { color: #fff; background: linear-gradient(160deg, #ff8a80, #d63a3a); box-shadow: inset 0 -2px 0 rgba(0,0,0,.22), 0 0 8px rgba(224,79,79,.45); animation: dso-blink 1.2s steps(2) infinite; }
+.dso-seal.waiting { color: #14224a; background: linear-gradient(160deg, #a9c1ff, #5b7fd6); box-shadow: inset 0 -2px 0 rgba(0,0,0,.2); }
+.dso-seal.waiting svg { animation: dso-flip 2.4s steps(1) infinite; }
+@keyframes dso-flip { 50% { transform: rotate(180deg); } }
+/* 老板办公室左栏的任务卡：左缘按状态着色，头像放进徽标方块，动作是凸起小方块按钮 */
+.dso-team-card.report { box-shadow: inset 3px 0 0 #f2b632; }
+.dso-team-card.error { box-shadow: inset 3px 0 0 #e04f4f; }
+.dso-team-card.waiting { box-shadow: inset 3px 0 0 #5b7fd6; }
+.dso-team-card.sel { outline: 2px solid #f2b632; outline-offset: -2px; }
+.dso-team-badge.face { padding: 0; overflow: hidden; background: linear-gradient(160deg, #ffd76a, #e3a52e); }
+.dso-team-badge.face.solo { background: linear-gradient(160deg, #6fe0cf, #2fb3a3); }
+.dso-team-badge.face img { width: 30px; height: 30px; image-rendering: pixelated; border-radius: 6px; }
+.dso-quest-acts { display: flex; flex-direction: column; gap: 3px; margin-left: 2px; }
+.dso-mini-btn {
+  width: 24px; height: 22px; display: grid; place-items: center; border-radius: 6px; cursor: pointer; padding: 0;
+  border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary);
+  box-shadow: inset 0 -2px 0 rgba(0,0,0,.08);
+}
+.dso-mini-btn:hover { color: var(--dsw-alias-label-primary); }
+.dso-mini-btn:active { transform: translateY(1px); box-shadow: none; }
+.dso-section .dso-seal { margin-right: 2px; }
+.dso-tallies.hud { height: 32px; gap: 12px; padding: 0 12px; border-radius: 9px; }
+.dso-section { align-items: center; }
 .dso-tallies { display: inline-flex; align-items: center; gap: 8px; margin-left: 6px; padding: 0 8px; height: 26px; border-radius: 8px; background: var(--dsw-alias-bg-layer-2, #f4f5f7); box-shadow: inset 0 0 0 1px var(--dsw-alias-border-l2), inset 0 -2px 0 rgba(0,0,0,.05); }
 .dso-plate {
   display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 6px 10px 6px 6px; border-radius: 10px;
