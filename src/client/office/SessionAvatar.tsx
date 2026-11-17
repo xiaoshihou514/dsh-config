@@ -3,7 +3,8 @@
  * 模型切换时实时更新。
  *
  * 挂两处（由客户端入口注册），同一时刻只出现一处：
- * - `conversation.input.overlay`：已开始的会话，贴在消息输入框左上角、半悬浮在框角上（48px）；
+ * - `conversation.input.overlay`：已开始的会话，作为独立元素站在消息输入框左侧（48px，不与框重叠，
+ *   垂直居中对齐输入框）；
  * - `conversation.hero.brand.mark`：新会话欢迎页在标语左侧（40px，替换内置鱼标），
  *   此时输入框那处不显示。
  *
@@ -140,24 +141,25 @@ function useAvatar(useSessions: UseSessions | undefined, hero: boolean, explicit
 
 /** 头像边长（输入框处）。 */
 const COMPOSER_SIZE = 48;
+/** 头像与输入框的间距。 */
+const COMPOSER_GAP = 12;
 
-const STYLE: Record<"composer" | "side" | "hero", CSSProperties> = {
-  /** 输入框左上角：叠在框角上，下沿只压住卡片顶部的内边距，不挡文字。 */
-  composer: {
-    width: COMPOSER_SIZE,
-    height: COMPOSER_SIZE,
-    position: "absolute",
-    left: -6,
-    top: -42,
-    zIndex: 2,
-  },
-  /** 输入框上方有停靠条（待办、排队消息）时：挪到卡片左侧外沿、与顶边对齐，不压停靠条。 */
+const STYLE: Record<"side" | "above" | "hero", CSSProperties> = {
+  /** 输入框左侧外沿：独立站在框旁，垂直位置由测量结果给出（与输入框居中对齐）。 */
   side: {
     width: COMPOSER_SIZE,
     height: COMPOSER_SIZE,
     position: "absolute",
-    left: -(COMPOSER_SIZE + 8),
-    top: -4,
+    left: -(COMPOSER_SIZE + COMPOSER_GAP),
+    zIndex: 2,
+  },
+  /** 左侧放不下（窄窗口）：站在输入框左上方，不压框。 */
+  above: {
+    width: COMPOSER_SIZE,
+    height: COMPOSER_SIZE,
+    position: "absolute",
+    left: 4,
+    top: -(COMPOSER_SIZE + 6),
     zIndex: 2,
   },
   hero: {
@@ -167,8 +169,18 @@ const STYLE: Record<"composer" | "side" | "hero", CSSProperties> = {
   },
 } as const;
 
-function Avatar({ info, size, imgRef }: { info: AvatarInfo; size: "composer" | "side" | "hero"; imgRef?: RefObject<HTMLImageElement> }) {
-  const box = STYLE[size];
+function Avatar({
+  info,
+  size,
+  imgRef,
+  top,
+}: {
+  info: AvatarInfo;
+  size: "side" | "above" | "hero";
+  imgRef?: RefObject<HTMLImageElement>;
+  top?: number | undefined;
+}) {
+  const box = top === undefined ? STYLE[size] : { ...STYLE[size], top };
   return (
     <img
       ref={imgRef}
@@ -210,16 +222,16 @@ export function ComposerAvatar({
   const blank = useSession?.((state) => state?.blank === true) ?? false;
   const info = useAvatar(useSessions, false, sessionId);
   const ref = useRef<HTMLImageElement>(null);
-  const [place, setPlace] = useState<"composer" | "side">("composer");
+  const [place, setPlace] = useState<Placement>({ at: "side", top: 0 });
   useLayoutEffect(() => {
     if (blank) return;
     const check = () => {
       const card = ref.current?.closest<HTMLElement>("[data-composer-card]");
-      const next = card === null || card === undefined ? "composer" : placeFor(card);
-      setPlace((prev) => (prev === next ? prev : next));
+      const next: Placement = card === null || card === undefined ? { at: "side", top: 0 } : placeFor(card);
+      setPlace((prev) => (prev.at === next.at && prev.top === next.top ? prev : next));
     };
     check();
-    // 停靠条随时出现 / 消失（待办、排队消息）：低频复查即可
+    // 输入框随草稿变高、停靠条随时出现 / 消失：低频复查即可
     const timer = setInterval(check, 700);
     window.addEventListener("resize", check);
     return () => {
@@ -228,28 +240,32 @@ export function ComposerAvatar({
     };
   }, [blank]);
   if (blank) return null;
-  return <Avatar info={info} size={place} imgRef={ref} />;
+  return <Avatar info={info} size={place.at} imgRef={ref} top={place.at === "side" ? place.top : undefined} />;
+}
+
+interface Placement {
+  readonly at: "side" | "above";
+  /** side 时相对卡片顶边的位置（使头像与输入框垂直居中）。 */
+  readonly top: number;
 }
 
 /**
- * 卡片上方紧挨着有停靠条（输入框根节点之前的兄弟节点、有高度、贴近卡片顶边）时，
- * 左侧外沿放得下就挪到外沿；否则仍叠在框角上。
+ * 默认站在输入框左侧外沿、与输入框垂直居中。左侧放不下（窄窗口）时站到输入框左上方——
+ * 但上方紧挨着有停靠条（输入框根节点之前的兄弟节点、有高度、贴近卡片顶边）时那里会压住停靠条，
+ * 仍留在左侧（贴边）。
  */
-function placeFor(card: HTMLElement): "composer" | "side" {
+function placeFor(card: HTMLElement): Placement {
+  const rect = card.getBoundingClientRect();
+  const top = Math.round((rect.height - COMPOSER_SIZE) / 2);
   const root = card.parentElement;
-  const top = card.getBoundingClientRect().top;
-  let docked = false;
+  const bound = (card.closest<HTMLElement>('[class*="_composerSeat"]') ?? root?.parentElement ?? null)?.getBoundingClientRect();
+  const room = rect.left - (bound?.left ?? 0);
+  if (room >= COMPOSER_SIZE + COMPOSER_GAP) return { at: "side", top };
   for (let el = root?.previousElementSibling ?? null; el !== null; el = el.previousElementSibling) {
-    const rect = el.getBoundingClientRect();
-    if (rect.height > 0 && top - rect.bottom < 24) {
-      docked = true;
-      break;
-    }
+    const r = el.getBoundingClientRect();
+    if (r.height > 0 && rect.top - r.bottom < 24) return { at: "side", top };
   }
-  if (!docked) return "composer";
-  const stack = root?.parentElement?.getBoundingClientRect();
-  const room = card.getBoundingClientRect().left - (stack?.left ?? 0);
-  return room >= COMPOSER_SIZE + 10 ? "side" : "composer";
+  return { at: "above", top: 0 };
 }
 
 /** @deprecated 标题左侧的头像已移到输入框左上角（{@link ComposerAvatar}）；保留空实现，入口撤掉注册前不显示。 */
