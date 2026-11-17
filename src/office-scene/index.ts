@@ -14,6 +14,7 @@ import type {
   OfficeInteraction,
   OfficeMember,
   OfficeSnapshot,
+  OfficeWorking,
   RoleKind,
   Tier,
   ToolCategory,
@@ -969,7 +970,12 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     labels.appendChild(bossTag);
     return group;
   }
-  /** 待办屏：汇报 / 出错在前、等组员在后，超过 5 行时慢慢滚动。 */
+  /** 墙屏下半区的数据：正在干活的项目（随快照更新）。 */
+  let bossWorking: readonly OfficeWorking[] = [];
+  /**
+   * 墙屏：上半区待处理（汇报 / 出错在前、等组员在后，超过 3 行慢慢滚动）；下半区「正在干活」——
+   * 组名 + 像素人手点阵（一个方块一个智能体，在跑亮绿），一行排不下就换行，再多标「+N」。
+   */
   function drawBossBoard(t: number): void {
     const texture = bossBoard.texture;
     if (texture === undefined || t - bossBoard.drawnAt < 1) return;
@@ -996,19 +1002,59 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
     g.fillText(rows.length - pending > 0 ? `另有 ${rows.length - pending} 个团队在等组员` : "", 220, 36);
     g.fillStyle = "#2b3140";
     g.fillRect(18, 52, w - 36, 2);
-    const visible = 5;
+    const visible = 3;
     const offset = rows.length > visible ? Math.floor(t / 2.5) % rows.length : 0;
-    g.font = "21px system-ui, 'Noto Sans CJK SC', sans-serif";
+    g.font = "20px system-ui, 'Noto Sans CJK SC', sans-serif";
     if (rows.length === 0) {
       g.fillStyle = "#6b7385";
-      g.fillText("暂无汇报，团队都在干活", 18, 100);
+      g.fillText("暂无汇报", 18, 86);
     }
     for (let i = 0; i < Math.min(visible, rows.length); i += 1) {
       const row = rows[(offset + i) % rows.length]!;
-      const y = 92 + i * 40;
+      const y = 84 + i * 32;
       g.fillStyle = row.color;
       const text = `${row.mark} ${row.text}`;
       g.fillText(text.length > 26 ? `${text.slice(0, 25)}…` : text, 18, y);
+    }
+    // ---- 下半区：正在干活
+    const top = 182;
+    g.fillStyle = "#2b3140";
+    g.fillRect(18, top - 12, w - 36, 2);
+    g.font = "bold 18px system-ui, 'Noto Sans CJK SC', sans-serif";
+    g.fillStyle = "#7fe0a6";
+    g.fillText(`🔨 正在干活 ${bossWorking.length}`, 18, top + 12);
+    g.font = "16px system-ui, 'Noto Sans CJK SC', sans-serif";
+    if (bossWorking.length === 0) {
+      g.fillStyle = "#6b7385";
+      g.fillText("没有项目在干活", 18, top + 44);
+    }
+    let x = 18;
+    let line = 0;
+    let drawn = 0;
+    for (const item of bossWorking) {
+      const name = item.name.length > 8 ? `${item.name.slice(0, 7)}…` : item.name;
+      const dots = Math.min(item.total, 6);
+      const width = g.measureText(name).width + 8 + dots * 10 + 18;
+      if (x + width > w - 18) {
+        line += 1;
+        x = 18;
+      }
+      if (line > 1) break;
+      const y = top + 44 + line * 32;
+      g.fillStyle = item.kind === "solo" ? "#9fe8dc" : "#e8edf5";
+      g.fillText(name, x, y);
+      let dx = x + g.measureText(name).width + 8;
+      for (let i = 0; i < dots; i += 1) {
+        g.fillStyle = i < item.running ? "#3fd07a" : "#3a4150";
+        g.fillRect(dx, y - 12, 8, 12);
+        dx += 10;
+      }
+      x = dx + 18;
+      drawn += 1;
+    }
+    if (drawn < bossWorking.length) {
+      g.fillStyle = "#8a93a3";
+      g.fillText(`+${bossWorking.length - drawn}`, w - 50, top + 12);
     }
     texture.needsUpdate = true;
   }
@@ -1737,6 +1783,7 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
   }
 
   function update(snapshot: OfficeSnapshot, live: Readonly<Record<string, boolean>>): void {
+    bossWorking = snapshot.working ?? [];
     const now = clock.elapsedTime;
     // 项目名变了（改名）就重搭房间（招牌在墙上）
     const project = snapshot.projectName ?? snapshot.cwd?.split(/[\\/]/).filter(Boolean).at(-1) ?? "项目";

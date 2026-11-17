@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bossOf, bossSnapshot, pickLeads, soloBossOf, type LeadFacts } from "../src/client/office/boss.ts";
+import { bossOf, bossSnapshot, pickLeads, soloBossOf, workingProjects, type LeadFacts } from "../src/client/office/boss.ts";
 import { bossStateOf } from "../src/office/boss.ts";
 import type { OfficeMember } from "../src/office/types.ts";
 
@@ -99,6 +99,25 @@ describe("老板办公室：单智能体也来汇报", () => {
       ["old", "report"],
       ["new", "report"],
       ["L", "waiting"],
+    ]);
+  });
+});
+
+describe("老板办公室：正在干活的项目", () => {
+  it("有人在跑的团队与单智能体项目，屋里已有的组长不重复列，在跑多的在前", () => {
+    const list = workingProjects(
+      [{ leadId: "A", cwd: "/p/a" }, { leadId: "B", cwd: "/p/b" }, { leadId: "C", cwd: "/p/c" }],
+      { A: { total: 4, running: 1 }, B: { total: 3, running: 2 }, C: { total: 2, running: 0 } },
+      [
+        { cwd: "/p/n", ids: ["x"], total: 2, running: 2 },
+        { cwd: "/p/q", ids: ["y"], total: 1, running: 0 },
+      ],
+      new Set(["B"]),
+      (cwd) => cwd?.split("/").pop() ?? "",
+    );
+    expect(list.map((w) => [w.kind, w.name, w.running, w.total])).toEqual([
+      ["solo", "n", 2, 2],
+      ["team", "a", 1, 4],
     ]);
   });
 });

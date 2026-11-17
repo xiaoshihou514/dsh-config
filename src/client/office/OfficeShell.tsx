@@ -16,7 +16,7 @@ import { USER_ID } from "../../office/types.ts";
 import { currentSession, getOffice, setOffice, useOffice } from "./store.ts";
 import { CSS } from "./styles.ts";
 import { useSoloPick, useSoloSnapshot } from "./shared.ts";
-import { bossSnapshot, useLeadFacts, useLeadPick } from "./boss.ts";
+import { bossSnapshot, useLeadFacts, useLeadPick, workingProjects, type WorkingProject } from "./boss.ts";
 import { useProjectActivity, type Crew, type ProjectActivity } from "./projects.ts";
 import { BOSS_LABEL } from "../../office/boss.ts";
 
@@ -500,7 +500,16 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const memberIds = useMemo(() => [...new Set([...viewIds, ...bossIds])], [idKey]);
   const live = useLive(memberIds, useSessions, useSessionStatus);
   // 看过的汇报离开老板办公室：已看过记录变化时（useAttention 订阅了它）会重渲染，这里每次现算
-  const boss = bossSnapshot(leadFacts.leads, live, nameOfProject, solo.snapshot?.members ?? null, readAcks());
+  const bossRaw = bossSnapshot(leadFacts.leads, live, nameOfProject, solo.snapshot?.members ?? null, readAcks());
+  // 老板办公室还要看「哪些组在干活」：复用项目总览的忙闲（整棵子代理树），屋里已有的组长不重复列
+  const working = workingProjects(
+    teams ?? [],
+    activity.teams,
+    activity.soloProjects,
+    new Set((bossRaw?.members ?? []).map((m) => m.id)),
+    nameOfProject,
+  );
+  const boss = bossRaw === null ? null : { ...bossRaw, working };
   const bossPending = boss?.members.filter((m) => m.boss === "report" || m.boss === "error").length ?? 0;
   /** 场景与左栏显示的那份快照。 */
   const shown = shared ? solo.snapshot : bossView ? boss : snapshot;
@@ -748,6 +757,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
           <div className="dso-stats">
             <Stat label="待处理" value={bossPending} tone={bossPending > 0 ? "good" : undefined} />
             <Stat label="等组员" value={(boss?.members.length ?? 0) - bossPending} />
+            <Stat label="在干活" value={working.length} tone={working.length > 0 ? "good" : undefined} />
           </div>
         ) : shared ? (
           <div className="dso-stats">
@@ -836,6 +846,8 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
             <BossPanel
               api={api}
               snapshot={boss}
+              working={working}
+              onWorking={(item) => (item.kind === "team" ? pickTeam(item.key) : goShared(item.key))}
               selected={selected}
               onPick={(id) => {
                 setSelected(id);
@@ -1533,6 +1545,8 @@ function BossPanel({
   onPick,
   onOpen,
   onDismiss,
+  working,
+  onWorking,
 }: {
   api: SceneModule | null;
   snapshot: OfficeSnapshot | null;
@@ -1540,6 +1554,9 @@ function BossPanel({
   onPick: (id: string) => void;
   onOpen: (id: string) => void;
   onDismiss: (id: string) => void;
+  /** 正在干活、没在屋里的项目；点了切过去看。 */
+  working: readonly WorkingProject[];
+  onWorking: (item: WorkingProject) => void;
 }) {
   if (snapshot === null) return <div className="dso-empty">加载中…</div>;
   const pending = snapshot.members.filter((m) => m.boss !== "waiting");
@@ -1595,6 +1612,38 @@ function BossPanel({
         <small>{waiting.length}</small>
       </h3>
       {waiting.length === 0 ? <div className="dso-empty">没有</div> : <div className="dso-roster">{waiting.map(card)}</div>}
+      <h3 className="dso-section dso-shared-project">
+        <span>正在干活</span>
+        <small>{working.length}</small>
+      </h3>
+      {working.length === 0 ? (
+        <div className="dso-empty">没有项目在干活</div>
+      ) : (
+        <div className="dso-cards">
+          {working.map((item) => (
+            <div
+              key={`${item.kind}:${item.key}`}
+              role="button"
+              tabIndex={0}
+              className={`dso-team-card ${item.kind} compact`}
+              title={item.kind === "team" ? "去这个团队的办公室" : "去共享办公室"}
+              onClick={() => onWorking(item)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") onWorking(item);
+              }}
+            >
+              <span className={`dso-team-badge${item.kind === "solo" ? " solo" : ""}`}>{item.name.slice(0, 1).toUpperCase()}</span>
+              <span className="dso-team-text">
+                <b>{item.name}</b>
+                <small>{item.kind === "team" ? "团队" : "单智能体"}</small>
+              </span>
+              <span className="dso-team-meta">
+                <CrewDots crew={item} />
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </>
   );
 }

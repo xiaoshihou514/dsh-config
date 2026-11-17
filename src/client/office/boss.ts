@@ -12,7 +12,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { bossStateOf, type BossState } from "../../office/boss.ts";
-import type { OfficeMember, OfficeSnapshot } from "../../office/types.ts";
+import type { OfficeMember, OfficeSnapshot, OfficeWorking } from "../../office/types.ts";
+import type { Crew, SoloProject } from "./projects.ts";
 import { SOLO_WINDOW_MS, rootOf, type SessionListLike } from "./shared.ts";
 
 export const BOSS_CAP = 24;
@@ -169,4 +170,34 @@ export function bossSnapshot(
     tasks: [],
     taskSource: "none",
   };
+}
+
+/** 左栏 / 墙屏上的一个「正在干活」项目。 */
+export interface WorkingProject extends OfficeWorking {
+  /** 团队：组长 id；单智能体项目：文件夹。 */
+  readonly key: string;
+}
+
+/**
+ * 正在干活、没在老板办公室里的项目（纯函数，忙闲口径与项目总览一致：整棵子代理树）：
+ * 有人在跑的团队（组长已在屋里汇报 / 等组员的不重复列）与有人在跑的单智能体项目；在跑多的在前。
+ */
+export function workingProjects(
+  teams: readonly { leadId: string; cwd?: string | undefined }[],
+  crews: Readonly<Record<string, Crew>>,
+  soloProjects: readonly SoloProject[],
+  inRoom: ReadonlySet<string>,
+  nameOf: (cwd: string | undefined) => string,
+): WorkingProject[] {
+  const out: WorkingProject[] = [];
+  for (const team of teams) {
+    const crew = crews[team.leadId];
+    if (crew === undefined || crew.running === 0 || inRoom.has(team.leadId)) continue;
+    out.push({ key: team.leadId, kind: "team", name: nameOf(team.cwd), running: crew.running, total: crew.total });
+  }
+  for (const project of soloProjects) {
+    if (project.running === 0) continue;
+    out.push({ key: project.cwd, kind: "solo", name: nameOf(project.cwd || undefined), running: project.running, total: project.total });
+  }
+  return out.sort((a, b) => b.running - a.running || a.name.localeCompare(b.name, "zh"));
 }

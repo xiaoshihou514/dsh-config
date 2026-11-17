@@ -142,6 +142,8 @@ body[data-dsh-office] [class*="_centerCol"] {
 .dso-overview span { font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .dso-picker-head small { font-weight: 500; letter-spacing: 0; color: var(--dsw-alias-label-tertiary, #86909c); }
 .dso-team-badge.shared { background: linear-gradient(160deg, #a9c1ff, #5b7fd6); color: #14224a; }
+.dso-team-card.compact { padding-block: 6px; }
+.dso-team-card.compact .dso-team-badge { width: 28px; height: 28px; font-size: 13px; }
 .dso-team-badge.solo { background: linear-gradient(160deg, #6fe0cf, #2fb3a3); color: #073b35; }
 .dso-tab-badge { display: inline-block; min-width: 16px; height: 16px; margin-left: 5px; padding: 0 4px; border-radius: 999px; background: #ff3b30; color: #fff; font-size: 10px; line-height: 16px; text-align: center; font-weight: 700; }
 .dso-btn.sm { height: 26px; padding: 0 10px; font-size: 11px; }

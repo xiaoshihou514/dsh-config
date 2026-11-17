@@ -147,7 +147,17 @@ export interface OfficeSnapshot {
   /** 共享任务板；为空时用 Lead 的待办清单代替（`source: "todo"`）。 */
   readonly tasks: readonly OfficeTask[];
   readonly taskSource: "team" | "todo" | "none";
+  /** 老板办公室：正在干活、没有待处理事项的团队 / 单智能体项目（墙屏下半区用）。 */
+  readonly working?: readonly OfficeWorking[] | undefined;
 }
 
 /** 你本人在交流图里的固定 id。 */
 export const USER_ID = "user";
+
+/** 一个正在干活的项目（老板办公室墙屏）：组名与人手（整棵子代理树口径）。 */
+export interface OfficeWorking {
+  readonly name: string;
+  readonly kind: "team" | "solo";
+  readonly running: number;
+  readonly total: number;
+}
