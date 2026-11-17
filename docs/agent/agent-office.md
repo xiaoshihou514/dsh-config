@@ -12,7 +12,14 @@ Agent Teams 的 3D 可视化，以「办公室模式」呈现：侧边栏左下�
 | `src/office/derive.ts` | 纯推导：会话事件 → 成员活动、当前动作、交流、任务（有单测） |
 | `src/office/classify.ts` | 模型 → 厂商 / 档位，名字 + 描述 → 岗位；改档位规则看 `FAST_PATTERNS` / `FLAGSHIP_PATTERNS` |
 | `src/office-scene/` | three.js 场景（独立 ESM `lib/office-scene.js`，进入办公室时才加载）；`slack.ts` 是空闲角色的摸鱼动作 |
-| `src/client/office/` | 办公室模式：`OfficeShell.tsx`（覆盖层、HUD、项目面板、队伍 / 详情 / 交流）、`store.ts`（持久状态）、`styles.ts`（样式） |
+| `src/client/office/` | 办公室模式：`OfficeShell.tsx`（覆盖层、HUD、项目面板、队伍 / 详情 / 交流）、`store.ts`（持久状态）、`styles.ts`（样式）；`SessionAvatar.tsx` 是对话界面的角色头像 |
+
+## 对话界面角色头像
+
+- `SessionAvatar.tsx`：当前会话所用模型对应厂商的角色头像，模型切换时实时更新。两处挂载（入口 `client/index.ts` 注册）：`conversation.header.leading` 的 `HeaderAvatar`（会话标题左侧，30px）、`conversation.hero.brand.mark` 的 `HeroAvatar`（新会话欢迎页标语左侧，40px，替换内置鱼标）。两个槽位原本都没人占用。
+- 当前会话：会话列表里被主视图持有（`retainedBy.mainView`）的那条，与原生页面标题同一判定；取不到时退回 `dsh.sessions.current`。
+- 模型：会话的 `modelSelection` 投影（`projectionsBySession[id].values.modelSelection.next`）；会话没自选过模型、或欢迎页还没有会话时，用宿主模型目录的全局默认模型（入口注入 `avatarHost.loadDefault`，即 `remote.session.modelCatalog().default`，读一次缓存）；都拿不到时显示兜帽旅人。厂商按 `classify.ts` 的 `vendorOf` 认。鼠标悬停显示「厂商（档位）· 模型名」，默认模型注明「默认模型」。
+- 头像素材：`scripts/build-persona-avatars.py` 从 `../人设/` 立绘按手工标注的头部框裁出 96×96 WebP，兜帽旅人取 `assets/personas/other.png` 正视图头部（最近邻缩放），以 data URL 写入 `avatars.generated.ts`（约 34KB，不额外请求图片）。换图后重跑脚本再构建。
 
 ## 数据来源
 
