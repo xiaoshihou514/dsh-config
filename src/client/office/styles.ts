@@ -103,6 +103,7 @@ body[data-dsh-office] [class*="_centerCol"] {
   box-shadow: inset 0 -2px 0 rgba(0,0,0,.22), 0 1px 3px rgba(0,0,0,.18);
 }
 .dso-btn.ghost { background: transparent; box-shadow: none; }
+.dso-hud-entry { padding-inline: 10px; white-space: nowrap; }
 .dso-btn.sm { height: 26px; padding: 0 10px; font-size: 11px; }
 .dso-link { border: 0; background: transparent; padding: 0; cursor: pointer; font: inherit; font-size: 11px; color: var(--dsw-alias-state-business-primary); }
 

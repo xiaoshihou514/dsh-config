@@ -8,6 +8,8 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { UsageDialog } from "../UsageTrigger.tsx";
 import { ROLE_COLOR, ROLE_LABEL, TIER_LABEL, VENDOR_LABEL } from "../../office/classify.ts";
 import type { OfficeInteraction, OfficeMember, OfficeSnapshot, RoleKind, Tier, Vendor } from "../../office/types.ts";
 import { USER_ID } from "../../office/types.ts";
@@ -52,6 +54,38 @@ export interface OfficeHost {
   createTeam(path: string): Promise<string>;
 }
 export const officeHost: { current: OfficeHost | undefined } = { current: undefined };
+
+/**
+ * 入口注入：打开原生设置（`ctx.shortcuts.invoke("settings.open", …)`）。设置弹窗挂在 body、
+ * 层级 1000，盖在办公室覆盖层（40）之上，所以不必离开办公室。
+ */
+export const settingsHost: { current: { open(): void } | undefined } = { current: undefined };
+
+/** 办公室里开着的弹窗数（用量）：开着时 Esc 交给弹窗，不收起对话。 */
+let dialogsOpen = 0;
+/** 原生弹窗（设置等）开着：它们自己处理 Esc。 */
+const nativeModalOpen = () => document.querySelector("[data-shortcut-modal]") !== null;
+
+/**
+ * HUD「设置」：优先走入口注入的命令；没有时点原生侧边栏的设置按钮（被覆盖层挡住也能点）；
+ * 再不行就退回对话界面，让用户自己点。
+ */
+function openNativeSettings(): void {
+  try {
+    if (settingsHost.current !== undefined) {
+      settingsHost.current.open();
+      return;
+    }
+  } catch {
+    // 命令被拦（如另有弹窗）时走下面的退路
+  }
+  const trigger = document.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"][class*="_trigger"]');
+  if (trigger !== null) {
+    trigger.click();
+    return;
+  }
+  setOffice({ on: false, chatOpen: false });
+}
 
 const POLL_MS = 1500;
 
@@ -326,6 +360,7 @@ export function OfficeOverlay(props: { useSessions?: Selector<unknown>; useSessi
     if (!on || !chatOpen) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      if (dialogsOpen > 0 || nativeModalOpen()) return;
       setOffice({ chatOpen: false });
     };
     document.addEventListener("keydown", onKey);
@@ -481,6 +516,14 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   };
 
   const [fullscreen, setFullscreen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
+  useEffect(() => {
+    if (!usageOpen) return;
+    dialogsOpen += 1;
+    return () => {
+      dialogsOpen -= 1;
+    };
+  }, [usageOpen]);
   useEffect(() => {
     const onChange = () => setFullscreen(document.fullscreenElement !== null);
     document.addEventListener("fullscreenchange", onChange);
@@ -559,6 +602,14 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
             </button>
           ))}
         </div>
+        <button type="button" className="dso-btn ghost dso-hud-entry" title="查看词元用量与费用" onClick={() => setUsageOpen(true)}>
+          📊 用量
+        </button>
+        <button type="button" className="dso-btn ghost dso-hud-entry" title="打开设置（不离开办公室）" onClick={openNativeSettings}>
+          ⚙️ 设置
+        </button>
+        {/* 用量弹窗挂到 body：覆盖层收成左侧成员栏时也能铺满窗口 */}
+        {usageOpen && createPortal(<UsageDialog open onClose={() => setUsageOpen(false)} />, document.body)}
         <button
           type="button"
           className="dso-icon-btn"

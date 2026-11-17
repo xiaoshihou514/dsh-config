@@ -14,6 +14,13 @@ Agent Teams 的 3D 可视化，以「办公室模式」呈现：侧边栏左下�
 | `src/office-scene/` | three.js 场景（独立 ESM `lib/office-scene.js`，进入办公室时才加载）；`slack.ts` 是空闲角色的摸鱼动作 |
 | `src/client/office/` | 办公室模式：`OfficeShell.tsx`（覆盖层、HUD、项目面板、队伍 / 详情 / 交流）、`store.ts`（持久状态）、`styles.ts`（样式）；`SessionAvatar.tsx` 是对话界面的角色头像 |
 
+## 用量 / 设置入口
+
+- HUD 右侧「📊 用量」「⚙️ 设置」，都不离开办公室。
+- 用量：直接用 usage 面板导出的受控 `UsageDialog`（`open` / `onClose`），用 portal 挂到 body，覆盖层收成左侧成员栏时也铺满窗口。
+- 设置：原生设置弹窗的开关归侧边栏外壳所有，外部可用的入口是快捷命令 `settings.open`。入口注入 `settingsHost.open = () => ctx.shortcuts.invoke("settings.open", { source: "menu", region: "page", modal: null, target: null })`。弹窗挂在 body、层级 1000，盖在办公室覆盖层（40）之上。没注入时退回点击原生侧边栏的设置按钮（`button[aria-haspopup="dialog"][class*="_trigger"]`，被覆盖层挡住也能点），再找不到才关掉办公室。
+- 用量弹窗或原生弹窗（`[data-shortcut-modal]`）开着时，Esc 交给弹窗，不收起对话。
+
 ## 对话界面角色头像
 
 - `SessionAvatar.tsx`：当前会话所用模型对应厂商的角色头像，模型切换时实时更新。两处挂载（入口 `client/index.ts` 注册）：`conversation.header.leading` 的 `HeaderAvatar`（会话标题左侧，30px）、`conversation.hero.brand.mark` 的 `HeroAvatar`（新会话欢迎页标语左侧，40px，替换内置鱼标）。两个槽位原本都没人占用。
