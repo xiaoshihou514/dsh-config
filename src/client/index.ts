@@ -17,7 +17,7 @@ import { UsageTrigger } from "./UsageTrigger.tsx";
 import { InjectOnceCard } from "./InjectOnceCard.tsx";
 import { TurnNotify } from "./TurnNotify.tsx";
 import { OfficeOverlay, OfficeToggle, TEAM_PROMPT, officeHost, settingsHost } from "./office/OfficeShell.tsx";
-import { HeaderAvatar, HeroAvatar, avatarHost } from "./office/SessionAvatar.tsx";
+import { ComposerAvatar, HeroAvatar, avatarHost } from "./office/SessionAvatar.tsx";
 
 export const inject = ["slots"];
 
@@ -62,7 +62,8 @@ export function apply(ctx: Context): void {
     ctx.slots.register({ name: "shell.overlay", id: "dsh-config-office" } as never, OfficeOverlay as never),
   );
   // 对话标题左侧与新会话欢迎页的模型头像（office/SessionAvatar）。
-  ctx.slots.inject("conversation.header.leading", () => ctx.slots.register({ name: "conversation.header.leading" }, HeaderAvatar));
+  // 输入框左上角头像：列表槽位必须带 id，会话作用域（组件自取 sessionId 与 useSession）。
+  ctx.slots.inject("conversation.input.overlay", () => ctx.slots.register({ name: "conversation.input.overlay", id: "dsh-config-avatar" }, ComposerAvatar));
   ctx.slots.inject("conversation.hero.brand.mark", () => ctx.slots.register({ name: "conversation.hero.brand.mark" }, HeroAvatar));
   // 头像取全局默认模型。
   ctx.inject(["remote"], (scoped) => {
