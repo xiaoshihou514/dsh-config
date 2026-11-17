@@ -1,5 +1,7 @@
 /**
- * 老板办公室：所有团队的组长在「汇报完毕 / 出错停下 / 派完活等组员」时来这里向你汇报。
+ * 老板办公室：所有团队的组长在「汇报完毕 / 出错停下 / 派完活等组员」时来这里向你汇报；
+ * 单智能体（共享办公室的入选者）这一轮结束时也来（汇报 / 出错，没有「等组员」）。
+ * 汇报 / 出错打开对话或点「知道了」后算看过，离开老板办公室（与醒目提醒共用 `dsh-config:office-ack`）。
  *
  * - 候选（浏览器端，零扫描）：组建过团队的会话（/office/teams）与会话列表里有子会话的顶层会话，
  *   只留 24 小时内组长或任一组员有活动（或正在运行）的；最近活跃的在前，最多 {@link BOSS_CAP} 个。
@@ -121,18 +123,46 @@ export function bossOf(facts: LeadFacts, live: Readonly<Record<string, boolean>>
   return bossStateOf({ leadRunning, leadWaiting: facts.leadWaiting, lastTurn: facts.member.lastTurn, membersRunning });
 }
 
-/** 老板办公室的快照：只放有事的组长（汇报 / 出错在前）。 */
+/** 单智能体 → 老板办公室状态：这一轮结束且自己没在跑才来，没有「等组员」。 */
+export function soloBossOf(member: OfficeMember, live: Readonly<Record<string, boolean>>): BossState | null {
+  const running = live[member.id] ?? member.busy;
+  return bossStateOf({ leadRunning: running, leadWaiting: false, lastTurn: member.lastTurn, membersRunning: false });
+}
+
+/**
+ * 老板办公室的快照：有事的组长与单智能体。待处理（汇报 / 出错）在前，按等得最久的先排（先来先办）；
+ * 等组员的在后。看过的汇报（ack ≥ 这一轮结束时间）不再出现。
+ * @param solos - 单智能体（共享办公室入选者的详情，已带项目名）；null = 还没取到。
+ * @param acks - 会话 id → 已看过的那一轮结束时间。
+ */
 export function bossSnapshot(
   leads: readonly LeadFacts[] | null,
   live: Readonly<Record<string, boolean>>,
   nameOf: (cwd: string | undefined) => string,
+  solos: readonly OfficeMember[] | null = [],
+  acks: Readonly<Record<string, number>> = {},
 ): OfficeSnapshot | null {
   if (leads === null) return null;
-  const members = leads
-    .map((facts) => ({ facts, state: bossOf(facts, live) }))
-    .filter((x): x is { facts: LeadFacts; state: BossState } => x.state !== null)
-    .sort((a, b) => Number(a.state === "waiting") - Number(b.state === "waiting"))
-    .map(({ facts, state }): OfficeMember => ({ ...facts.member, project: nameOf(facts.member.cwd), boss: state }));
+  const seen = (m: OfficeMember, state: BossState) =>
+    state !== "waiting" && m.lastTurn !== undefined && (acks[m.id] ?? 0) >= m.lastTurn.at;
+  const fromLeads = leads.flatMap((facts): OfficeMember[] => {
+    const state = bossOf(facts, live);
+    if (state === null || seen(facts.member, state)) return [];
+    return [{ ...facts.member, project: nameOf(facts.member.cwd), boss: state }];
+  });
+  const leadIds = new Set(leads.map((f) => f.member.id));
+  const fromSolos = (solos ?? []).flatMap((m): OfficeMember[] => {
+    if (leadIds.has(m.id)) return [];
+    const state = soloBossOf(m, live);
+    if (state === null || seen(m, state)) return [];
+    return [{ ...m, project: m.project ?? nameOf(m.cwd), boss: state }];
+  });
+  const members = [...fromLeads, ...fromSolos].sort((a, b) => {
+    const wa = a.boss === "waiting";
+    const wb = b.boss === "waiting";
+    if (wa !== wb) return Number(wa) - Number(wb);
+    return (a.lastTurn?.at ?? 0) - (b.lastTurn?.at ?? 0);
+  });
   return {
     leadId: "",
     projectName: "老板办公室",

@@ -115,6 +115,7 @@ body[data-dsh-office] [class*="_centerCol"] {
 .dso-shared-hint { margin: 0 2px 10px; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-tertiary, #86909c); }
 .dso-shared-project { margin-top: 10px; }
 .dso-card.sel { outline: 2px solid var(--role, #8a93a3); outline-offset: -2px; }
+.dso-card-acts { display: flex; flex-direction: column; justify-content: center; gap: 2px; }
 .dso-tab-badge { display: inline-block; min-width: 16px; height: 16px; margin-left: 5px; padding: 0 4px; border-radius: 999px; background: #ff3b30; color: #fff; font-size: 10px; line-height: 16px; text-align: center; font-weight: 700; }
 .dso-btn.sm { height: 26px; padding: 0 10px; font-size: 11px; }
 .dso-link { border: 0; background: transparent; padding: 0; cursor: pointer; font: inherit; font-size: 11px; color: var(--dsw-alias-state-business-primary); }

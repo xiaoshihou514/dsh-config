@@ -4,8 +4,8 @@
  * - 入选（浏览器端，零扫描）：原生会话列表里顶层、非子智能体、非空白、不是组长
  *   （没有子会话，且不在 /office/teams 团队列表里），并且正在运行或 24 小时内有活动。
  *   在跑的优先，其次按最近活动；最多 {@link SOLO_CAP} 人，多出的只在 HUD 提示人数。
- * - 详情：`GET /dsh-config/office/solo?ids=…` 只为入选者补模型、当前动作（宿主按存储版本缓存摘要），
- *   带 ETag 轮询。
+ * - 详情：`GET /dsh-config/office/solo?ids=…` 只为入选者补模型、当前动作、最近一轮（宿主按存储版本缓存摘要），
+ *   带 ETag 轮询：在共享办公室里每 3 秒，其他时候每 15 秒（老板办公室的单智能体汇报与 HUD 角标要用）。
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -98,13 +98,16 @@ export function useSoloPick(
 }
 
 /**
- * 共享办公室的快照：入选者的详情（模型、当前动作），按项目排好座次（同项目坐在一起）。
+ * 共享办公室的快照：入选者的详情（模型、当前动作、最近一轮），按项目排好座次（同项目坐在一起）。
+ * @param enabled - 是否轮询。
+ * @param active - 正在看共享办公室：轮询更勤。
  * @param nameOf - 文件夹 → 项目显示名。
  */
 export function useSoloSnapshot(
   enabled: boolean,
   ids: readonly string[],
   nameOf: (cwd: string | undefined) => string,
+  active = true,
 ): { snapshot: OfficeSnapshot | null; error: string | null } {
   const [members, setMembers] = useState<OfficeMember[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -138,14 +141,15 @@ export function useSoloSnapshot(
       } catch (reason) {
         if (!stopped) setError(String(reason));
       }
-      if (!stopped) timer = setTimeout(poll, document.hidden ? POLL_MS * 4 : POLL_MS);
+      const wait = (active ? POLL_MS : POLL_MS * 5) * (document.hidden ? 4 : 1);
+      if (!stopped) timer = setTimeout(poll, wait);
     };
     void poll();
     return () => {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [enabled, idKey]);
+  }, [enabled, idKey, active]);
   const snapshot = useMemo((): OfficeSnapshot | null => {
     if (!enabled || members === null) return null;
     const order = new Map(ids.map((id, i) => [id, i]));

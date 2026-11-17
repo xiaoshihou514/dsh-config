@@ -6,7 +6,7 @@
  * - `conversation.input.overlay`：已开始的会话，作为独立元素站在消息输入框左侧（48px，不与框重叠，
  *   垂直居中对齐输入框）；
  * - `conversation.hero.brand.mark`：新会话欢迎页在标语左侧（40px，替换内置鱼标），
- *   此时输入框那处不显示。
+ *   跟随输入框模型选择器的选择；此时输入框那处不显示。
  *
  * 模型来源：当前会话的模型选择投影 `modelSelection.next`（会话自选的模型）；
  * 会话没选过、或还没有会话时，用宿主模型目录的全局默认模型；都拿不到时显示兜帽旅人。
@@ -80,10 +80,15 @@ interface SessionsLike {
 }
 type UseSessions = <T>(selector: (state: SessionsLike | undefined) => T) => T;
 
+/** 主视图正持有的会话（与原生页面标题同一判定）。 */
+function mainViewId(state: SessionsLike | undefined): string | undefined {
+  for (const [id, row] of Object.entries(state?.byId ?? {})) if ((row?.retainedBy?.mainView ?? 0) > 0) return id;
+  return undefined;
+}
+
 /** 原生当前会话：会话列表里被主视图持有的那条；取不到时退回工作区持久化的选择。 */
 function currentId(state: SessionsLike | undefined): string | undefined {
-  for (const [id, row] of Object.entries(state?.byId ?? {})) if ((row?.retainedBy?.mainView ?? 0) > 0) return id;
-  return currentSession().sessionId;
+  return mainViewId(state) ?? currentSession().sessionId;
 }
 
 /** 当前会话自选的模型（`provider/model`）；没有返回空串。按串比较，避免对象每次都是新的。 */
@@ -113,11 +118,12 @@ export function avatarFor(model: ModelChoice | undefined, fromDefault: boolean):
 
 /**
  * @param explicit - 槽位给出的会话 id（会话作用域槽位）；缺省时按原生当前会话推断。
- * @param hero - 欢迎页：还没有会话，只看默认模型。
+ * @param hero - 欢迎页：只看主视图正持有的那个新会话（选了工作区就有，输入框的模型选择写在它上面），
+ *   不退回持久化的旧选择；没有新会话、或还没选模型时用默认模型。
  */
 function useAvatar(useSessions: UseSessions | undefined, hero: boolean, explicit?: string): AvatarInfo {
   const fallback = useDefaultModel();
-  const pick = (state: SessionsLike | undefined) => (hero ? undefined : (explicit ?? currentId(state)));
+  const pick = (state: SessionsLike | undefined) => (hero ? mainViewId(state) : (explicit ?? currentId(state)));
   const sessionId = useSessions?.(pick);
   const key = useSessions?.((state) => selectedKey(state, pick(state))) ?? "";
   // localStorage 里的选择变化（另一标签页或宿主未提供 mainView 时）也要跟上

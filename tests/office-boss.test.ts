@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bossOf, bossSnapshot, pickLeads, type LeadFacts } from "../src/client/office/boss.ts";
+import { bossOf, bossSnapshot, pickLeads, soloBossOf, type LeadFacts } from "../src/client/office/boss.ts";
 import { bossStateOf } from "../src/office/boss.ts";
 import type { OfficeMember } from "../src/office/types.ts";
 
@@ -68,6 +68,36 @@ describe("老板办公室：以浏览器在跑状态为准", () => {
     expect(snap?.members.map((m) => [m.id, m.boss, m.project])).toEqual([
       ["L", "report", "shop"],
       ["M", "waiting", "shop"],
+    ]);
+  });
+});
+
+describe("老板办公室：单智能体也来汇报", () => {
+  const stats = { turns: 1, steps: 1, toolCalls: 0, sent: 0, received: 0, outputTokens: 0 };
+  const solo = (id: string, at: number, ok = true, busy = false) =>
+    ({
+      id, name: id, role: "teammate", phase: "active", vendor: "deepseek", tier: "fast", roleKind: "general",
+      busy, lastTurn: { at, ok }, stats, cwd: `/p/${id}`, project: id,
+    }) as OfficeMember;
+  it("这一轮结束才来，没有等组员；在跑的不来", () => {
+    expect(soloBossOf(solo("a", NOW), {})).toBe("report");
+    expect(soloBossOf(solo("a", NOW, false), {})).toBe("error");
+    expect(soloBossOf(solo("a", NOW), { a: true })).toBeNull();
+  });
+  it("待处理在前、等得最久的先排；看过的汇报离开", () => {
+    const lead = {
+      member: { ...solo("L", NOW - 3 * HOUR), role: "lead" } as OfficeMember,
+      leadWaiting: false,
+      memberIds: ["k"],
+      membersRunning: true,
+    };
+    const snap = bossSnapshot([lead], {}, () => "x", [solo("new", NOW), solo("old", NOW - 2 * HOUR), solo("seen", NOW - HOUR)], {
+      seen: NOW - HOUR,
+    });
+    expect(snap?.members.map((m) => [m.id, m.boss])).toEqual([
+      ["old", "report"],
+      ["new", "report"],
+      ["L", "waiting"],
     ]);
   });
 });

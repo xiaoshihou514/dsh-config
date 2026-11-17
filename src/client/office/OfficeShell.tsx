@@ -459,25 +459,22 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
 
   // 共享办公室：组建过团队的会话都算组长（刚组建还没招人的也排除）
   const leads = useMemo(() => new Set((teams ?? []).flatMap((t) => [t.leadId, ...(t.replaces ?? [])])), [teams]);
-  const soloPick = useSoloPick(shared, useSessions as never, leads);
+  // 单智能体一直取（老板办公室的单智能体汇报、HUD 角标要用）；在共享办公室里轮询更勤
+  const soloPick = useSoloPick(true, useSessions as never, leads);
   const nameOfProject = useProjectName();
-  const solo = useSoloSnapshot(shared, soloPick.ids, nameOfProject);
+  const solo = useSoloSnapshot(true, soloPick.ids, nameOfProject, shared);
   // 老板办公室：一直轮询（HUD 角标要用），在老板办公室里更勤
   const leadPick = useLeadPick(useSessions as never, leads);
   const leadFacts = useLeadFacts(leadPick, bossView);
 
   const viewIds = shared ? (solo.snapshot?.members.map((m) => m.id) ?? []) : (snapshot?.members.map((m) => m.id) ?? []);
-  const bossIds = (leadFacts.leads ?? []).flatMap((f) => [f.member.id, ...f.memberIds]);
+  const bossIds = [...(leadFacts.leads ?? []).flatMap((f) => [f.member.id, ...f.memberIds]), ...soloPick.ids];
   const idKey = [...viewIds, "|", ...bossIds].join(",");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const memberIds = useMemo(() => [...new Set([...viewIds, ...bossIds])], [idKey]);
   const live = useLive(memberIds, useSessions, useSessionStatus);
-  const liveKey = memberIds.map((id) => (live[id] === undefined ? "-" : live[id] ? "1" : "0")).join("");
-  const boss = useMemo(
-    () => bossSnapshot(leadFacts.leads, live, nameOfProject),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [leadFacts.leads, liveKey],
-  );
+  // 看过的汇报离开老板办公室：已看过记录变化时（useAttention 订阅了它）会重渲染，这里每次现算
+  const boss = bossSnapshot(leadFacts.leads, live, nameOfProject, solo.snapshot?.members ?? null, readAcks());
   const bossPending = boss?.members.filter((m) => m.boss === "report" || m.boss === "error").length ?? 0;
   /** 场景与左栏显示的那份快照。 */
   const shown = shared ? solo.snapshot : bossView ? boss : snapshot;
@@ -798,6 +795,11 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
                 scene.current?.focus(id);
               }}
               onOpen={openChat}
+              onDismiss={(id) => {
+                const m = boss?.members.find((x) => x.id === id);
+                if (m?.lastTurn !== undefined) acknowledge(id, m.lastTurn.at);
+                markRead(id);
+              }}
             />
           ) : shared ? (
             <SharedPanel
@@ -1343,19 +1345,24 @@ function InteractionItem({ item, names }: { item: OfficeInteraction; names: Map<
   );
 }
 
-/** 老板办公室左栏：待处理（汇报 / 出错）在前，等组员的在后；💬 打开组长对话。 */
+/**
+ * 老板办公室左栏：待处理（组长与单智能体的汇报 / 出错，等得最久的在前）、等组员的组长；
+ * 💬 打开对话、✓ 知道了（都记为看过，离开老板办公室）。
+ */
 function BossPanel({
   api,
   snapshot,
   selected,
   onPick,
   onOpen,
+  onDismiss,
 }: {
   api: SceneModule | null;
   snapshot: OfficeSnapshot | null;
   selected: string | null;
   onPick: (id: string) => void;
   onOpen: (id: string) => void;
+  onDismiss: (id: string) => void;
 }) {
   if (snapshot === null) return <div className="dso-empty">加载中…</div>;
   const pending = snapshot.members.filter((m) => m.boss !== "waiting");
@@ -1371,7 +1378,9 @@ function BossPanel({
         <span className="dso-card-text">
           <span className="dso-card-name">
             <b>{m.project ?? "项目"}</b>
-            <span className="dso-role-tag">{VENDOR_LABEL[m.vendor]}</span>
+            <span className="dso-role-tag">
+              {m.role === "lead" ? "组长" : "单智能体"} · {VENDOR_LABEL[m.vendor]}
+            </span>
           </span>
           <span className="dso-card-sub dso-ellipsis" title={m.description}>
             {m.description ?? "组长"}
@@ -1385,9 +1394,16 @@ function BossPanel({
           </span>
         </span>
       </button>
-      <button type="button" className="dso-card-chat" title="打开组长对话" onClick={() => onOpen(m.id)}>
-        💬
-      </button>
+      <span className="dso-card-acts">
+        <button type="button" className="dso-card-chat" title="打开对话" onClick={() => onOpen(m.id)}>
+          💬
+        </button>
+        {m.boss !== "waiting" && (
+          <button type="button" className="dso-card-chat" title="知道了（不打开对话，从老板办公室移走）" onClick={() => onDismiss(m.id)}>
+            ✓
+          </button>
+        )}
+      </span>
     </div>
   );
   return (

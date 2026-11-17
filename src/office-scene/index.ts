@@ -255,9 +255,10 @@ const BOSS_QUEUE_FACING = 0.95;
 function bossQueueSpot(k: number): Spot {
   const row = Math.floor(k / 5);
   const i = k % 5;
-  // 往左前方（朝镜头）斜着排：名牌在画面上左右、上下都错开
-  const x = 0.4 - i * 1.2 - row * 2.2;
-  const z = -5.4 + i * 1.9 - row * 0.4;
+  // 朝镜头方向（+z）一个接一个排：按固定机位的角度，每往前一位在画面上左移、下移各约 40px，
+  // 常显的名牌呈阶梯错开不重叠；满 5 人另起一列
+  const x = 0.4 - row * 2.6;
+  const z = -5.4 + i * 2.5;
   return { x, z, facing: BOSS_QUEUE_FACING, approach: [[x, AISLE], [x, z]] };
 }
 /** 等组员的组长在右前方空地踱步（3×3），多出的去休息区。 */
@@ -563,7 +564,8 @@ class Agent {
     const role = document.createElement("span");
     role.className = "dso-role";
     role.style.background = color;
-    role.textContent = ROLE_LABEL[m.roleKind];
+    // 老板办公室里来汇报的单智能体不属于任何团队：标「单智能体」
+    role.textContent = m.boss !== undefined && m.role !== "lead" ? "单智能体" : ROLE_LABEL[m.roleKind];
     const name = document.createElement("span");
     const sub = document.createElement("span");
     sub.className = "dso-sub";
@@ -2103,7 +2105,14 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       const y = ((1 - tmp.y) / 2) * h;
       agent.label.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) translate(-50%,-100%)`;
       agent.label.style.zIndex = String(Math.round((1 - tmp.z) * 1000));
-      const bubble = bubbleOf(agent);
+      // 老板办公室：名牌常显（状态看描边颜色），文字气泡只在悬停 / 选中时显示，免得层层叠住
+      const focused = id === hovered || id === selected || agent.labelHover || (id === lastHovered && t < lastHoveredUntil);
+      const bubble = options.layout === "boss" && !focused ? null : bubbleOf(agent);
+      if (agent.boss !== null) {
+        const ring = agent.boss === "report" ? "#f2b632" : agent.boss === "error" ? "#e04f4f" : "#8fb3ff";
+        if (agent.tag.style.boxShadow.indexOf(ring) < 0 && !agent.tag.style.boxShadow.includes(ring.slice(1)))
+          agent.tag.style.boxShadow = `0 0 0 2px ${ring}, 0 1px 3px rgba(0,0,0,.25)`;
+      }
       if (bubble === null) agent.bubble.style.display = "none";
       else {
         agent.bubble.style.display = "";
