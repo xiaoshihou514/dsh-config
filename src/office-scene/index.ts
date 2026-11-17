@@ -41,6 +41,11 @@ import { slack, slackReset, slackRoutines, type SlackPlace, type SlackWhere } fr
 
 export interface SceneOptions {
   readonly onSelect: (id: string | null) => void;
+  /**
+   * 工位布局：ring = 团队圆桌（组长坐圆心）；rows = 共享办公室的开放式长桌（几排面朝镜头，
+   * 调用方按项目排好成员顺序，同项目坐在一起）。创建后不变。
+   */
+  readonly layout?: "ring" | "rows";
 }
 
 export interface OfficeScene {
@@ -223,6 +228,19 @@ function deskSpot(index: number): Spot {
     approach = [...ENTRY, ...arc(WALK, 0, a + side), onRing(r + 0.9, a + side), ...arc(r + 0.9, a + side, a), [x, z]];
   }
   return { x, z, facing, seat: "chair", approach };
+}
+
+/** 共享办公室：6 列 × 4 排，从后排往前排、从左往右填（最多 24 人）。 */
+const ROW_COLS = [-7.9, -5.65, -3.4, -1.15, 1.1, 3.35] as const;
+const ROW_ZS = [-6.6, -3.7, -0.8, 2.1] as const;
+export const ROW_SEATS = ROW_COLS.length * ROW_ZS.length;
+
+function rowSpot(index: number): Spot {
+  const k = index % ROW_SEATS;
+  const x = ROW_COLS[k % ROW_COLS.length]!;
+  const z = ROW_ZS[Math.floor(k / ROW_COLS.length)]!;
+  // 面朝镜头（+z），桌子在身前；从身后的走道进出
+  return { x, z, facing: 0, seat: "chair", approach: [[x, AISLE], [x - 1.1, AISLE], [x - 1.1, z - 0.9], [x, z]] };
 }
 
 const LEAD_DESK: Spot = {
@@ -445,6 +463,8 @@ class Agent {
   slackPick: string | null | undefined;
   /** 空闲时下次换地方的时刻（场景时钟）。 */
   wanderAt = 0;
+  /** 排式布局里的工位序号（-1 = 圆桌布局）。 */
+  seat = -1;
 
   constructor(
     member: OfficeMember,
@@ -499,10 +519,17 @@ class Agent {
     role.style.background = color;
     role.textContent = ROLE_LABEL[m.roleKind];
     const name = document.createElement("span");
-    name.textContent = m.name;
     const sub = document.createElement("span");
     sub.className = "dso-sub";
-    sub.textContent = `${VENDOR_LABEL[m.vendor]}·${TIER_LABEL[m.tier]}`;
+    if (m.project !== undefined) {
+      // 共享办公室：「角色名·项目名」，副标题是会话标题
+      name.textContent = `${VENDOR_LABEL[m.vendor]}·${m.project}`;
+      const title = m.description ?? "";
+      sub.textContent = title.length > 16 ? `${title.slice(0, 15)}…` : title;
+    } else {
+      name.textContent = m.name;
+      sub.textContent = `${VENDOR_LABEL[m.vendor]}·${TIER_LABEL[m.tier]}`;
+    }
     this.tag.append(role, name, sub);
   }
 
@@ -1539,11 +1566,18 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
       let agent = agents.get(member.id);
       const status = statusOf(member, live);
       if (agent === undefined) {
-        const deskAt = member.role === "lead" ? LEAD_DESK : deskSpot(index);
+        // 共享办公室的人进进出出：优先坐列表位置对应的工位，被占了就坐第一个空位
+        let seat = -1;
+        if (options.layout === "rows" && member.role !== "lead") {
+          const taken = new Set([...agents.values()].map((a) => a.seat));
+          seat = taken.has(index) ? Array.from({ length: ROW_SEATS }, (_, k) => k).find((k) => !taken.has(k)) ?? index : index;
+        }
+        const deskAt = member.role === "lead" ? LEAD_DESK : seat >= 0 ? rowSpot(seat) : deskSpot(index);
         const idleAt = idleSpotFor(member, deskAt);
         const fresh = initialized && member.role !== "lead";
         const start = fresh ? DOOR : status === "inactive" && member.role !== "lead" ? idleAt : deskAt;
         agent = new Agent(member, deskAt, idleAt, start, office, labels, (id) => options.onSelect(id));
+        agent.seat = seat;
         if (member.role === "lead") agent.callAt = LEAD_CALL;
         agent.inactiveSince = status === "inactive" && !fresh ? -100 : now;
         agents.set(member.id, agent);
@@ -1554,9 +1588,10 @@ export function createOfficeScene(container: HTMLElement, options: SceneOptions)
         agent.member.roleKind !== member.roleKind
       ) {
         // 模型或岗位变化：重建角色。
-        const { deskAt, idleAt, at } = agent;
+        const { deskAt, idleAt, at, seat } = agent;
         agent.dispose();
         agent = new Agent(member, deskAt, idleAt, at, office, labels, (id) => options.onSelect(id));
+        agent.seat = seat;
         if (member.role === "lead") agent.callAt = LEAD_CALL;
         agents.set(member.id, agent);
         navDirty = true;

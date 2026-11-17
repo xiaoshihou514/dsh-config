@@ -15,6 +15,7 @@ import type { OfficeInteraction, OfficeMember, OfficeSnapshot, RoleKind, Tier, V
 import { USER_ID } from "../../office/types.ts";
 import { currentSession, getOffice, setOffice, useOffice } from "./store.ts";
 import { CSS } from "./styles.ts";
+import { useSoloPick, useSoloSnapshot } from "./shared.ts";
 
 type Selector<T> = (selector: (state: any) => T) => T;
 
@@ -23,7 +24,7 @@ export interface SceneModule {
   propIcon(role: RoleKind, size?: number): string;
   createOfficeScene(
     container: HTMLElement,
-    options: { onSelect(id: string | null): void },
+    options: { onSelect(id: string | null): void; layout?: "ring" | "rows" },
   ): {
     update(snapshot: OfficeSnapshot, live: Record<string, boolean>): void;
     select(id: string | null): void;
@@ -384,7 +385,12 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const [sceneError, setSceneError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<"office" | "gallery">("office");
+  /** 看哪个办公室：当前团队，或所有项目单智能体的共享办公室。 */
+  const [view, setView] = useState<"team" | "shared">("team");
+  const shared = view === "shared";
   const [api, setApi] = useState<SceneModule | null>(null);
+  /** 场景每重建一次加一：新场景要立刻同步模式、暂停、提醒与快照（setApi 传同一个模块不会触发重渲染）。 */
+  const [sceneVersion, setSceneVersion] = useState(0);
   const sceneHost = useRef<HTMLDivElement>(null);
   const scene = useRef<ReturnType<SceneModule["createOfficeScene"]> | null>(null);
   const pollNow = useRef<() => void>(() => {});
@@ -403,7 +409,15 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
     if (leadId !== null && leadId !== storedLead) setOffice({ lead: leadId });
   }, [storedLead, leadId]);
 
-  const memberIds = useMemo(() => snapshot?.members.map((m) => m.id) ?? [], [snapshot]);
+  // 共享办公室：组建过团队的会话都算组长（刚组建还没招人的也排除）
+  const leads = useMemo(() => new Set((teams ?? []).flatMap((t) => [t.leadId, ...(t.replaces ?? [])])), [teams]);
+  const soloPick = useSoloPick(shared, useSessions as never, leads);
+  const nameOfProject = useProjectName();
+  const solo = useSoloSnapshot(shared, soloPick.ids, nameOfProject);
+  /** 场景与左栏显示的那份快照。 */
+  const shown = shared ? solo.snapshot : snapshot;
+
+  const memberIds = useMemo(() => shown?.members.map((m) => m.id) ?? [], [shown]);
   const live = useLive(memberIds, useSessions, useSessionStatus);
 
   useEffect(() => {
@@ -411,6 +425,9 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
     setSelected(null);
     setError(null);
   }, [leadId]);
+  useEffect(() => setSelected(null), [view]);
+  /** 场景随「团队 / 共享办公室」重建（布局不同）。 */
+  const sceneKey = shared ? "__shared__" : leadId;
 
   // 轮询快照
   useEffect(() => {
@@ -458,15 +475,19 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
     };
   }, [leadId]);
 
-  // 场景（切换团队时重建）
+  // 场景（切换团队、切到共享办公室时重建）
   useEffect(() => {
-    if (leadId === null) return;
+    if (sceneKey === null) return;
     let disposed = false;
     loadScene()
       .then((module) => {
         if (disposed || sceneHost.current === null) return;
-        scene.current = module.createOfficeScene(sceneHost.current, { onSelect: (id) => setSelected(id) });
+        scene.current = module.createOfficeScene(sceneHost.current, {
+          onSelect: (id) => setSelected(id),
+          layout: sceneKey === "__shared__" ? "rows" : "ring",
+        });
         setApi(module);
+        setSceneVersion((v) => v + 1);
       })
       .catch((reason) => setSceneError(String(reason)));
     return () => {
@@ -474,29 +495,40 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
       scene.current?.dispose();
       scene.current = null;
     };
-  }, [leadId]);
+  }, [sceneKey]);
 
-  const nameOf = useProjectName();
+  const nameOf = nameOfProject;
   const displayName = snapshot === null ? undefined : nameOf(snapshot.cwd);
   useEffect(() => {
-    if (snapshot !== null) scene.current?.update({ ...snapshot, projectName: displayName }, live);
+    if (shown !== null) scene.current?.update(shared ? shown : { ...shown, projectName: displayName }, live);
   });
-  useEffect(() => scene.current?.select(selected), [selected]);
-  useEffect(() => scene.current?.setMode(mode), [mode, api, leadId]);
-  useEffect(() => scene.current?.setPaused?.(chatOpen), [chatOpen, api, leadId]);
+  useEffect(() => scene.current?.select(selected), [selected, sceneVersion]);
+  useEffect(() => scene.current?.setMode(mode), [mode, sceneVersion]);
+  useEffect(() => scene.current?.setPaused?.(chatOpen), [chatOpen, sceneVersion]);
 
-  const members = snapshot?.members ?? [];
+  const members = shown?.members ?? [];
   const isRunning = (m: OfficeMember) => live[m.id] ?? m.busy;
   const running = members.filter(isRunning).length;
   const member = members.find((m) => m.id === selected);
-  const attention = useAttention(snapshot, leadId, running, chatOpen);
+  // 醒目提醒只看当前团队（共享办公室里不打扰）
+  const teamRunning = shared ? (snapshot?.members ?? []).filter((m) => m.busy).length : running;
+  const attention = useAttention(snapshot, leadId, teamRunning, chatOpen);
   const unreadOf = useUnread(snapshot, chatOpen);
   const unread = (id: string) => unreadOf(id) || (attention !== null && id === attention.leadId);
   useEffect(
-    () => scene.current?.setAttention?.(attention?.leadId ?? null, attention?.kind),
-    [attention?.leadId, attention?.kind, attention?.at, api, leadId],
+    () => scene.current?.setAttention?.(shared ? null : (attention?.leadId ?? null), attention?.kind),
+    [attention?.leadId, attention?.kind, attention?.at, sceneVersion, shared],
   );
   const openChat = (id: string) => {
+    if (shared) {
+      // 单智能体：直接打开它自己的会话
+      setOffice({ chatOpen: true });
+      setTimeout(() => {
+        officeHost.current?.showConversation();
+        if (currentSession().sessionId !== id) officeHost.current?.openSession(id, id);
+      }, 0);
+      return;
+    }
     if (leadId === null) return;
     // 打开组长对话就算看过这次汇报
     if (id === leadId && attention !== null) acknowledge(leadId, attention.at);
@@ -511,6 +543,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
     }, 0);
   };
   const pickTeam = (id: string) => {
+    setView("team");
     setOffice({ lead: id });
     officeHost.current?.openSession(id, id);
   };
@@ -532,6 +565,14 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
 
   const notice = sceneError
     ? `场景加载失败：${sceneError}`
+    : shared
+      ? solo.error
+        ? `读取共享办公室失败：${solo.error}`
+        : solo.snapshot === null
+          ? "正在进入共享办公室…"
+          : solo.snapshot.members.length === 0
+            ? "共享办公室暂时没人：正在运行、或 24 小时内活跃过的单智能体才会入座"
+            : null
     : error
       ? `读取团队失败：${error}`
       : leadId === null
@@ -582,25 +623,49 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
             reloadTeams();
           }}
         />
-        <div className="dso-stats">
-          <Stat label="成员" value={members.length} />
-          <Stat label="工作中" value={running} tone={running > 0 ? "good" : undefined} />
-          <Stat label="交流" value={snapshot?.interactions.length ?? 0} />
-        </div>
+        {shared ? (
+          <div className="dso-stats">
+            <Stat label="在座" value={members.length} />
+            <Stat label="工作中" value={running} tone={running > 0 ? "good" : undefined} />
+            {soloPick.overflow > 0 && <Stat label="人未入座（满 24 人）" value={`+${soloPick.overflow}`} />}
+          </div>
+        ) : (
+          <div className="dso-stats">
+            <Stat label="成员" value={members.length} />
+            <Stat label="工作中" value={running} tone={running > 0 ? "good" : undefined} />
+            <Stat label="交流" value={snapshot?.interactions.length ?? 0} />
+          </div>
+        )}
         <div style={{ flex: 1 }} />
         <div className="dso-tabs" role="tablist">
-          {(["office", "gallery"] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              role="tab"
-              aria-selected={mode === value}
-              className={mode === value ? "on" : ""}
-              onClick={() => setMode(value)}
-            >
-              {value === "office" ? "办公室" : "角色图鉴"}
-            </button>
-          ))}
+          {(
+            [
+              ["team", "办公室"],
+              ["shared", "共享办公室"],
+              ["gallery", "角色图鉴"],
+            ] as const
+          ).map(([value, label]) => {
+            const on = value === "gallery" ? mode === "gallery" : mode === "office" && view === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                role="tab"
+                aria-selected={on}
+                className={on ? "on" : ""}
+                title={value === "shared" ? "所有项目的单智能体：正在运行或 24 小时内活跃的入座" : undefined}
+                onClick={() => {
+                  if (value === "gallery") setMode("gallery");
+                  else {
+                    setView(value);
+                    setMode("office");
+                  }
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
         <button type="button" className="dso-btn ghost dso-hud-entry" title="查看词元用量与费用" onClick={() => setUsageOpen(true)}>
           📊 用量
@@ -627,7 +692,21 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
       </header>
       <div className="dso-body">
         <aside className="dso-side">
-          {member !== undefined && snapshot !== null ? (
+          {shared ? (
+            <SharedPanel
+              api={api}
+              snapshot={solo.snapshot}
+              overflow={soloPick.overflow}
+              selected={selected}
+              isRunning={isRunning}
+              onPick={(id) => {
+                setSelected(id);
+                setMode("office");
+                scene.current?.focus(id);
+              }}
+              onOpen={openChat}
+            />
+          ) : member !== undefined && snapshot !== null ? (
             <MemberPanel
               api={api}
               member={member}
@@ -665,7 +744,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
         <main className="dso-stage">
           <div ref={sceneHost} className="dso-scene" />
           {notice && <div className="dso-notice">{notice}</div>}
-          {mode === "office" && attention !== null && (
+          {mode === "office" && !shared && attention !== null && (
             <AttentionBanner
               attention={attention}
               onOpen={() => openChat(attention.leadId)}
@@ -1137,6 +1216,84 @@ function InteractionItem({ item, names }: { item: OfficeInteraction; names: Map<
       </div>
       {open ? <pre className="dso-log-full">{item.text}</pre> : <div className="dso-log-preview">{item.preview}</div>}
     </li>
+  );
+}
+
+/** 共享办公室左栏：按项目分组的单智能体，点卡片定位、💬 打开它的对话。 */
+function SharedPanel({
+  api,
+  snapshot,
+  overflow,
+  selected,
+  isRunning,
+  onPick,
+  onOpen,
+}: {
+  api: SceneModule | null;
+  snapshot: OfficeSnapshot | null;
+  overflow: number;
+  selected: string | null;
+  isRunning: (m: OfficeMember) => boolean;
+  onPick: (id: string) => void;
+  onOpen: (id: string) => void;
+}) {
+  if (snapshot === null) return <div className="dso-empty">加载中…</div>;
+  const groups = new Map<string, OfficeMember[]>();
+  for (const m of snapshot.members) {
+    const key = m.project ?? "未知项目";
+    groups.set(key, [...(groups.get(key) ?? []), m]);
+  }
+  return (
+    <>
+      <h3 className="dso-section">
+        <span>共享办公室</span>
+        <small>{snapshot.members.length}</small>
+      </h3>
+      <p className="dso-shared-hint">
+        所有项目的单智能体：正在运行、或 24 小时内活跃过的入座{overflow > 0 ? `（满 24 人，另有 ${overflow} 人未入座）` : ""}。
+      </p>
+      {snapshot.members.length === 0 && <div className="dso-empty">暂时没人</div>}
+      {[...groups].map(([project, list]) => (
+        <div key={project}>
+          <h3 className="dso-section dso-shared-project">
+            <span>📁 {project}</span>
+            <small>{list.length}</small>
+          </h3>
+          <div className="dso-roster">
+            {list.map((m) => {
+              const st = statusOf(m, isRunning(m));
+              return (
+                <div
+                  key={m.id}
+                  className={`dso-card ${st.tone}${m.id === selected ? " sel" : ""}`}
+                  style={{ ["--role" as string]: ROLE_COLOR[m.roleKind] }}
+                >
+                  <button type="button" className="dso-card-main" onClick={() => onPick(m.id)}>
+                    <Avatar api={api} member={m} size={44} />
+                    <span className="dso-card-text">
+                      <span className="dso-card-name">
+                        <b>{VENDOR_LABEL[m.vendor]}</b>
+                        <span className="dso-role-tag">{m.tier === "flagship" ? "★ 旗舰" : "⚡ 快速"}</span>
+                      </span>
+                      <span className="dso-card-sub dso-ellipsis" title={m.description}>
+                        {m.description ?? m.name}
+                      </span>
+                      <span className="dso-card-status">
+                        <span className="dso-led" />
+                        <span className="dso-ellipsis">{isRunning(m) && m.current ? m.current.label : st.text}</span>
+                      </span>
+                    </span>
+                  </button>
+                  <button type="button" className="dso-card-chat" title="在右侧打开对话" onClick={() => onOpen(m.id)}>
+                    💬
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </>
   );
 }
 

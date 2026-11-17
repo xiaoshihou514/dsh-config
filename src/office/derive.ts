@@ -542,47 +542,53 @@ export interface AssembleInput {
   readonly interactionLimit?: number | undefined;
 }
 
+/** 成员的名册信息（摘要之外的部分）。 */
+export interface MemberBase {
+  readonly id: string;
+  readonly name: string;
+  readonly role: "lead" | "teammate";
+  readonly description?: string | undefined;
+  readonly phase: OfficeMember["phase"];
+  readonly error?: string | undefined;
+  readonly joinedAt?: number | undefined;
+}
+
+/**
+ * 摘要 + 名册信息 → 成员（模型认厂商 / 档位，名字与描述认岗位）。
+ * @param loaded - 会话已加载在内存（未加载的不可能在跑）。
+ */
+export function memberFromDigest(digest: SessionDigest | undefined, base: MemberBase, loaded: boolean): OfficeMember {
+  const busy = digest !== undefined && digest.open && loaded;
+  return {
+    ...base,
+    provider: digest?.provider,
+    model: digest?.model,
+    reasoningEffort: digest?.reasoningEffort,
+    vendor: vendorOf(digest?.provider, digest?.model),
+    tier: tierOf(digest?.model),
+    roleKind: roleKindOf(base.role, base.name, base.description),
+    busy,
+    current: busy ? digest?.current : undefined,
+    lastActiveAt: digest?.lastActiveAt,
+    lastTurn: digest?.lastTurn,
+    stats: digest?.stats ?? {
+      turns: 0,
+      steps: 0,
+      toolCalls: 0,
+      sent: 0,
+      received: 0,
+      outputTokens: 0,
+    },
+  };
+}
+
 export function assembleSnapshot(input: AssembleInput): OfficeSnapshot {
   const { leadId, lead, members, loaded } = input;
   const names = new Map<string, string>([[leadId, "lead"]]);
   for (const entry of lead.team) names.set(entry.id, entry.name);
 
-  const memberOf = (
-    digest: SessionDigest | undefined,
-    base: {
-      id: string;
-      name: string;
-      role: "lead" | "teammate";
-      description?: string | undefined;
-      phase: OfficeMember["phase"];
-      error?: string | undefined;
-      joinedAt?: number | undefined;
-    },
-  ): OfficeMember => {
-    const busy = digest !== undefined && digest.open && loaded.has(base.id);
-    return {
-      ...base,
-      provider: digest?.provider,
-      model: digest?.model,
-      reasoningEffort: digest?.reasoningEffort,
-      vendor: vendorOf(digest?.provider, digest?.model),
-      tier: tierOf(digest?.model),
-      roleKind: roleKindOf(base.role, base.name, base.description),
-      busy,
-      current: busy ? digest?.current : undefined,
-      lastActiveAt: digest?.lastActiveAt,
-      lastTurn: digest?.lastTurn,
-      stats: digest?.stats ?? {
-        turns: 0,
-        steps: 0,
-        toolCalls: 0,
-        sent: 0,
-        received: 0,
-        outputTokens: 0,
-      },
-    };
-  };
-
+  const memberOf = (digest: SessionDigest | undefined, base: MemberBase): OfficeMember =>
+    memberFromDigest(digest, base, loaded.has(base.id));
   const roster: OfficeMember[] = [
     memberOf(lead, {
       id: leadId,

@@ -10,6 +10,8 @@
  *   （`replaces` 列出被它取代的旧 Lead，前端据此把记住的旧团队换成新的），供全屏办公室切换项目。
  * - `GET /dsh-config/office/models`、`POST /dsh-config/office/model`：手动给成员换模型（见
  *   `office/member-model.ts`）。
+ * - `GET /dsh-config/office/solo?ids=a,b,…`：共享办公室的单智能体（浏览器按会话列表选好入选者，
+ *   这里只处理传入的几个，按存储版本缓存摘要）。带 ETag，轮询时未变化返回 304。
  * - `GET /dsh-config/office/scene.js`：按需加载的 three.js 体素场景（ESM），带
  *   ETag（文件修改时间），浏览器协商缓存；重建后刷新即可生效。
  */
@@ -23,6 +25,7 @@ import type { WebRoute } from "@deepseek-ai/dsh-host-webserver";
 import {
   assembleSnapshot,
   digestSession,
+  memberFromDigest,
   type LooseEvent,
   type SessionDigest,
 } from "./office/derive.ts";
@@ -37,6 +40,9 @@ const ROUTE = "/dsh-config/office";
 const SCENE_ROUTE = "/dsh-config/office/scene.js";
 const OVERRIDE_ROUTE = "/dsh-config/office/override";
 const TEAMS_ROUTE = "/dsh-config/office/teams";
+const SOLO_ROUTE = "/dsh-config/office/solo";
+/** 共享办公室一次最多处理的会话数（浏览器端截断到 24 人，这里留余量）。 */
+const SOLO_LIMIT = 40;
 
 /** 成员的手动指定；字段缺省 = 自动识别。 */
 interface Override {
@@ -387,6 +393,62 @@ export function apply(ctx: Context): void {
     },
   };
 
+  /**
+   * 共享办公室：入选的单智能体由浏览器从原生会话列表筛好（顶层、非团队、在跑或 24 小时内活跃），
+   * 这里只给每个人补模型、当前动作、最近一轮——不枚举会话，不做全量扫描。
+   */
+  const soloRoute: WebRoute = {
+    kind: "exact",
+    path: SOLO_ROUTE,
+    handler: async (request, response) => {
+      if (request.headers[HEADER] !== HEADER_VALUE) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (request.method !== "GET") {
+        response.writeHead(405).end();
+        return;
+      }
+      const raw = new URL(request.url ?? "/", "http://x").searchParams.get("ids") ?? "";
+      const ids = [...new Set(raw.split(",").map((id) => id.trim()).filter((id) => id.length > 0 && id.length <= 200))].slice(
+        0,
+        SOLO_LIMIT,
+      );
+      try {
+        const results = await Promise.all(ids.map(async (id) => ({ id, result: await digestOf(id, undefined) })));
+        await overridesLoaded;
+        const keys = results.map(({ id, result }) => `${id}=${result?.key ?? "-"}${result?.loaded === true ? "+" : ""}`);
+        const etag = `"${hash(`solo|${keys.join("|")}|o${overridesVersion}`)}"`;
+        if (request.headers["if-none-match"] === etag) {
+          response.writeHead(304, { etag }).end();
+          return;
+        }
+        const members = results.flatMap(({ id, result }) => {
+          if (result === undefined) return [];
+          const title = result.digest.title;
+          const member = memberFromDigest(
+            result.digest,
+            { id, name: title ?? id.slice(0, 8), role: "teammate", description: title, phase: "active", joinedAt: result.digest.firstAt },
+            result.loaded,
+          );
+          return [{ ...member, cwd: result.cwd }];
+        });
+        const snapshot: OfficeSnapshot = {
+          leadId: "",
+          generatedAt: Date.now(),
+          members,
+          interactions: [],
+          tasks: [],
+          taskSource: "none",
+        };
+        respondJson(response, 200, { ok: true, members: applyOverrides(snapshot, overrides).members }, etag);
+      } catch (error) {
+        logger.warn("生成共享办公室失败：%s", String(error));
+        respondJson(response, 500, { ok: false, error: String(error) });
+      }
+    },
+  };
+
   const sceneFile = fileURLToPath(new URL("./office-scene.js", import.meta.url));
   const sceneRoute: WebRoute = {
     kind: "exact",
@@ -423,6 +485,7 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.webServer.register(sceneRoute), "dsh-config: agent office scene");
   ctx.effect(() => ctx.webServer.register(overrideRoute), "dsh-config: agent office overrides");
   ctx.effect(() => ctx.webServer.register(teamsRoute), "dsh-config: agent office teams");
+  ctx.effect(() => ctx.webServer.register(soloRoute), "dsh-config: agent office solo");
   registerMemberModelRoutes(ctx, logger);
 }
 

@@ -8,11 +8,19 @@ Agent Teams 的 3D 可视化，以「办公室模式」呈现：侧边栏左下�
 
 | 文件 | 职责 |
 |---|---|
-| `src/agent-office.ts` | 宿主插件：`GET /dsh-config/office?lead=`（需 `x-dsh-config: agent-office`，带 ETag）、`POST /dsh-config/office/override`（手动指定岗位 / 人设 / 档位，存 `$DSH_HOME/dsh-config/office-overrides.json`）、`GET /dsh-config/office/teams`（组建过团队的会话列表，按最近活跃排序）、`GET /dsh-config/office/scene.js`（ETag 协商缓存） |
+| `src/agent-office.ts` | 宿主插件：`GET /dsh-config/office?lead=`（需 `x-dsh-config: agent-office`，带 ETag）、`POST /dsh-config/office/override`（手动指定岗位 / 人设 / 档位，存 `$DSH_HOME/dsh-config/office-overrides.json`）、`GET /dsh-config/office/teams`（组建过团队的会话列表，按最近活跃排序）、`GET /dsh-config/office/solo?ids=`（共享办公室入选者的详情）、`GET /dsh-config/office/scene.js`（ETag 协商缓存） |
 | `src/office/derive.ts` | 纯推导：会话事件 → 成员活动、当前动作、交流、任务（有单测） |
 | `src/office/classify.ts` | 模型 → 厂商 / 档位，名字 + 描述 → 岗位；改档位规则看 `FAST_PATTERNS` / `FLAGSHIP_PATTERNS` |
 | `src/office-scene/` | three.js 场景（独立 ESM `lib/office-scene.js`，进入办公室时才加载）；`slack.ts` 是空闲角色的摸鱼动作 |
 | `src/client/office/` | 办公室模式：`OfficeShell.tsx`（覆盖层、HUD、项目面板、队伍 / 详情 / 交流）、`store.ts`（持久状态）、`styles.ts`（样式）；`SessionAvatar.tsx` 是对话界面的角色头像 |
+
+## 共享办公室（单智能体）
+
+- 入口：HUD 页签「办公室 / 共享办公室 / 角色图鉴」。所有项目的单智能体（非团队会话）坐一个大办公室，与团队办公室并存，切换时场景按新布局重建。
+- 入选（`client/office/shared.ts` 的 `pickSolo`，浏览器端，零扫描）：原生会话列表（`useSessions`）里顶层、非子智能体、非空白，且不是组长——双重排除：有子会话的，以及在 `/office/teams` 团队列表里的（含 `replaces`，刚组建还没招人的组长也排除）；并且正在运行或 24 小时内有活动（`updatedAt`，秒 / 毫秒都认）。在跑的优先，其次按最近活动；最多 24 人，多出的只在 HUD 和左栏提示人数。「24 小时」边界每分钟重算。
+- 详情：`GET /dsh-config/office/solo?ids=a,b,…`（最多 40 个）只为入选者补模型、当前动作、最近一轮：逐个走 `digestOf`（已加载读内存、未加载按存储版本缓存摘要），成员由 `derive.ts` 的 `memberFromDigest` 组装（与团队成员同一套厂商 / 档位 / 岗位识别，岗位按会话标题），套用手动指定；带 ETag，浏览器每 3 秒轮询、未变化 304。是否在跑仍以浏览器会话状态为准。
+- 场景：`createOfficeScene(…, { layout: "rows" })` 开放式长桌，6 列 × 4 排（`ROW_COLS` / `ROW_ZS`），从后排往前排、从左往右填，人面朝镜头。浏览器按项目名排好成员顺序，同项目坐在一起；人进进出出时优先坐列表位置对应的工位，被占了就坐第一个空位（`Agent.seat`）。在跑的打字 / 阅读，空闲的照常摸鱼、闲逛。名牌「角色名·项目名」（`OfficeMember.project`），副标题是会话标题。醒目提醒与横幅只在团队办公室出现。
+- 左栏 `SharedPanel`：按项目分组的卡片，点卡片定位，💬 打开它自己的对话（`openSession(id, id)`）。
 
 ## 用量 / 设置入口
 

@@ -109,6 +109,10 @@ export interface OfficeMember {
   readonly detected?: { readonly vendor: Vendor; readonly tier: Tier; readonly roleKind: RoleKind } | undefined;
   /** 哪些字段是手动指定的。 */
   readonly overridden?: { readonly role: boolean; readonly vendor: boolean; readonly tier: boolean } | undefined;
+  /** 共享办公室（单智能体）：会话所在文件夹。 */
+  readonly cwd?: string | undefined;
+  /** 共享办公室（单智能体）：项目显示名；有它时名牌显示「角色名·项目名」。 */
+  readonly project?: string | undefined;
 }
 
 /** 成员之间（含你本人）的一次交流。`from`/`to` 是成员 id，你本人为 `"user"`。 */

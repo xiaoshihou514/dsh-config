@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { roleKindOf, tierOf, vendorOf } from "../src/office/classify.ts";
-import { assembleSnapshot, digestSession, type LooseEvent } from "../src/office/derive.ts";
+import { assembleSnapshot, digestSession, memberFromDigest, type LooseEvent } from "../src/office/derive.ts";
 
 let seq = 0;
 const ev = (type: string, data: unknown, time = 1000 + seq): LooseEvent => ({ type, seq: seq++, time, data });
@@ -112,5 +112,27 @@ describe("成员手动指定", () => {
     expect(out.members[1]!.overridden).toEqual({ role: true, vendor: true, tier: false });
     expect(out.members[0]).toMatchObject({ roleKind: "lead", tier: "fast" });
     expect(out.members[0]!.overridden?.role).toBe(false);
+  });
+});
+
+describe("单智能体成员（共享办公室）", () => {
+  it("按模型认厂商，只有已加载且有未结束步骤时算在跑", () => {
+    seq = 0;
+    const digest = digestSession("S", [
+      ev("request/header", { header: { config: { provider: "deepseek-official", model: "deepseek-flash" } } }),
+      ev("user/message", { content: [{ type: "text", text: "修前端样式" }], source: { kind: "user" } }),
+      ev("step/start", { turn: 1, step: 1 }),
+      ev("tool/call", { callId: "c1", name: "bash", arguments: JSON.stringify({ description: "构建", command: "pnpm build" }) }),
+    ]);
+    const base = { id: "S", name: "修前端样式", role: "teammate" as const, description: "修前端样式", phase: "active" as const };
+    const live = memberFromDigest(digest, base, true);
+    expect(live.vendor).toBe("deepseek");
+    expect(live.tier).toBe("fast");
+    expect(live.roleKind).toBe("frontend");
+    expect(live.busy).toBe(true);
+    expect(live.current?.category).toBe("shell");
+    const cold = memberFromDigest(digest, base, false);
+    expect(cold.busy).toBe(false);
+    expect(cold.current).toBeUndefined();
   });
 });
