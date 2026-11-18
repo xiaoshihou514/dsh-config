@@ -1594,7 +1594,16 @@ function ProviderCards() {
   }, []);
 
   return (
-    <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginTop: 16 }}>
+    <div
+      style={{
+        display: "flex",
+        gap: 16,
+        flexWrap: "nowrap",
+        justifyContent: "space-between",
+        alignItems: "flex-start",
+        marginTop: 16,
+      }}
+    >
       <DeepseekBalanceCard data={deepseek} />
       <ZaiQuotaCard data={zai} />
       <OpencodexQuotaCard data={opencodex} />
@@ -1887,7 +1896,10 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
     )}`,
   ].join("\n");
   return (
-    <CardFrame label={`智谱 GLM${data.level ? ` · ${data.level}` : ""}`}>
+    <CardFrame
+      label={`智谱 GLM${data.level ? ` · ${data.level}` : ""}`}
+      grow="0 1 auto"
+    >
       {layout === null ? (
         <Muted>暂无配额窗口</Muted>
       ) : (
@@ -1952,7 +1964,7 @@ function OpencodexQuotaCard({ data }: { data: OpencodexQuota | null }) {
     );
   };
   return (
-    <CardFrame label="opencodex 限额" grow="1 1 0">
+    <CardFrame label="opencodex 限额" grow="0 1 auto">
       {body()}
     </CardFrame>
   );
@@ -2020,6 +2032,7 @@ function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
   return (
     <CardFrame
       label={`Copilot 订阅${data.plan ? ` · ${copilotPlanLabel(data.plan)}` : ""}`}
+      grow="0 1 auto"
     >
       {windows.length === 0 ? (
         <Muted>额度无限</Muted>
