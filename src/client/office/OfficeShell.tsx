@@ -442,7 +442,12 @@ function useGeometry(on: boolean, chatOpen: boolean): void {
   }, [on, chatOpen]);
 }
 
-export function OfficeOverlay(props: { useSessions?: Selector<unknown>; useSessionStatus?: Selector<unknown> }) {
+export function OfficeOverlay(props: {
+  useSessions?: Selector<unknown>;
+  useSessionStatus?: Selector<unknown>;
+  /** 原生工作区快照（含归档会话集合）。 */
+  useWorkspaces?: Selector<unknown>;
+}) {
   const { on, chatOpen } = useOffice();
   useEffect(ensureCss, []);
   useGeometry(on, chatOpen);
@@ -467,7 +472,15 @@ export function OfficeOverlay(props: { useSessions?: Selector<unknown>; useSessi
 
 // ---------------------------------------------------------------- 主体
 
-function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unknown>; useSessionStatus?: Selector<unknown> }) {
+function Office({
+  useSessions,
+  useSessionStatus,
+  useWorkspaces,
+}: {
+  useSessions?: Selector<unknown>;
+  useSessionStatus?: Selector<unknown>;
+  useWorkspaces?: Selector<unknown>;
+}) {
   const { lead: storedLead, chatOpen } = useOffice();
   const { teams, error: teamsError, reload: reloadTeams } = useTeams();
   const [snapshot, setSnapshot] = useState<OfficeSnapshot | null>(null);
@@ -501,13 +514,25 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   }, [storedLead, leadId]);
 
   // 共享办公室：组建过团队的会话都算组长（刚组建还没招人的也排除）
+  // 归档（侧边栏「删除」）的会话不再出现在任何可视化里：原生工作区快照里有完整的归档集合
+  const archivedKey =
+    (useWorkspaces?.((state: { archivedSessionIds?: readonly string[] } | undefined) =>
+      [...(state?.archivedSessionIds ?? [])].sort().join(","),
+    ) as string | undefined) ?? "";
+  const archived = useMemo(() => new Set(archivedKey === "" ? [] : archivedKey.split(",")), [archivedKey]);
+  /** 没被归档的团队（组长归档了，这个团队就不再显示）。 */
+  const liveTeams = useMemo(() => (teams === null ? null : teams.filter((t) => !archived.has(t.leadId))), [teams, archived]);
   const leads = useMemo(() => new Set((teams ?? []).flatMap((t) => [t.leadId, ...(t.replaces ?? [])])), [teams]);
+  /** 共享办公室要排除的：组长（含被取代的旧组长）与归档的会话。 */
+  const notSolo = useMemo(() => new Set([...leads, ...archived]), [leads, archived]);
+  /** 老板办公室候选：没归档的组长。 */
+  const liveLeads = useMemo(() => new Set((liveTeams ?? []).map((t) => t.leadId)), [liveTeams]);
   // 单智能体一直取（老板办公室的单智能体汇报、HUD 角标要用）；在共享办公室里轮询更勤
-  const soloPick = useSoloPick(true, useSessions as never, leads);
+  const soloPick = useSoloPick(true, useSessions as never, notSolo);
   const nameOfProject = useProjectName();
   const solo = useSoloSnapshot(true, soloPick.ids, nameOfProject, shared);
   // 老板办公室：一直轮询（HUD 角标要用），在老板办公室里更勤
-  const leadPick = useLeadPick(useSessions as never, leads);
+  const leadPick = useLeadPick(useSessions as never, liveLeads);
   const leadFacts = useLeadFacts(leadPick, bossView);
   // 项目忙闲总览（切换器用）：团队与单智能体项目，全在浏览器端算
   // 宿主按内存里的会话判定的「子代理在干活」：浏览器的会话状态只知道父会话自己停了，这里并进来
@@ -517,7 +542,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
     ...(leadFacts.leads ?? []).flatMap((f) => f.delegatingIds ?? []),
   ];
   const hostKey = hostDelegating.sort().join(",");
-  const activity = useProjectActivity(useSessions as never, teams ?? [], soloPick.ids, hostKey === "" ? [] : hostKey.split(","));
+  const activity = useProjectActivity(useSessions as never, liveTeams ?? [], soloPick.ids, hostKey === "" ? [] : hostKey.split(","));
   /** 从切换器点了某个单智能体项目：切到共享办公室后选中它。 */
   const pendingSelect = useRef<string | null>(null);
 
@@ -545,7 +570,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
   const bossRaw = bossSnapshot(leadFacts.leads, live, nameOfProject, solo.snapshot?.members ?? null, readAcks());
   // 老板办公室还要看「哪些组在干活」：复用项目总览的忙闲（整棵子代理树），屋里已有的组长不重复列
   const working = workingProjects(
-    teams ?? [],
+    liveTeams ?? [],
     activity.teams,
     activity.soloProjects,
     new Set((bossRaw?.members ?? []).map((m) => m.id)),
@@ -775,7 +800,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
             <kbd>Esc</kbd>
           </button>
           <ProjectPicker
-            teams={teams}
+            teams={liveTeams}
             teamsError={teamsError}
             leadId={leadId}
             current={snapshot}
@@ -798,7 +823,7 @@ function Office({ useSessions, useSessionStatus }: { useSessions?: Selector<unkn
           <span>智能体办公室</span>
         </div>
         <ProjectPicker
-          teams={teams}
+          teams={liveTeams}
           teamsError={teamsError}
           leadId={leadId}
           current={snapshot}

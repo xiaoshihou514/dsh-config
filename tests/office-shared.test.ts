@@ -40,6 +40,11 @@ describe("共享办公室入选", () => {
     expect(pickSolo(state, new Set(), NOW).ids).toEqual(["solo"]);
   });
 
+  it("归档（侧边栏删除）的会话随排除集合一起不入选", () => {
+    const state = list({ gone: { updatedAt: NOW }, kept: { updatedAt: NOW - HOUR } });
+    expect(pickSolo(state, new Set(["gone"]), NOW).ids).toEqual(["kept"]);
+  });
+
   it("在跑的优先，其次最近活跃；超出座位数只计数", () => {
     const rows: Record<string, SessionRowLike> = {};
     for (let i = 0; i < SOLO_CAP + 3; i += 1) rows[`s${i}`] = { updatedAt: NOW - i * 1000 };
