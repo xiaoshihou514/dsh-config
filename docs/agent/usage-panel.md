@@ -59,4 +59,4 @@ pnpm run build   # 生成 lib/（Host ESM + 浏览器 client.js）
 pnpm run check   # tsc --noEmit
 ```
 
-web profile 通过 `link:` 安装本 checkout；重建 `lib/client.js` 后刷新页面即可生效（bundle 按请求从磁盘读取，无需重启服务）。
+web profile 通过 `link:` 安装本 checkout。client bundle 的真实机制（dsh-client-modules + dsh-client-hmr）：bundle 内容在宿主内存中持有**一份缓冲**（首次 GET 时读盘），靠 client-hmr 每 500ms 对文件 mtime/ctime/size 轮询，变化时经 `clientModules.rebuilt()` 重读重组，combo URL 带 rev 参数自动失效浏览器缓存——正常情况下重建后刷新页面即可生效，无需重启服务；但 assets 目录才是真正按请求读盘，且若 HMR 轮询因异常停摆（`pollWatches` 的 publish 在 try 之外），后续构建需要重启 dsh 才能生效。
