@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -1710,8 +1711,10 @@ export interface RingWindow {
   used?: number;
   /** 窗口总量。 */
   total?: number;
-  /** 附加说明（如 cursor 的附加窗口小字），并入悬停提示。 */
+  /** 附加说明（如 cursor 的附加窗口、智谱峰谷），并入悬停提示。 */
   extraNote?: string;
+  /** 接口未下发、仅为保持双环形态补的占位窗口。 */
+  missing?: boolean;
 }
 
 export interface RingLayout {
@@ -1746,8 +1749,14 @@ function ringColor(percent: number): string {
   return "var(--dsw-alias-state-success-primary)";
 }
 
-/** 单窗口的悬停提示（测试出口）：指标名 + 已用/总量 + 重置时间。 */
+/**
+ * 单窗口的悬停提示（测试出口），逐行：指标名 / 已用（/总量）/ 重置时间 /
+ * 附加说明。浮窗首行加粗作标题。
+ */
 export function windowTitle(window: RingWindow): string {
+  const extra = window.extraNote ? `\n${window.extraNote}` : "";
+  if (window.missing === true)
+    return `${window.label}\n接口未下发该窗口（按 0% 占位）${extra}`;
   const used =
     typeof window.used === "number" &&
     typeof window.total === "number" &&
@@ -1756,153 +1765,241 @@ export function windowTitle(window: RingWindow): string {
       : `已用 ${Math.round(window.percent)}%`;
   const reset =
     window.resetAt > 0
-      ? `重置 ${countdown(window.resetAt - Date.now())}后`
+      ? `${countdown(window.resetAt - Date.now())}后重置`
       : "重置时间未知";
-  return `${window.label}：${used} · ${reset}${window.extraNote ? `\n${window.extraNote}` : ""}`;
+  return `${window.label}\n${used}\n${reset}${extra}`;
 }
 
 /**
- * 半圆弧路径：上下两段在左右两端各留一点竖向间隙，不贴在一起。
- * 端点取 ±10°（水平线上下 38·sin10° ≈ 6.6）。
+ * 半圆弧路径：上下两段在左右两端各留竖向间隙。端点取 ±12°（水平线
+ * 上下 38·sin12° ≈ 7.9），扣掉圆头线帽各 4.5 后仍有约 6.8 单位
+ * （72px 渲染时约 5px）的净间隙；底轨同样分两段画，间隙不会被底轨填平。
  */
-export const RING_TOP_ARC = "M 12.6 43.4 A 38 38 0 0 1 87.4 43.4";
-export const RING_BOTTOM_ARC = "M 12.6 56.6 A 38 38 0 0 0 87.4 56.6";
+export const RING_TOP_ARC = "M 12.83 42.1 A 38 38 0 0 1 87.17 42.1";
+export const RING_BOTTOM_ARC = "M 12.83 57.9 A 38 38 0 0 0 87.17 57.9";
+
+/** 悬停命中的环带范围（viewBox 单位，环心在 50,50，弧线半径 38、粗 9）。 */
+export const RING_HIT_INNER = 26;
+export const RING_HIT_OUTER = 55;
+
+/**
+ * 悬停命中判定（测试出口）：光标相对圆环中心的像素偏移 + 渲染尺寸 →
+ * 命中上半环 / 下半环 / 不命中（环心数字区与环外）。整环时恒为 bottom。
+ */
+export function ringHit(
+  dx: number,
+  dy: number,
+  size: number,
+  hasTop: boolean,
+): "top" | "bottom" | null {
+  const distance = Math.hypot(dx, dy) * (100 / size);
+  if (distance < RING_HIT_INNER || distance > RING_HIT_OUTER) return null;
+  return hasTop && dy < 0 ? "top" : "bottom";
+}
+
+/** 灰环占位（读取中 / 失败 / 未配置）：中心短词 + 悬停说明。 */
+export interface RingPlaceholder {
+  center: string;
+  tip: string;
+}
+
+const LOADING_RING: RingPlaceholder = { center: "读取中", tip: "正在读取配额…" };
+
+function failedRing(
+  reason: string | undefined,
+  unconfigured: string,
+): RingPlaceholder {
+  return reason === "unconfigured"
+    ? { center: "未配置", tip: unconfigured }
+    : { center: "不可用", tip: `读取失败（${reason ?? "未知原因"}）` };
+}
+
+/**
+ * 跟随光标的浮窗：portal 到 body（逃出弹窗 overflow 裁剪与任何变换
+ * 祖先），zIndex 1100 盖过用量弹窗（1000）；贴近视口右/下边时翻到光标另一侧。
+ */
+function RingTip({ text, x, y }: { text: string; x: number; y: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (element === null) return;
+    const width = element.offsetWidth;
+    const height = element.offsetHeight;
+    let left = x + 14;
+    let top = y + 16;
+    if (left + width > window.innerWidth - 8)
+      left = Math.max(8, x - 14 - width);
+    if (top + height > window.innerHeight - 8)
+      top = Math.max(8, y - 12 - height);
+    element.style.left = `${left}px`;
+    element.style.top = `${top}px`;
+  }, [text, x, y]);
+  return createPortal(
+    <div
+      ref={ref}
+      role="tooltip"
+      style={{
+        position: "fixed",
+        left: x + 14,
+        top: y + 16,
+        zIndex: 1100,
+        // 定宽于内容：贴近视口右缘时 fixed 元素会被压窄换行，量出的宽度
+        // 不准就翻转不了。
+        width: "max-content",
+        maxWidth: 300,
+        boxSizing: "border-box",
+        padding: "7px 10px",
+        borderRadius: 8,
+        border: "1px solid var(--dsw-alias-border-inverted)",
+        background: "var(--dsw-alias-bg-layer-2)",
+        boxShadow: "var(--dsw-shadow-lv3)",
+        color: "var(--dsw-alias-label-primary)",
+        fontSize: 12,
+        lineHeight: 1.6,
+        whiteSpace: "pre-line",
+        pointerEvents: "none",
+        textAlign: "left",
+      }}
+    >
+      <div style={{ fontWeight: 600 }}>{text.split("\n")[0]}</div>
+      {text.split("\n").slice(1).join("\n")}
+    </div>,
+    document.body,
+  );
+}
 
 function QuotaRing({
   windows,
   size = RING_SIZE,
-  unavailable,
   note,
-  badge,
-  badgeTitle,
+  placeholder,
+  centerColor,
 }: {
   windows: readonly RingWindow[];
   size?: number;
-  unavailable?: boolean;
-  /** 环下最简标注（供应商名或窗口缩写），不再放其他文字。 */
-  note?: string;
-  /** 中心数字旁的极简高峰记号（如 ▲ 高峰 / ▽ 闲时），悬停看说明。 */
-  badge?: string;
-  /** 高峰记号的悬停说明。 */
-  badgeTitle?: string;
+  /** 环下最简标注（供应商名），不再放其他文字。 */
+  note: string;
+  /** 灰环占位：读取中 / 失败 / 未配置 / 无数据。 */
+  placeholder?: RingPlaceholder;
+  /** 中心数字颜色（智谱用它表示峰谷）；默认常规文字色。 */
+  centerColor?: string;
 }) {
-  const layout = unavailable ? null : ringLayout(windows);
-  // 自定义悬停浮窗：跟随光标、立即可见（原生 title 延迟长且要精确落在
-  // 细弧线上，基本看不到）。命中判定做在整个 svg 上（极坐标：距圆心
-  // 15-55 视为环带），按上下半区自动选对应指标——弧线只有约 6.5px 粗，
-  // 逐弧监听几乎无法命中。
+  const layout = placeholder === undefined ? ringLayout(windows) : null;
+  const shown: RingPlaceholder | undefined =
+    placeholder ??
+    (layout === null ? { center: "—", tip: "暂无配额数据" } : undefined);
   const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(
     null,
   );
-  const hoverTip = (text: string) => (event: ReactMouseEvent) => {
-    setTip({ text, x: event.clientX + 14, y: event.clientY + 16 });
+  const tipShown = tip !== null;
+  // 滚动时光标不动但圆环移走了：收起浮窗，等下一次移动重新判定。
+  useEffect(() => {
+    if (!tipShown) return;
+    const hide = () => setTip(null);
+    window.addEventListener("scroll", hide, true);
+    return () => window.removeEventListener("scroll", hide, true);
+  }, [tipShown]);
+  // 命中判定挂在圆环外层方块上（中心数字层 pointer-events 关闭，不再挡住
+  // 事件），按极坐标取环带、按上下半区选指标；环心与环外收起浮窗。
+  const onMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const half = ringHit(
+      event.clientX - (rect.left + rect.width / 2),
+      event.clientY - (rect.top + rect.height / 2),
+      rect.width,
+      layout?.top != null,
+    );
+    if (half === null) {
+      setTip(null);
+      return;
+    }
+    // 首行带上厂商名：浮窗可能盖住环下标注。
+    const text =
+      layout === null
+        ? `${note}\n${shown?.tip ?? ""}`
+        : `${note} · ${windowTitle(half === "top" ? layout.top! : layout.bottom)}`;
+    setTip({ text, x: event.clientX, y: event.clientY });
   };
-  const svgHover =
-    layout === null
-      ? undefined
-      : (event: ReactMouseEvent) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          const dx = event.clientX - (rect.left + rect.width / 2);
-          const dy = event.clientY - (rect.top + rect.height / 2);
-          const distance = Math.hypot(dx, dy) * (100 / rect.width);
-          if (distance < 15 || distance > 55) {
-            setTip(null);
-            return;
-          }
-          // 整环（无 5h 窗口）时上下都是同一指标。
-          const window = layout.top !== null && dy < 0 ? layout.top : layout.bottom;
-          setTip({
-            text: windowTitle(window),
-            x: event.clientX + 14,
-            y: event.clientY + 16,
-          });
-        };
-  const stroke = "var(--dsw-alias-interactive-bg-hover)";
-  const track = (
-    <circle
-      cx="50"
-      cy="50"
-      r="38"
+  const track = (d: string) => (
+    <path
+      d={d}
       fill="none"
-      stroke={stroke}
+      stroke="var(--dsw-alias-interactive-bg-hover)"
       strokeWidth="9"
+      strokeLinecap="round"
     />
   );
-  let arcs: ReactNode = null;
-  let center: ReactNode = "—";
-  if (layout !== null) {
-    const color = ringColor(layout.bottom.percent);
-    if (layout.fullCircle) {
-      arcs = (
+  const arc = (d: string, percent: number) => (
+    <path
+      d={d}
+      fill="none"
+      stroke={ringColor(percent)}
+      strokeWidth="9"
+      strokeLinecap="round"
+      pathLength={100}
+      strokeDasharray={`${Math.max(percent, 2)} 100`}
+    />
+  );
+  let rings: ReactNode;
+  if (layout === null || layout.fullCircle) {
+    rings = (
+      <>
         <circle
           cx="50"
           cy="50"
           r="38"
           fill="none"
-          stroke={color}
+          stroke="var(--dsw-alias-interactive-bg-hover)"
           strokeWidth="9"
-          strokeLinecap="round"
-          pathLength={100}
-          strokeDasharray={`${Math.max(layout.bottom.percent, 1.5)} 100`}
-          transform="rotate(-90 50 50)"
         />
-      );
-      center = `${Math.round(layout.bottom.percent)}%`;
-    } else {
-      const top = layout.top;
-      arcs = (
-        <>
-          <path
-            d={RING_TOP_ARC}
+        {layout !== null ? (
+          <circle
+            cx="50"
+            cy="50"
+            r="38"
             fill="none"
-            stroke={ringColor(top!.percent)}
+            stroke={ringColor(layout.bottom.percent)}
             strokeWidth="9"
             strokeLinecap="round"
             pathLength={100}
-            strokeDasharray={`${Math.max(top!.percent, 2)} 100`}
+            strokeDasharray={`${Math.max(layout.bottom.percent, 1.5)} 100`}
+            transform="rotate(-90 50 50)"
           />
-          <path
-            d={RING_BOTTOM_ARC}
-            fill="none"
-            stroke={color}
-            strokeWidth="9"
-            strokeLinecap="round"
-            pathLength={100}
-            strokeDasharray={`${Math.max(layout.bottom.percent, 2)} 100`}
-          />
-        </>
-      );
-      center = `${Math.round(layout.bottom.percent)}%`;
-    }
+        ) : null}
+      </>
+    );
+  } else {
+    rings = (
+      <>
+        {track(RING_TOP_ARC)}
+        {track(RING_BOTTOM_ARC)}
+        {arc(RING_TOP_ARC, layout.top!.percent)}
+        {arc(RING_BOTTOM_ARC, layout.bottom.percent)}
+      </>
+    );
   }
   return (
     <div
-      style={{
-        position: "relative",
-        width: size,
-        height: size,
-        flex: "none",
-        textAlign: "center",
-      }}
+      style={{ width: size, flex: "none", textAlign: "center" }}
       role="img"
       aria-label={
-        unavailable
-          ? "配额不可用"
-          : layout !== null
-            ? `${layout.top ? `${layout.top.label} ${Math.round(layout.top.percent)}%、` : ""}${layout.bottom.label} ${Math.round(layout.bottom.percent)}%`
-            : "暂无配额数据"
+        layout !== null
+          ? `${note}：${layout.top ? `${layout.top.label} ${Math.round(layout.top.percent)}%、` : ""}${layout.bottom.label} ${Math.round(layout.bottom.percent)}%`
+          : `${note}：${shown?.tip ?? ""}`
       }
     >
-      <div style={{ position: "relative", width: size, height: size }}>
+      <div
+        style={{ position: "relative", width: size, height: size }}
+        onMouseMove={onMove}
+        onMouseLeave={() => setTip(null)}
+      >
         <svg
           width={size}
           height={size}
           viewBox="0 0 100 100"
-          onMouseMove={svgHover}
-          onMouseLeave={() => setTip(null)}
+          style={{ display: "block" }}
         >
-          {track}
-          {arcs}
+          {rings}
         </svg>
         <span
           style={{
@@ -1911,74 +2008,41 @@ function QuotaRing({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            gap: 2,
-            fontSize: Math.round(size * 0.22),
-            fontWeight: 700,
+            pointerEvents: "none",
+            fontSize: Math.round(size * (layout === null ? 0.16 : 0.22)),
+            fontWeight: layout === null ? 500 : 700,
             letterSpacing: "-0.02em",
             color:
               layout === null
                 ? "var(--dsw-alias-label-tertiary)"
-                : "var(--dsw-alias-label-primary)",
+                : (centerColor ?? "var(--dsw-alias-label-primary)"),
           }}
         >
-          {layout === null ? (unavailable ? "不可用" : "—") : center}
-          {layout !== null && badge !== undefined ? (
-            <span
-              title={badgeTitle}
-              style={{
-                fontSize: Math.round(size * 0.14),
-                fontWeight: 400,
-                color:
-                  badge === "▲"
-                    ? "var(--dsw-alias-state-warn-primary)"
-                    : "var(--dsw-alias-label-tertiary)",
-              }}
-            >
-              {badge}
-            </span>
-          ) : null}
+          {layout === null
+            ? shown?.center
+            : `${Math.round(layout.bottom.percent)}%`}
         </span>
       </div>
-      {note !== undefined ? (
-        <div
-          style={{
-            fontSize: 11,
-            marginTop: 3,
-            color: "var(--dsw-alias-label-secondary)",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {note}
-        </div>
-      ) : null}
-      {tip !== null ? (
-        <div
-          style={{
-            position: "fixed",
-            left: tip.x,
-            top: tip.y,
-            zIndex: 1100,
-            maxWidth: 280,
-            padding: "7px 10px",
-            borderRadius: 8,
-            border: "1px solid var(--dsw-alias-border-l2)",
-            background: "var(--dsw-alias-bg-layer-2)",
-            boxShadow: "var(--dsw-shadow-lv2)",
-            color: "var(--dsw-alias-label-primary)",
-            fontSize: 12,
-            lineHeight: 1.6,
-            whiteSpace: "pre-line",
-            pointerEvents: "none",
-            textAlign: "left",
-          }}
-        >
-          {tip.text}
-        </div>
-      ) : null}
+      <div
+        style={{
+          fontSize: 11,
+          marginTop: 3,
+          color: "var(--dsw-alias-label-secondary)",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {note}
+      </div>
+      {tip !== null ? <RingTip text={tip.text} x={tip.x} y={tip.y} /> : null}
     </div>
   );
+}
+
+/** 多个圆环并排（opencodex 三家、copilot 多窗口）。 */
+function RingRow({ children }: { children: ReactNode }) {
+  return <div style={{ display: "flex", gap: 18 }}>{children}</div>;
 }
 
 /** 智谱峰谷相位：周一至周五 14:00-18:00（UTC+8）高峰，其余闲时（积分 5 折）。 */
@@ -1989,124 +2053,137 @@ function zaiPhase(now = Date.now()): { peak: boolean } {
   return { peak: day >= 1 && day <= 5 && hour >= 14 && hour < 18 };
 }
 
+/** 智谱窗口标签（「5时」「周」「2w」…）到圆环窗口 id 与指标名（测试出口）。 */
+export function zaiWindowKind(label: string): { id: string; label: string } {
+  if (/时$/.test(label))
+    return label === "5时"
+      ? { id: "fiveHour", label: "5小时限额" }
+      : { id: "fiveHour", label: `${label.replace(/时$/, "")}小时限额` };
+  if (label === "周") return { id: "weekly", label: "本周限额" };
+  if (/^\d+w$/.test(label))
+    return { id: "weekly", label: `${label.replace(/w$/, "")}周限额` };
+  return { id: label, label: `${label}限额` };
+}
+
+/** 智谱峰谷：中心数字颜色（高峰橙、闲时绿）+ 悬停说明（测试出口）。 */
+export function zaiPeakStyle(peak: boolean): { color: string; note: string } {
+  return peak
+    ? {
+        color: "var(--dsw-alias-state-warn-primary)",
+        note: "当前高峰时段（中心数字橙色）：积分全额抵扣",
+      }
+    : {
+        color: "var(--dsw-alias-state-success-primary)",
+        note: "当前闲时（中心数字绿色）：积分 5 折抵扣",
+      };
+}
+
 function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
   if (data === null)
-    return (
-      <CardFrame label="智谱">
-        <Muted>读取中…</Muted>
-      </CardFrame>
-    );
+    return <QuotaRing windows={[]} note="智谱" placeholder={LOADING_RING} />;
   if (!data.ok)
     return (
-      <CardFrame label="智谱">
-        <Muted>
-          {data.reason === "unconfigured"
-            ? "未配置 API 密钥"
-            : `读取失败（${data.reason}）`}
-        </Muted>
-      </CardFrame>
+      <QuotaRing
+        windows={[]}
+        note="智谱"
+        placeholder={failedRing(data.reason, "未配置 API 密钥")}
+      />
     );
-  const windows = data.windows ?? [];
-  // zai 窗口标签形如「5时」「周」：映射为圆环的 5 小时 / 本周窗口；
-  // 5 小时窗口未下发时补一个 0% 占位，保证双环形态（上 5h 下周）。
-  const ringWindows: RingWindow[] = windows.map((w) => ({
-    id: w.label.includes("周") ? "weekly" : "fiveHour",
-    label: w.label.includes("周") ? "本周" : "5小时限额",
+  const peak = zaiPeakStyle(zaiPhase().peak);
+  const ringWindows: RingWindow[] = (data.windows ?? []).map((w) => ({
+    ...zaiWindowKind(w.label),
     percent: w.pct,
     resetAt: w.resetAt,
-    ...(w.total > 0
-      ? {
-          used: Math.round((w.total * w.pct) / 100),
-          total: w.total,
-        }
-      : {}),
+    ...(w.total > 0 ? { used: w.used, total: w.total } : {}),
+    extraNote: peak.note,
   }));
+  // 5 小时窗口未下发时补一个 0% 占位，保证双环形态（上 5h 下周）。
   if (ringWindows.length > 0 && !ringWindows.some((w) => w.id === "fiveHour"))
     ringWindows.unshift({
       id: "fiveHour",
       label: "5小时限额",
       percent: 0,
       resetAt: 0,
+      missing: true,
+      extraNote: peak.note,
     });
-  const layout = ringLayout(ringWindows);
-  const phase = zaiPhase();
   return (
-    <div>
-      {layout === null ? (
-        <div style={{ width: RING_SIZE }}>
-          <QuotaRing windows={[]} unavailable />
-          <div
-            className="ring-note"
-            style={{
-              fontSize: 11,
-              marginTop: 3,
-              color: "var(--dsw-alias-label-secondary)",
-            }}
-          >
-            智谱
-          </div>
-        </div>
-      ) : (
-        <QuotaRing
-          windows={ringWindows}
-          badge={phase.peak ? "▲" : "▽"}
-          badgeTitle={`${phase.peak ? "高峰" : "非高峰"}时段：积分${phase.peak ? "全额" : "5 折"}抵扣`}
-          note={`智谱${data.level ? ` · ${data.level}` : ""}`}
-        />
-      )}
-    </div>
+    <QuotaRing
+      windows={ringWindows}
+      note={`智谱${data.level ? ` · ${data.level}` : ""}`}
+      centerColor={peak.color}
+    />
   );
 }
 
+const OPENCODEX_PROVIDERS = ["anthropic", "openai", "cursor"];
+const OPENCODEX_LABELS: Record<string, string> = {
+  anthropic: "Claude",
+  openai: "ChatGPT",
+  cursor: "Cursor",
+};
+
 /** opencodex 限额卡：anthropic / openai / cursor 各一个圆环，说明进悬停。 */
 function OpencodexQuotaCard({ data }: { data: OpencodexQuota | null }) {
-  const LABELS: Record<string, string> = {
-    anthropic: "Claude",
-    openai: "ChatGPT",
-    cursor: "Cursor",
-  };
-  // 悬停说明在每个弧段自己的 title 里（windowTitle）；cursor 的附加窗口
-  // 也并入下半环的悬停提示，不占卡面。
+  const placeholders = (placeholder: RingPlaceholder) => (
+    <RingRow>
+      {OPENCODEX_PROVIDERS.map((provider) => (
+        <QuotaRing
+          key={provider}
+          windows={[]}
+          note={OPENCODEX_LABELS[provider]!}
+          placeholder={placeholder}
+        />
+      ))}
+    </RingRow>
+  );
+  if (data === null) return placeholders(LOADING_RING);
+  // 旧版宿主没有 kind=opencodex 分支会落 DeepSeek 余额结构。
+  if ((data as { balances?: unknown }).balances !== undefined)
+    return placeholders({ center: "—", tip: "宿主需重启加载新版后显示" });
+  if (!data.ok)
+    return placeholders(
+      data.reason === "cli"
+        ? { center: "不可用", tip: "opencodex 命令不可用（未安装或执行失败）" }
+        : data.reason === "parse"
+          ? { center: "不可用", tip: "opencodex 配额输出无法解析" }
+          : failedRing(data.reason, "opencodex 未配置"),
+    );
+  if (data.providers.length === 0)
+    return (
+      <QuotaRing
+        windows={[]}
+        note="opencodex"
+        placeholder={{ center: "未配置", tip: "opencodex 未配置供应商" }}
+      />
+    );
+  // cursor 的附加窗口并入下半环（整环）的悬停提示，不占卡面。
   const extrasNote = (provider: OpencodexProviderQuota): string =>
     provider.extras
-      .map((extra) => `${extra.label}：${Math.round(extra.percent)}%`)
+      .map((extra) => `${extra.label}：已用 ${Math.round(extra.percent)}%`)
       .join("\n");
-  const body = () => {
-    if (data === null) return <Muted>读取中…</Muted>;
-    // 旧版宿主没有 kind=opencodex 分支会落 DeepSeek 余额结构。
-    if ((data as { balances?: unknown }).balances !== undefined)
-      return <Muted>宿主需重启加载新版后显示</Muted>;
-    const providers = data.ok
-      ? [...data.providers].sort(
-          (a, b) =>
-            ["anthropic", "openai", "cursor"].indexOf(a.provider) -
-            ["anthropic", "openai", "cursor"].indexOf(b.provider),
-        )
-      : ["anthropic", "openai", "cursor"].map((provider) => ({
-          provider,
-          windows: [],
-          extras: [],
-        }));
-    if (data.ok && providers.length === 0)
-      return <Muted>opencodex 未配置供应商</Muted>;
-    return (
-      <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-        {providers.map((provider) => (
-          <QuotaRing
-            key={provider.provider}
-            windows={provider.windows.map((w) =>
-              provider.extras.length > 0 && w.id !== "fiveHour"
-                ? { ...w, extraNote: extrasNote(provider) }
-                : w,
-            )}
-            unavailable={!data.ok}
-            note={LABELS[provider.provider] ?? provider.provider}
-          />
-        ))}
-      </div>
-    );
-  };
-  return <div>{body()}</div>;
+  const providers = [...data.providers].sort(
+    (a, b) =>
+      OPENCODEX_PROVIDERS.indexOf(a.provider) -
+      OPENCODEX_PROVIDERS.indexOf(b.provider),
+  );
+  return (
+    <RingRow>
+      {providers.map((provider) => (
+        <QuotaRing
+          key={provider.provider}
+          note={OPENCODEX_LABELS[provider.provider] ?? provider.provider}
+          windows={provider.windows.map((w) => ({
+            ...w,
+            label: `${w.label}限额`,
+            ...(provider.extras.length > 0 && w.id !== "fiveHour"
+              ? { extraNote: extrasNote(provider) }
+              : {}),
+          }))}
+        />
+      ))}
+    </RingRow>
+  );
 }
 
 /** Copilot 配额窗口的中文标签（环下最简标注 + 悬停完整说明）。 */
@@ -2137,66 +2214,62 @@ function resetEpoch(resetDate: string | undefined): number {
 
 function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
   if (data === null)
-    return (
-      <CardFrame label="Copilot 订阅">
-        <Muted>读取中…</Muted>
-      </CardFrame>
-    );
+    return <QuotaRing windows={[]} note="Copilot" placeholder={LOADING_RING} />;
   if (!data.ok)
     return (
-      <CardFrame label="Copilot 订阅">
-        <Muted>
-          {data.reason === "unconfigured"
-            ? "未登录"
-            : `读取失败（${data.reason}）`}
-        </Muted>
-      </CardFrame>
+      <QuotaRing
+        windows={[]}
+        note="Copilot"
+        placeholder={failedRing(data.reason, "未登录 GitHub Copilot")}
+      />
     );
   // 旧版宿主没有 kind=copilot 分支，会落 DeepSeek 余额（balances 字段）：
   // 此时不是「无配额」，而是宿主还没加载新代码。
   if ((data as { balances?: unknown }).balances !== undefined)
     return (
-      <CardFrame label="Copilot 订阅">
-        <Muted>宿主需重启加载新版后显示</Muted>
-      </CardFrame>
+      <QuotaRing
+        windows={[]}
+        note="Copilot"
+        placeholder={{ center: "—", tip: "宿主需重启加载新版后显示" }}
+      />
     );
+  const plan = data.plan ? copilotPlanLabel(data.plan) : undefined;
   // 无限额度（对话/补全）没有可展示的余量，不渲染环；只显示有限额度窗口。
   const windows = (data.quotas ?? []).filter((w) => !w.unlimited);
+  if (windows.length === 0)
+    return (
+      <QuotaRing
+        windows={[]}
+        note="Copilot"
+        placeholder={{
+          center: "不限量",
+          tip: `${plan ? `${plan}：` : ""}对话与补全不限量，无有限额度窗口`,
+        }}
+      />
+    );
   return (
-    <div>
-      {windows.length === 0 ? (
-        <div style={{ width: RING_SIZE }}>
+    <RingRow>
+      {windows.map((w) => {
+        const label = copilotWindowLabel(w.id);
+        const used = Math.max(0, w.entitlement - w.remaining);
+        return (
           <QuotaRing
-            windows={[]}
-            note={`Copilot${data.plan ? ` · ${copilotPlanLabel(data.plan)}` : ""}`}
+            key={w.id}
+            note={windows.length === 1 ? "Copilot" : `Copilot ${label}`}
+            windows={[
+              {
+                id: w.id,
+                label: `${label}限额`,
+                percent: 100 - w.percentRemaining,
+                resetAt: resetEpoch(data.resetDate),
+                ...(w.entitlement > 0 ? { used, total: w.entitlement } : {}),
+                ...(plan ? { extraNote: `套餐：${plan}` } : {}),
+              },
+            ]}
           />
-        </div>
-      ) : (
-        <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-          {windows.map((w) => {
-            const label = copilotWindowLabel(w.id);
-            const used = Math.max(0, w.entitlement - w.remaining);
-            return (
-              <QuotaRing
-                key={w.id}
-                note={label}
-                windows={[
-                  {
-                    id: w.id,
-                    label: `${label}限额`,
-                    percent: 100 - w.percentRemaining,
-                    resetAt: resetEpoch(data.resetDate),
-                    ...(w.entitlement > 0
-                      ? { used, total: w.entitlement }
-                      : {}),
-                  },
-                ]}
-              />
-            );
-          })}
-        </div>
-      )}
-    </div>
+        );
+      })}
+    </RingRow>
   );
 }
 

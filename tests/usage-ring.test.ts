@@ -1,14 +1,19 @@
-/** 用量面板限额圆环：布局决策（5 小时上半环 / 周·月下半环 / 单窗整环）。 */
+/** 用量面板限额圆环：布局决策、悬停命中、提示文案、智谱窗口映射与峰谷。 */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ringHit,
   ringLayout,
-  RING_TOP_ARC,
   RING_BOTTOM_ARC,
+  RING_HIT_INNER,
+  RING_HIT_OUTER,
+  RING_SIZE,
+  RING_TOP_ARC,
   windowTitle,
+  zaiPeakStyle,
+  zaiWindowKind,
   type RingWindow,
 } from "../src/client/UsageSection.tsx";
-import { vi } from "vitest";
 
 const window = (over: Partial<RingWindow>): RingWindow => ({
   id: "weekly",
@@ -42,19 +47,77 @@ describe("ringLayout 布局决策", () => {
     expect(layout?.bottom.id).toBe("fiveHour");
   });
 
-  it("空窗口与非法百分比返回 null（前端落不可用态）", () => {
+  it("空窗口与非法百分比返回 null（前端落灰环占位）", () => {
     expect(ringLayout([])).toBeNull();
     expect(ringLayout([{ id: "weekly", label: "本周", percent: Number.NaN, resetAt: 0 }])).toBeNull();
   });
+});
 
-  it("双半环使用上下两条弧路径，端点上下分离留出间隙", () => {
-    // 上弧越过顶部（sweep=1），下弧越过底部（sweep=0）；端点 y 坐标
-    // 43.4 / 56.6 在水平线上下各偏 6.6，两段之间留出间隙。
-    expect(RING_TOP_ARC).toMatch(/^M [\d.]+ 43\.4 A 38 38 0 0 1 [\d.]+ 43\.4$/);
-    expect(RING_BOTTOM_ARC).toMatch(/^M [\d.]+ 56\.6 A 38 38 0 0 0 [\d.]+ 56\.6$/);
+describe("双半环间隙", () => {
+  const endpoint = (arc: string): { x: number; y: number } => {
+    const [, x, y] = /^M ([\d.]+) ([\d.]+) /.exec(arc)!;
+    return { x: Number(x), y: Number(y) };
+  };
+
+  it("端点落在半径 38 的圆上，上弧越过顶部、下弧越过底部", () => {
+    for (const arc of [RING_TOP_ARC, RING_BOTTOM_ARC]) {
+      const { x, y } = endpoint(arc);
+      expect(Math.hypot(x - 50, y - 50)).toBeCloseTo(38, 1);
+    }
+    expect(RING_TOP_ARC).toMatch(/A 38 38 0 0 1 /);
+    expect(RING_BOTTOM_ARC).toMatch(/A 38 38 0 0 0 /);
   });
 
-  it("windowTitle 组合指标名、已用/总量与重置时间", () => {
+  it("扣掉圆头线帽（各 4.5）后 72px 渲染仍有 ≥4px 的净间隙", () => {
+    const gap = endpoint(RING_BOTTOM_ARC).y - endpoint(RING_TOP_ARC).y - 9;
+    expect(gap * (RING_SIZE / 100)).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("ringHit 悬停命中（真实组件用的同一函数）", () => {
+  const R = (38 / 100) * RING_SIZE; // 环带中线半径（px）
+
+  it("环带中部：上半区命中 5h、下半区命中周", () => {
+    expect(ringHit(0, -R, RING_SIZE, true)).toBe("top");
+    expect(ringHit(0, R, RING_SIZE, true)).toBe("bottom");
+    // 左下 135°：多为空底轨（没画进度弧）也要命中。
+    expect(ringHit(-R * Math.SQRT1_2, R * Math.SQRT1_2, RING_SIZE, true)).toBe("bottom");
+  });
+
+  it("上下分界附近按 dy 符号切换，没有不命中的死区", () => {
+    expect(ringHit(-R, -1, RING_SIZE, true)).toBe("top");
+    expect(ringHit(-R, 1, RING_SIZE, true)).toBe("bottom");
+    expect(ringHit(-R, 0, RING_SIZE, true)).toBe("bottom");
+  });
+
+  it("整环（无 5h）上下都命中同一指标", () => {
+    expect(ringHit(0, -R, RING_SIZE, false)).toBe("bottom");
+    expect(ringHit(0, R, RING_SIZE, false)).toBe("bottom");
+  });
+
+  it("环心数字区与环外不命中", () => {
+    expect(ringHit(0, 0, RING_SIZE, true)).toBeNull();
+    expect(ringHit(10, 0, RING_SIZE, true)).toBeNull();
+    expect(ringHit(RING_SIZE / 2, -RING_SIZE / 2, RING_SIZE, true)).toBeNull();
+  });
+
+  it("命中带覆盖整条描边（半径 33.5~42.5）并留出容差", () => {
+    expect(RING_HIT_INNER).toBeLessThan(33.5);
+    expect(RING_HIT_OUTER).toBeGreaterThan(42.5);
+  });
+
+  it("按渲染尺寸换算", () => {
+    expect(ringHit(0, -14, 36, true)).toBe("top");
+    expect(ringHit(0, -35, 36, true)).toBeNull();
+  });
+});
+
+describe("windowTitle 悬停文案", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("逐行：指标名 / 已用与总量 / 重置时间", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-11-20T12:00:00Z"));
     expect(
@@ -66,57 +129,35 @@ describe("ringLayout 布局决策", () => {
         used: 123_456,
         total: 1_000_000,
       }),
-    ).toBe("5小时限额：已用 12.35万 / 100.00万（18%） · 重置 1时5分后");
+    ).toBe("5小时限额\n已用 12.35万 / 100.00万（18%）\n1时5分后重置");
+    expect(windowTitle({ id: "weekly", label: "本周", percent: 55, resetAt: 0 })).toBe(
+      "本周\n已用 55%\n重置时间未知",
+    );
+  });
+
+  it("附加说明另起一行；占位窗口说明未下发", () => {
     expect(
-      windowTitle({ id: "weekly", label: "本周", percent: 55, resetAt: 0 }),
-    ).toBe("本周：已用 55% · 重置时间未知");
-    vi.useRealTimers();
+      windowTitle({ id: "monthly", label: "本月限额", percent: 9, resetAt: 0, extraNote: "Auto：已用 12%" }),
+    ).toBe("本月限额\n已用 9%\n重置时间未知\nAuto：已用 12%");
+    expect(
+      windowTitle({ id: "fiveHour", label: "5小时限额", percent: 0, resetAt: 0, missing: true }),
+    ).toBe("5小时限额\n接口未下发该窗口（按 0% 占位）");
   });
 });
 
-describe("极坐标命中判定（svg 级悬停）", () => {
-  // 与 QuotaRing.svgHover 同口径：viewBox 100，环带 15-55。
-  const pick = (
-    dxRatio: number,
-    dyRatio: number,
-    rectWidth: number,
-    hasFiveHour: boolean,
-  ): string | null => {
-    const distance = Math.hypot(dxRatio, dyRatio) * (100 / rectWidth);
-    if (distance < 15 || distance > 55) return null;
-    const layout = ringLayout(
-      hasFiveHour
-        ? [
-            { id: "fiveHour", label: "5小时限额", percent: 18, resetAt: 0 },
-            { id: "weekly", label: "本周", percent: 55, resetAt: 0 },
-          ]
-        : [{ id: "monthly", label: "本月", percent: 30, resetAt: 0 }],
-    );
-    if (layout === null) return null;
-    const chosen =
-      layout.top !== null && dyRatio < 0 ? layout.top : layout.bottom;
-    return chosen.id;
-  };
-
-  it("环带内上半区命中 5h、下半区命中周", () => {
-    expect(pick(0, -25, 72, true)).toBe("fiveHour");
-    expect(pick(0, 25, 72, true)).toBe("weekly");
+describe("智谱窗口映射与峰谷", () => {
+  it("5时→上半环、周/2w→下半环", () => {
+    expect(zaiWindowKind("5时")).toEqual({ id: "fiveHour", label: "5小时限额" });
+    expect(zaiWindowKind("周")).toEqual({ id: "weekly", label: "本周限额" });
+    expect(zaiWindowKind("2w").id).toBe("weekly");
   });
 
-  it("整环（无 5h）上下都命中同一指标", () => {
-    expect(pick(0, -25, 72, false)).toBe("monthly");
-    expect(pick(0, 25, 72, false)).toBe("monthly");
-  });
-
-  it("环心空白与环外不命中（不显示浮窗）", () => {
-    expect(pick(0, 0, 72, true)).toBeNull();
-    expect(pick(0, 40, 72, true)).toBeNull();
-    expect(pick(-34, -34, 72, true)).toBeNull();
-  });
-
-  it("按渲染尺寸换算（rect 大小不影响比例判定）", () => {
-    // 36px 渲染时环带为 5.4~19.8px，-15px 落在带上限内。
-    expect(pick(0, -15, 36, true)).toBe("fiveHour");
-    expect(pick(0, -35, 36, true)).toBeNull();
+  it("峰谷用中心数字颜色区分（不用符号），说明进悬停", () => {
+    const peak = zaiPeakStyle(true);
+    const off = zaiPeakStyle(false);
+    expect(peak.color).not.toBe(off.color);
+    expect(peak.color).toMatch(/^var\(--dsw-/);
+    expect(off.color).toMatch(/^var\(--dsw-/);
+    expect(`${peak.note}${off.note}`).not.toMatch(/[▲▽△▼]/);
   });
 });
