@@ -6,6 +6,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   IconChevronDownOutline14,
   IconDataOutline16,
@@ -518,7 +519,13 @@ function FilterSelect({
                 {item}
               </span>
               {item === value ? (
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 14 14"
+                  fill="none"
+                  aria-hidden="true"
+                >
                   <path
                     d="M3 7.2L5.6 9.8L11 4.2"
                     stroke="currentColor"
@@ -779,7 +786,10 @@ export function UsageSection() {
         if (model !== "全部模型") {
           for (const [cellKey, cell] of Object.entries(day.cells)) {
             const index = cellKey.indexOf("\u0000");
-            if (index === -1 || modelGroupKey(cellKey.slice(index + 1)) !== model)
+            if (
+              index === -1 ||
+              modelGroupKey(cellKey.slice(index + 1)) !== model
+            )
               continue;
             const name = cellKey.slice(0, index);
             totals.set(name, addCell(bucketOf(totals, name), cell));
@@ -1960,13 +1970,13 @@ function zaiPhase(now = Date.now()): { peak: boolean } {
 function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
   if (data === null)
     return (
-      <CardFrame label="智谱 GLM">
+      <CardFrame label="智谱">
         <Muted>读取中…</Muted>
       </CardFrame>
     );
   if (!data.ok)
     return (
-      <CardFrame label="智谱 GLM">
+      <CardFrame label="智谱">
         <Muted>
           {data.reason === "unconfigured"
             ? "未配置 API 密钥"
@@ -1989,10 +1999,7 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
         }
       : {}),
   }));
-  if (
-    ringWindows.length > 0 &&
-    !ringWindows.some((w) => w.id === "fiveHour")
-  )
+  if (ringWindows.length > 0 && !ringWindows.some((w) => w.id === "fiveHour"))
     ringWindows.unshift({
       id: "fiveHour",
       label: "5小时限额",
@@ -2006,8 +2013,15 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
       {layout === null ? (
         <div style={{ width: RING_SIZE }}>
           <QuotaRing windows={[]} unavailable />
-          <div className="ring-note" style={{ fontSize: 11, marginTop: 3, color: "var(--dsw-alias-label-secondary)" }}>
-            智谱 GLM
+          <div
+            className="ring-note"
+            style={{
+              fontSize: 11,
+              marginTop: 3,
+              color: "var(--dsw-alias-label-secondary)",
+            }}
+          >
+            智谱
           </div>
         </div>
       ) : (
@@ -2015,7 +2029,7 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
           windows={ringWindows}
           badge={phase.peak ? "▲" : "▽"}
           badgeTitle={`${phase.peak ? "高峰" : "非高峰"}时段：积分${phase.peak ? "全额" : "5 折"}抵扣`}
-          note={`智谱 GLM${data.level ? ` · ${data.level}` : ""}`}
+          note={`智谱${data.level ? ` · ${data.level}` : ""}`}
         />
       )}
     </div>
@@ -2032,7 +2046,9 @@ function OpencodexQuotaCard({ data }: { data: OpencodexQuota | null }) {
   // 悬停说明在每个弧段自己的 title 里（windowTitle）；cursor 的附加窗口
   // 也并入下半环的悬停提示，不占卡面。
   const extrasNote = (provider: OpencodexProviderQuota): string =>
-    provider.extras.map((extra) => `${extra.label}：${Math.round(extra.percent)}%`).join("\n");
+    provider.extras
+      .map((extra) => `${extra.label}：${Math.round(extra.percent)}%`)
+      .join("\n");
   const body = () => {
     if (data === null) return <Muted>读取中…</Muted>;
     // 旧版宿主没有 kind=opencodex 分支会落 DeepSeek 余额结构。
@@ -2128,7 +2144,10 @@ function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
     <div>
       {windows.length === 0 ? (
         <div style={{ width: RING_SIZE }}>
-          <QuotaRing windows={[]} note={`Copilot${data.plan ? ` · ${copilotPlanLabel(data.plan)}` : ""}`} />
+          <QuotaRing
+            windows={[]}
+            note={`Copilot${data.plan ? ` · ${copilotPlanLabel(data.plan)}` : ""}`}
+          />
         </div>
       ) : (
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
@@ -2225,9 +2244,10 @@ function DailyBars({
               gap: 5,
               fontSize: 11,
               cursor: "pointer",
-              color: hover === name
-                ? "var(--dsw-alias-label-primary)"
-                : "var(--dsw-alias-label-secondary)",
+              color:
+                hover === name
+                  ? "var(--dsw-alias-label-primary)"
+                  : "var(--dsw-alias-label-secondary)",
               opacity: dimmed(name) ? 0.35 : 1,
             }}
           >
