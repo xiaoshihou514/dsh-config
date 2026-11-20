@@ -64,12 +64,20 @@ DeepSeek 官方 2026-08-17 起改用峰谷计价：高峰时段为北京时间 9
   - 浮窗经 `createPortal` 挂到 `document.body`，`zIndex: 1100` 高于用量弹窗（1000），`width: max-content` 定宽后测量，贴近视口右/下缘时翻到光标另一侧；容器滚动时自动收起。
 - 复核方法：浏览器里用**真实光标坐标**（如 playwright `page.mouse.move`）验证，不要对 svg/path 直接派发事件——直接派发会绕过遮挡层，得出假阳性。
 
-## 构建
+## 构建与验证底线
 
 ```sh
 pnpm install
 pnpm run build   # 生成 lib/（Host ESM + 浏览器 client.js）
 pnpm run check   # tsc --noEmit
 ```
+
+交互与视觉类改动（源自限额圆环三轮返工的复盘，即日起新默认）：
+
+1. 交互验证走真实输入路径：坐标驱动真实光标（page.mouse.move / 等价手段）让浏览器做命中测试，禁止对目标元素直接派发事件；用 elementFromPoint 确认事件实际落点。
+2. 脚本化/程序化编辑必须断言每处替换确实发生，静默失败等于没改。
+3. 提交信息逐条对照 git show 的 diff 核实后撰写。
+4. 测试测组件真实导出的函数/逻辑（如 `ringHit`），不在测试里另写一遍算法。
+5. 提验附「真实光标验证截图 + 正反断言测试」（该出的出、不该出的不出）。
 
 web profile 通过 `link:` 安装本 checkout。client bundle 的真实机制（dsh-client-modules + dsh-client-hmr）：bundle 内容在宿主内存中持有**一份缓冲**（首次 GET 时读盘），靠 client-hmr 每 500ms 对文件 mtime/ctime/size 轮询，变化时经 `clientModules.rebuilt()` 重读重组，combo URL 带 rev 参数自动失效浏览器缓存——正常情况下重建后刷新页面即可生效，无需重启服务；但 assets 目录才是真正按请求读盘，且若 HMR 轮询因异常停摆（`pollWatches` 的 publish 在 try 之外），后续构建需要重启 dsh 才能生效。
