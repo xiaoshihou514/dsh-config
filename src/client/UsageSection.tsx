@@ -1680,12 +1680,21 @@ function DeepseekBalanceCard({ data }: { data: DeepseekBalance | null }) {
 
 // ===== 限额圆环（5 小时窗口占上半环，周/月窗口占下半环）=====
 
-/** 圆环的一个窗口：与宿主侧 OpencodexWindow 同形。 */
+/** 全部供应商卡统一的圆环尺寸。 */
+export const RING_SIZE = 72;
+
+/** 圆环的一个窗口：与宿主侧 OpencodexWindow 同形；used/total 有值时进悬停。 */
 export interface RingWindow {
   id: string;
   label: string;
   percent: number;
   resetAt: number;
+  /** 已用量（与 total 一起有值才展示「已用/总量」）。 */
+  used?: number;
+  /** 窗口总量。 */
+  total?: number;
+  /** 附加说明（如 cursor 的附加窗口小字），并入悬停提示。 */
+  extraNote?: string;
 }
 
 export interface RingLayout {
@@ -1720,24 +1729,45 @@ function ringColor(percent: number): string {
   return "var(--dsw-alias-state-success-primary)";
 }
 
-/** 半圆弧路径：上半环（左→右越过顶部）与下半环（左→右越过底部）。 */
-export const RING_TOP_ARC = "M 12 50 A 38 38 0 0 1 88 50";
-export const RING_BOTTOM_ARC = "M 12 50 A 38 38 0 0 0 88 50";
+/** 单窗口的悬停提示（测试出口）：指标名 + 已用/总量 + 重置时间。 */
+export function windowTitle(window: RingWindow): string {
+  const used =
+    typeof window.used === "number" &&
+    typeof window.total === "number" &&
+    window.total > 0
+      ? `已用 ${cnDigits(window.used)} / ${cnDigits(window.total)}（${Math.round(window.percent)}%）`
+      : `已用 ${Math.round(window.percent)}%`;
+  const reset =
+    window.resetAt > 0
+      ? `重置 ${countdown(window.resetAt - Date.now())}后`
+      : "重置时间未知";
+  return `${window.label}：${used} · ${reset}${window.extraNote ? `\n${window.extraNote}` : ""}`;
+}
+
+/**
+ * 半圆弧路径：上下两段在左右两端各留一点竖向间隙，不贴在一起。
+ * 端点取 ±10°（水平线上下 38·sin10° ≈ 6.6）。
+ */
+export const RING_TOP_ARC = "M 12.6 43.4 A 38 38 0 0 1 87.4 43.4";
+export const RING_BOTTOM_ARC = "M 12.6 56.6 A 38 38 0 0 0 87.4 56.6";
 
 function QuotaRing({
   windows,
-  size = 64,
+  size = RING_SIZE,
   unavailable,
   title,
   note,
+  badge,
 }: {
   windows: readonly RingWindow[];
   size?: number;
   unavailable?: boolean;
-  /** 悬停提示：完整说明（各窗口已用/重置等）都收进这里。 */
+  /** 卡级悬停提示（叠加在每个弧段自己的提示之上）。 */
   title?: string;
   /** 环下最简标注（供应商名或窗口缩写），不再放其他文字。 */
   note?: string;
+  /** 中心数字旁的极简高峰记号（如 ▲ 高峰 / ▽ 闲时），悬停看说明。 */
+  badge?: string;
 }) {
   const layout = unavailable ? null : ringLayout(windows);
   const stroke = "var(--dsw-alias-interactive-bg-hover)";
@@ -1752,7 +1782,7 @@ function QuotaRing({
     />
   );
   let arcs: ReactNode = null;
-  let center: string = "—";
+  let center: ReactNode = "—";
   if (layout !== null) {
     const color = ringColor(layout.bottom.percent);
     if (layout.fullCircle) {
@@ -1768,7 +1798,9 @@ function QuotaRing({
           pathLength={100}
           strokeDasharray={`${Math.max(layout.bottom.percent, 1.5)} 100`}
           transform="rotate(-90 50 50)"
-        />
+        >
+          <title>{windowTitle(layout.bottom)}</title>
+        </circle>
       );
       center = `${Math.round(layout.bottom.percent)}%`;
     } else {
@@ -1783,7 +1815,9 @@ function QuotaRing({
             strokeLinecap="round"
             pathLength={100}
             strokeDasharray={`${Math.max(top!.percent, 2)} 100`}
-          />
+          >
+            <title>{windowTitle(top!)}</title>
+          </path>
           <path
             d={RING_BOTTOM_ARC}
             fill="none"
@@ -1792,7 +1826,9 @@ function QuotaRing({
             strokeLinecap="round"
             pathLength={100}
             strokeDasharray={`${Math.max(layout.bottom.percent, 2)} 100`}
-          />
+          >
+            <title>{windowTitle(layout.bottom)}</title>
+          </path>
         </>
       );
       center = `${Math.round(layout.bottom.percent)}%`;
@@ -1826,8 +1862,10 @@ function QuotaRing({
           style={{
             position: "absolute",
             inset: 0,
-            display: "grid",
-            placeItems: "center",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 2,
             fontSize: Math.round(size * 0.22),
             fontWeight: 700,
             letterSpacing: "-0.02em",
@@ -1858,6 +1896,14 @@ function QuotaRing({
   );
 }
 
+/** 智谱峰谷相位：周一至周五 14:00-18:00（UTC+8）高峰，其余闲时（积分 5 折）。 */
+function zaiPhase(now = Date.now()): { peak: boolean } {
+  const beijing = new Date(now + 8 * 3_600_000);
+  const day = beijing.getUTCDay();
+  const hour = beijing.getUTCHours();
+  return { peak: day >= 1 && day <= 5 && hour >= 14 && hour < 18 };
+}
+
 function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
   if (data === null)
     return (
@@ -1876,21 +1922,35 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
       </CardFrame>
     );
   const windows = data.windows ?? [];
-  // zai 窗口标签形如「5时」「周」：映射为圆环的 5 小时 / 本周窗口。
+  // zai 窗口标签形如「5时」「周」：映射为圆环的 5 小时 / 本周窗口；
+  // 5 小时窗口未下发时补一个 0% 占位，保证双环形态（上 5h 下周）。
   const ringWindows: RingWindow[] = windows.map((w) => ({
     id: w.label.includes("周") ? "weekly" : "fiveHour",
-    label: w.label.includes("周") ? "本周" : "5小时",
+    label: w.label.includes("周") ? "本周" : "5小时限额",
     percent: w.pct,
     resetAt: w.resetAt,
+    ...(w.total > 0
+      ? {
+          used: Math.round((w.total * w.pct) / 100),
+          total: w.total,
+        }
+      : {}),
   }));
+  if (
+    ringWindows.length > 0 &&
+    !ringWindows.some((w) => w.id === "fiveHour")
+  )
+    ringWindows.unshift({
+      id: "fiveHour",
+      label: "5小时限额",
+      percent: 0,
+      resetAt: 0,
+    });
   const layout = ringLayout(ringWindows);
+  const phase = zaiPhase();
   const tooltip = [
-    ...ringWindows.map(
-      (w) =>
-        `${w.label}：已用 ${Math.round(w.percent)}%${
-          w.resetAt > 0 ? ` · 重置 ${countdown(w.resetAt - Date.now())}` : ""
-        }`,
-    ),
+    `当前${phase.peak ? "高峰" : "非高峰"}时段：积分${phase.peak ? "全额" : "5 折"}抵扣`,
+    ...ringWindows.map((w) => windowTitle(w)),
     `剩余额度 ${cnDigits(
       windows.reduce((sum, w) => sum + (Number.isFinite(w.remaining) ? w.remaining : 0), 0),
     )}`,
@@ -1903,7 +1963,11 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
       {layout === null ? (
         <Muted>暂无配额窗口</Muted>
       ) : (
-        <QuotaRing windows={ringWindows} title={tooltip} size={76} />
+        <QuotaRing
+          windows={ringWindows}
+          title={tooltip}
+          badge={phase.peak ? "▲" : "▽"}
+        />
       )}
     </CardFrame>
   );
@@ -1916,17 +1980,10 @@ function OpencodexQuotaCard({ data }: { data: OpencodexQuota | null }) {
     openai: "ChatGPT",
     cursor: "Cursor",
   };
-  const tooltipOf = (provider: OpencodexProviderQuota): string => {
-    const lines = provider.windows.map(
-      (w) =>
-        `${w.label}：已用 ${Math.round(w.percent)}%${
-          w.resetAt > 0 ? ` · 重置 ${countdown(w.resetAt - Date.now())}` : ""
-        }`,
-    );
-    for (const extra of provider.extras)
-      lines.push(`${extra.label}：${Math.round(extra.percent)}%`);
-    return lines.join("\n");
-  };
+  // 悬停说明在每个弧段自己的 title 里（windowTitle）；cursor 的附加窗口
+  // 也并入下半环的悬停提示，不占卡面。
+  const extrasNote = (provider: OpencodexProviderQuota): string =>
+    provider.extras.map((extra) => `${extra.label}：${Math.round(extra.percent)}%`).join("\n");
   const body = () => {
     if (data === null) return <Muted>读取中…</Muted>;
     // 旧版宿主没有 kind=opencodex 分支会落 DeepSeek 余额结构。
@@ -1950,14 +2007,14 @@ function OpencodexQuotaCard({ data }: { data: OpencodexQuota | null }) {
         {providers.map((provider) => (
           <QuotaRing
             key={provider.provider}
-            windows={provider.windows}
+            windows={provider.windows.map((w) =>
+              provider.extras.length > 0 && w.id !== "fiveHour"
+                ? { ...w, extraNote: extrasNote(provider) }
+                : w,
+            )}
             unavailable={!data.ok}
             note={LABELS[provider.provider] ?? provider.provider}
-            title={
-              data.ok && provider.windows.length > 0
-                ? tooltipOf(provider)
-                : "配额不可用"
-            }
+            {...(data.ok ? {} : { title: "配额不可用" })}
           />
         ))}
       </div>
@@ -1989,16 +2046,11 @@ function copilotPlanLabel(plan: string): string {
   return known[plan] ?? plan;
 }
 
-/** 配额重置日（ISO 日期）到短文案：等分行内空间有限，只显示剩余天数。 */
-function copilotReset(resetDate: string | undefined): string | undefined {
-  if (resetDate === undefined) return undefined;
+/** 配额重置日（ISO 日期）到重置时刻（epoch ms，未知为 0）。 */
+function resetEpoch(resetDate: string | undefined): number {
+  if (resetDate === undefined) return 0;
   const start = new Date(`${resetDate}T00:00:00`).getTime();
-  if (Number.isNaN(start)) return undefined;
-  const days = Math.max(
-    0,
-    Math.ceil((start - new Date().setHours(0, 0, 0, 0)) / DAY),
-  );
-  return days > 1 ? `${days}天后` : "今日";
+  return Number.isNaN(start) ? 0 : start;
 }
 
 function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
@@ -2028,7 +2080,6 @@ function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
     );
   // 无限额度（对话/补全）没有可展示的余量，不渲染环；只显示有限额度窗口。
   const windows = (data.quotas ?? []).filter((w) => !w.unlimited);
-  const reset = copilotReset(data.resetDate);
   return (
     <CardFrame
       label={`Copilot 订阅${data.plan ? ` · ${copilotPlanLabel(data.plan)}` : ""}`}
@@ -2040,26 +2091,20 @@ function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
           {windows.map((w) => {
             const label = copilotWindowLabel(w.id);
-            const tooltip = [
-              `${label}：已用 ${100 - w.percentRemaining}%`,
-              `剩余 ${cnDigits(Math.max(0, w.remaining))} / ${cnDigits(w.entitlement)}`,
-              reset !== undefined ? `月度重置：${reset}` : undefined,
-              w.overagePermitted ? "可超额" : undefined,
-            ]
-              .filter(Boolean)
-              .join("\n");
+            const used = Math.max(0, w.entitlement - w.remaining);
             return (
               <QuotaRing
                 key={w.id}
-                size={56}
                 note={label}
-                title={tooltip}
                 windows={[
                   {
                     id: w.id,
-                    label,
+                    label: `${label}限额`,
                     percent: 100 - w.percentRemaining,
-                    resetAt: 0,
+                    resetAt: resetEpoch(data.resetDate),
+                    ...(w.entitlement > 0
+                      ? { used, total: w.entitlement }
+                      : {}),
                   },
                 ]}
               />
