@@ -1788,13 +1788,35 @@ function QuotaRing({
 }) {
   const layout = unavailable ? null : ringLayout(windows);
   // 自定义悬停浮窗：跟随光标、立即可见（原生 title 延迟长且要精确落在
-  // 细弧线上，基本看不到）。
+  // 细弧线上，基本看不到）。命中判定做在整个 svg 上（极坐标：距圆心
+  // 15-55 视为环带），按上下半区自动选对应指标——弧线只有约 6.5px 粗，
+  // 逐弧监听几乎无法命中。
   const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(
     null,
   );
   const hoverTip = (text: string) => (event: ReactMouseEvent) => {
     setTip({ text, x: event.clientX + 14, y: event.clientY + 16 });
   };
+  const svgHover =
+    layout === null
+      ? undefined
+      : (event: ReactMouseEvent) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          const dx = event.clientX - (rect.left + rect.width / 2);
+          const dy = event.clientY - (rect.top + rect.height / 2);
+          const distance = Math.hypot(dx, dy) * (100 / rect.width);
+          if (distance < 15 || distance > 55) {
+            setTip(null);
+            return;
+          }
+          // 整环（无 5h 窗口）时上下都是同一指标。
+          const window = layout.top !== null && dy < 0 ? layout.top : layout.bottom;
+          setTip({
+            text: windowTitle(window),
+            x: event.clientX + 14,
+            y: event.clientY + 16,
+          });
+        };
   const stroke = "var(--dsw-alias-interactive-bg-hover)";
   const track = (
     <circle
@@ -1823,8 +1845,6 @@ function QuotaRing({
           pathLength={100}
           strokeDasharray={`${Math.max(layout.bottom.percent, 1.5)} 100`}
           transform="rotate(-90 50 50)"
-          onMouseMove={hoverTip(windowTitle(layout.bottom))}
-          onMouseLeave={() => setTip(null)}
         />
       );
       center = `${Math.round(layout.bottom.percent)}%`;
@@ -1840,8 +1860,6 @@ function QuotaRing({
             strokeLinecap="round"
             pathLength={100}
             strokeDasharray={`${Math.max(top!.percent, 2)} 100`}
-            onMouseMove={hoverTip(windowTitle(top!))}
-            onMouseLeave={() => setTip(null)}
           />
           <path
             d={RING_BOTTOM_ARC}
@@ -1851,8 +1869,6 @@ function QuotaRing({
             strokeLinecap="round"
             pathLength={100}
             strokeDasharray={`${Math.max(layout.bottom.percent, 2)} 100`}
-            onMouseMove={hoverTip(windowTitle(layout.bottom))}
-            onMouseLeave={() => setTip(null)}
           />
         </>
       );
@@ -1878,7 +1894,13 @@ function QuotaRing({
       }
     >
       <div style={{ position: "relative", width: size, height: size }}>
-        <svg width={size} height={size} viewBox="0 0 100 100">
+        <svg
+          width={size}
+          height={size}
+          viewBox="0 0 100 100"
+          onMouseMove={svgHover}
+          onMouseLeave={() => setTip(null)}
+        >
           {track}
           {arcs}
         </svg>

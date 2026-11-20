@@ -73,3 +73,50 @@ describe("ringLayout 布局决策", () => {
     vi.useRealTimers();
   });
 });
+
+describe("极坐标命中判定（svg 级悬停）", () => {
+  // 与 QuotaRing.svgHover 同口径：viewBox 100，环带 15-55。
+  const pick = (
+    dxRatio: number,
+    dyRatio: number,
+    rectWidth: number,
+    hasFiveHour: boolean,
+  ): string | null => {
+    const distance = Math.hypot(dxRatio, dyRatio) * (100 / rectWidth);
+    if (distance < 15 || distance > 55) return null;
+    const layout = ringLayout(
+      hasFiveHour
+        ? [
+            { id: "fiveHour", label: "5小时限额", percent: 18, resetAt: 0 },
+            { id: "weekly", label: "本周", percent: 55, resetAt: 0 },
+          ]
+        : [{ id: "monthly", label: "本月", percent: 30, resetAt: 0 }],
+    );
+    if (layout === null) return null;
+    const chosen =
+      layout.top !== null && dyRatio < 0 ? layout.top : layout.bottom;
+    return chosen.id;
+  };
+
+  it("环带内上半区命中 5h、下半区命中周", () => {
+    expect(pick(0, -25, 72, true)).toBe("fiveHour");
+    expect(pick(0, 25, 72, true)).toBe("weekly");
+  });
+
+  it("整环（无 5h）上下都命中同一指标", () => {
+    expect(pick(0, -25, 72, false)).toBe("monthly");
+    expect(pick(0, 25, 72, false)).toBe("monthly");
+  });
+
+  it("环心空白与环外不命中（不显示浮窗）", () => {
+    expect(pick(0, 0, 72, true)).toBeNull();
+    expect(pick(0, 40, 72, true)).toBeNull();
+    expect(pick(-34, -34, 72, true)).toBeNull();
+  });
+
+  it("按渲染尺寸换算（rect 大小不影响比例判定）", () => {
+    // 36px 渲染时环带为 5.4~19.8px，-15px 落在带上限内。
+    expect(pick(0, -15, 36, true)).toBe("fiveHour");
+    expect(pick(0, -35, 36, true)).toBeNull();
+  });
+});
