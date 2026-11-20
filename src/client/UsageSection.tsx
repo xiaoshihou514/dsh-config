@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import {
   IconChevronDownOutline14,
   IconDataOutline16,
@@ -1755,21 +1762,29 @@ function QuotaRing({
   windows,
   size = RING_SIZE,
   unavailable,
-  title,
   note,
   badge,
+  badgeTitle,
 }: {
   windows: readonly RingWindow[];
   size?: number;
   unavailable?: boolean;
-  /** 卡级悬停提示（叠加在每个弧段自己的提示之上）。 */
-  title?: string;
   /** 环下最简标注（供应商名或窗口缩写），不再放其他文字。 */
   note?: string;
   /** 中心数字旁的极简高峰记号（如 ▲ 高峰 / ▽ 闲时），悬停看说明。 */
   badge?: string;
+  /** 高峰记号的悬停说明。 */
+  badgeTitle?: string;
 }) {
   const layout = unavailable ? null : ringLayout(windows);
+  // 自定义悬停浮窗：跟随光标、立即可见（原生 title 延迟长且要精确落在
+  // 细弧线上，基本看不到）。
+  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(
+    null,
+  );
+  const hoverTip = (text: string) => (event: ReactMouseEvent) => {
+    setTip({ text, x: event.clientX + 14, y: event.clientY + 16 });
+  };
   const stroke = "var(--dsw-alias-interactive-bg-hover)";
   const track = (
     <circle
@@ -1798,9 +1813,9 @@ function QuotaRing({
           pathLength={100}
           strokeDasharray={`${Math.max(layout.bottom.percent, 1.5)} 100`}
           transform="rotate(-90 50 50)"
-        >
-          <title>{windowTitle(layout.bottom)}</title>
-        </circle>
+          onMouseMove={hoverTip(windowTitle(layout.bottom))}
+          onMouseLeave={() => setTip(null)}
+        />
       );
       center = `${Math.round(layout.bottom.percent)}%`;
     } else {
@@ -1815,9 +1830,9 @@ function QuotaRing({
             strokeLinecap="round"
             pathLength={100}
             strokeDasharray={`${Math.max(top!.percent, 2)} 100`}
-          >
-            <title>{windowTitle(top!)}</title>
-          </path>
+            onMouseMove={hoverTip(windowTitle(top!))}
+            onMouseLeave={() => setTip(null)}
+          />
           <path
             d={RING_BOTTOM_ARC}
             fill="none"
@@ -1826,9 +1841,9 @@ function QuotaRing({
             strokeLinecap="round"
             pathLength={100}
             strokeDasharray={`${Math.max(layout.bottom.percent, 2)} 100`}
-          >
-            <title>{windowTitle(layout.bottom)}</title>
-          </path>
+            onMouseMove={hoverTip(windowTitle(layout.bottom))}
+            onMouseLeave={() => setTip(null)}
+          />
         </>
       );
       center = `${Math.round(layout.bottom.percent)}%`;
@@ -1836,7 +1851,6 @@ function QuotaRing({
   }
   return (
     <div
-      title={title}
       style={{
         position: "relative",
         width: size,
@@ -1876,6 +1890,21 @@ function QuotaRing({
           }}
         >
           {layout === null ? (unavailable ? "不可用" : "—") : center}
+          {layout !== null && badge !== undefined ? (
+            <span
+              title={badgeTitle}
+              style={{
+                fontSize: Math.round(size * 0.14),
+                fontWeight: 400,
+                color:
+                  badge === "▲"
+                    ? "var(--dsw-alias-state-warn-primary)"
+                    : "var(--dsw-alias-label-tertiary)",
+              }}
+            >
+              {badge}
+            </span>
+          ) : null}
         </span>
       </div>
       {note !== undefined ? (
@@ -1890,6 +1919,30 @@ function QuotaRing({
           }}
         >
           {note}
+        </div>
+      ) : null}
+      {tip !== null ? (
+        <div
+          style={{
+            position: "fixed",
+            left: tip.x,
+            top: tip.y,
+            zIndex: 1100,
+            maxWidth: 280,
+            padding: "7px 10px",
+            borderRadius: 8,
+            border: "1px solid var(--dsw-alias-border-l2)",
+            background: "var(--dsw-alias-bg-layer-2)",
+            boxShadow: "var(--dsw-shadow-lv2)",
+            color: "var(--dsw-alias-label-primary)",
+            fontSize: 12,
+            lineHeight: 1.6,
+            whiteSpace: "pre-line",
+            pointerEvents: "none",
+            textAlign: "left",
+          }}
+        >
+          {tip.text}
         </div>
       ) : null}
     </div>
@@ -1948,28 +2001,24 @@ function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
     });
   const layout = ringLayout(ringWindows);
   const phase = zaiPhase();
-  const tooltip = [
-    `当前${phase.peak ? "高峰" : "非高峰"}时段：积分${phase.peak ? "全额" : "5 折"}抵扣`,
-    ...ringWindows.map((w) => windowTitle(w)),
-    `剩余额度 ${cnDigits(
-      windows.reduce((sum, w) => sum + (Number.isFinite(w.remaining) ? w.remaining : 0), 0),
-    )}`,
-  ].join("\n");
   return (
-    <CardFrame
-      label={`智谱 GLM${data.level ? ` · ${data.level}` : ""}`}
-      grow="0 1 auto"
-    >
+    <div>
       {layout === null ? (
-        <Muted>暂无配额窗口</Muted>
+        <div style={{ width: RING_SIZE }}>
+          <QuotaRing windows={[]} unavailable />
+          <div className="ring-note" style={{ fontSize: 11, marginTop: 3, color: "var(--dsw-alias-label-secondary)" }}>
+            智谱 GLM
+          </div>
+        </div>
       ) : (
         <QuotaRing
           windows={ringWindows}
-          title={tooltip}
           badge={phase.peak ? "▲" : "▽"}
+          badgeTitle={`${phase.peak ? "高峰" : "非高峰"}时段：积分${phase.peak ? "全额" : "5 折"}抵扣`}
+          note={`智谱 GLM${data.level ? ` · ${data.level}` : ""}`}
         />
       )}
-    </CardFrame>
+    </div>
   );
 }
 
@@ -2014,17 +2063,12 @@ function OpencodexQuotaCard({ data }: { data: OpencodexQuota | null }) {
             )}
             unavailable={!data.ok}
             note={LABELS[provider.provider] ?? provider.provider}
-            {...(data.ok ? {} : { title: "配额不可用" })}
           />
         ))}
       </div>
     );
   };
-  return (
-    <CardFrame label="opencodex 限额" grow="0 1 auto">
-      {body()}
-    </CardFrame>
-  );
+  return <div>{body()}</div>;
 }
 
 /** Copilot 配额窗口的中文标签（环下最简标注 + 悬停完整说明）。 */
@@ -2081,12 +2125,11 @@ function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
   // 无限额度（对话/补全）没有可展示的余量，不渲染环；只显示有限额度窗口。
   const windows = (data.quotas ?? []).filter((w) => !w.unlimited);
   return (
-    <CardFrame
-      label={`Copilot 订阅${data.plan ? ` · ${copilotPlanLabel(data.plan)}` : ""}`}
-      grow="0 1 auto"
-    >
+    <div>
       {windows.length === 0 ? (
-        <Muted>额度无限</Muted>
+        <div style={{ width: RING_SIZE }}>
+          <QuotaRing windows={[]} note={`Copilot${data.plan ? ` · ${copilotPlanLabel(data.plan)}` : ""}`} />
+        </div>
       ) : (
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
           {windows.map((w) => {
@@ -2112,7 +2155,7 @@ function CopilotUsageCard({ data }: { data: CopilotUsage | null }) {
           })}
         </div>
       )}
-    </CardFrame>
+    </div>
   );
 }
 
