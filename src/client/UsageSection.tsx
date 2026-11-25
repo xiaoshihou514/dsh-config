@@ -1488,22 +1488,6 @@ interface DeepseekBalance {
   balances?: BalanceItem[];
 }
 
-interface QuotaWindow {
-  label: string;
-  used: number;
-  total: number;
-  remaining: number;
-  pct: number;
-  resetAt: number;
-}
-
-interface ZaiQuota {
-  ok: boolean;
-  reason?: string;
-  level?: string;
-  windows?: QuotaWindow[];
-}
-
 /** Copilot 一个配额窗口（与 host 侧 CopilotQuotaWindow 对应）。 */
 interface CopilotQuotaWindow {
   id: string;
@@ -1570,7 +1554,6 @@ function countdown(ms: number): string {
 
 function ProviderCards() {
   const [deepseek, setDeepseek] = useState<DeepseekBalance | null>(null);
-  const [zai, setZai] = useState<ZaiQuota | null>(null);
   const [copilot, setCopilot] = useState<CopilotUsage | null>(null);
   const [opencodex, setOpencodex] = useState<OpencodexQuota | null>(null);
   const [, setTick] = useState(0);
@@ -1588,15 +1571,13 @@ function ProviderCards() {
           return { ok: false, reason: "network" };
         }
       };
-      const [d, z, c, o] = await Promise.all([
+      const [d, c, o] = await Promise.all([
         json("/dsh-config/provider-status?kind=deepseek"),
-        json("/dsh-config/provider-status?kind=zai"),
         json("/dsh-config/provider-status?kind=copilot"),
         json("/dsh-config/provider-status?kind=opencodex"),
       ]);
       if (stale) return;
       setDeepseek(d as DeepseekBalance | null);
-      setZai(z as ZaiQuota | null);
       setCopilot(c as CopilotUsage | null);
       setOpencodex(o as OpencodexQuota | null);
     };
@@ -1623,7 +1604,6 @@ function ProviderCards() {
       }}
     >
       <DeepseekBalanceCard data={deepseek} />
-      <ZaiQuotaCard data={zai} />
       <OpencodexQuotaCard data={opencodex} />
       <CopilotUsageCard data={copilot} />
     </div>
@@ -2053,16 +2033,41 @@ function zaiPhase(now = Date.now()): { peak: boolean } {
   return { peak: day >= 1 && day <= 5 && hour >= 14 && hour < 18 };
 }
 
-/** 智谱窗口标签（「5时」「周」「2w」…）到圆环窗口 id 与指标名（测试出口）。 */
-export function zaiWindowKind(label: string): { id: string; label: string } {
-  if (/时$/.test(label))
-    return label === "5时"
-      ? { id: "fiveHour", label: "5小时限额" }
-      : { id: "fiveHour", label: `${label.replace(/时$/, "")}小时限额` };
-  if (label === "周") return { id: "weekly", label: "本周限额" };
-  if (/^\d+w$/.test(label))
-    return { id: "weekly", label: `${label.replace(/w$/, "")}周限额` };
-  return { id: label, label: `${label}限额` };
+/** 智谱配额窗口 id 到圆环窗口 id 与指标名（测试出口）。 */
+export function zaiWindowKind(id: string): { id: string; label: string } {
+  if (id === "fiveHour") return { id: "fiveHour", label: "5小时限额" };
+  if (id === "weekly") return { id: "weekly", label: "本周限额" };
+  return { id, label: `${id}限额` };
+}
+
+/**
+ * 智谱配额窗口 → 圆环窗口（测试出口，组件用的同一实现）：峰谷说明并入
+ * 每个窗口的悬停；5 小时窗口未下发时补 0% 占位，保持「上 5h 下周」双环。
+ */
+export function zaiRingWindows(
+  windows: readonly { id: string; percent: number; resetAt: number }[],
+  peak: boolean,
+): RingWindow[] {
+  const note = zaiPeakStyle(peak).note;
+  const ringWindows: RingWindow[] = windows.map((w) => ({
+    ...zaiWindowKind(w.id),
+    percent: w.percent,
+    resetAt: w.resetAt,
+    extraNote: note,
+  }));
+  if (
+    ringWindows.length > 0 &&
+    !ringWindows.some((w) => w.id === "fiveHour")
+  )
+    ringWindows.unshift({
+      id: "fiveHour",
+      label: "5小时限额",
+      percent: 0,
+      resetAt: 0,
+      missing: true,
+      extraNote: note,
+    });
+  return ringWindows;
 }
 
 /** 智谱峰谷：中心数字颜色（高峰橙、闲时绿）+ 悬停说明（测试出口）。 */
@@ -2078,48 +2083,12 @@ export function zaiPeakStyle(peak: boolean): { color: string; note: string } {
       };
 }
 
-function ZaiQuotaCard({ data }: { data: ZaiQuota | null }) {
-  if (data === null)
-    return <QuotaRing windows={[]} note="智谱" placeholder={LOADING_RING} />;
-  if (!data.ok)
-    return (
-      <QuotaRing
-        windows={[]}
-        note="智谱"
-        placeholder={failedRing(data.reason, "未配置 API 密钥")}
-      />
-    );
-  const peak = zaiPeakStyle(zaiPhase().peak);
-  const ringWindows: RingWindow[] = (data.windows ?? []).map((w) => ({
-    ...zaiWindowKind(w.label),
-    percent: w.pct,
-    resetAt: w.resetAt,
-    ...(w.total > 0 ? { used: w.used, total: w.total } : {}),
-    extraNote: peak.note,
-  }));
-  // 5 小时窗口未下发时补一个 0% 占位，保证双环形态（上 5h 下周）。
-  if (ringWindows.length > 0 && !ringWindows.some((w) => w.id === "fiveHour"))
-    ringWindows.unshift({
-      id: "fiveHour",
-      label: "5小时限额",
-      percent: 0,
-      resetAt: 0,
-      missing: true,
-      extraNote: peak.note,
-    });
-  return (
-    <QuotaRing
-      windows={ringWindows}
-      note={`智谱${data.level ? ` · ${data.level}` : ""}`}
-      centerColor={peak.color}
-    />
-  );
-}
-
-const OPENCODEX_PROVIDERS = ["anthropic", "openai", "cursor"];
+/** 智谱已迁到 opencodex 下：配额与 Claude / ChatGPT / Cursor 同列。 */
+const OPENCODEX_PROVIDERS = ["anthropic", "openai", "zai", "cursor"];
 const OPENCODEX_LABELS: Record<string, string> = {
   anthropic: "Claude",
   openai: "ChatGPT",
+  zai: "智谱",
   cursor: "Cursor",
 };
 
@@ -2149,39 +2118,62 @@ function OpencodexQuotaCard({ data }: { data: OpencodexQuota | null }) {
           ? { center: "不可用", tip: "opencodex 配额输出无法解析" }
           : failedRing(data.reason, "opencodex 未配置"),
     );
-  if (data.providers.length === 0)
-    return (
-      <QuotaRing
-        windows={[]}
-        note="opencodex"
-        placeholder={{ center: "未配置", tip: "opencodex 未配置供应商" }}
-      />
-    );
+  // 配额里一家都没有：同样走下面的固定四位置渲染（全部「未配置」）。
   // cursor 的附加窗口并入下半环（整环）的悬停提示，不占卡面。
   const extrasNote = (provider: OpencodexProviderQuota): string =>
     provider.extras
       .map((extra) => `${extra.label}：已用 ${Math.round(extra.percent)}%`)
       .join("\n");
-  const providers = [...data.providers].sort(
-    (a, b) =>
-      OPENCODEX_PROVIDERS.indexOf(a.provider) -
-      OPENCODEX_PROVIDERS.indexOf(b.provider),
-  );
+  // 智谱：峰谷决定中心数字颜色，说明进悬停；5 小时窗口缺失时补 0% 占位
+  // 保持双环形态。
+  const zaiRing = (provider: OpencodexProviderQuota) => {
+    const peak = zaiPhase().peak;
+    const windows = zaiRingWindows(provider.windows, peak);
+    return (
+      <QuotaRing
+        key={provider.provider}
+        note="智谱"
+        centerColor={zaiPeakStyle(peak).color}
+        windows={windows}
+      />
+    );
+  };
+  // 四个位置固定都渲染：配额里缺某一家（未登录 / 未配置）时，那一家落
+  // 「未配置」灰环占位，而不是整个消失——否则分不清是没配还是面板坏了。
+  const present = new Map(data.providers.map((p) => [p.provider, p]));
   return (
     <RingRow>
-      {providers.map((provider) => (
-        <QuotaRing
-          key={provider.provider}
-          note={OPENCODEX_LABELS[provider.provider] ?? provider.provider}
-          windows={provider.windows.map((w) => ({
-            ...w,
-            label: `${w.label}限额`,
-            ...(provider.extras.length > 0 && w.id !== "fiveHour"
-              ? { extraNote: extrasNote(provider) }
-              : {}),
-          }))}
-        />
-      ))}
+      {OPENCODEX_PROVIDERS.map((name) => {
+        const provider = present.get(name);
+        if (provider === undefined)
+          return (
+            <QuotaRing
+              key={name}
+              windows={[]}
+              note={OPENCODEX_LABELS[name]!}
+              placeholder={{
+                center: "未配置",
+                // 浮窗首行由组件自动带上环下标注（厂商名），这里不要再重复。
+                tip: "opencodex 里没有这一家的配额（未登录或未配置）",
+              }}
+            />
+          );
+        return name === "zai" ? (
+          zaiRing(provider)
+        ) : (
+          <QuotaRing
+            key={name}
+            note={OPENCODEX_LABELS[name]!}
+            windows={provider.windows.map((w) => ({
+              ...w,
+              label: `${w.label}限额`,
+              ...(provider.extras.length > 0 && w.id !== "fiveHour"
+                ? { extraNote: extrasNote(provider) }
+                : {}),
+            }))}
+          />
+        );
+      })}
     </RingRow>
   );
 }

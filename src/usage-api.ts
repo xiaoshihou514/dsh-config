@@ -94,8 +94,16 @@ function usdPriceOf(model: string) {
  * 来源：docs.bigmodel.cn「API 定价」页与 Coding Plan 用量说明（非高峰积分
  *  5 折抵扣）。分档模型
  * （按输入长度分两档）按低档计。缓存存储当前限时免费，不计。
+ *
+ * glm-5.4 是**估算价**，不是官方标价：它的按量付费 API 尚未开放
+ * （docs.bigmodel.cn/cn/guide/models/glm-5.4：「模型 API 将在完成安全评估后
+ * 开放」），只有 Coding Plan 积分抵扣系数（输入 4.6、缓存命中 1.1、输出
+ * 16；对照 glm-5.3 的 6.9 / 1.7 / 24）。这里拿 glm-5.3 的官方 API 价按系数
+ * 之比折算：缓存命中 2 × 1.1/1.7、输入 8 × 4.6/6.9、输出 28 × 16/24。
+ * 官方公布 API 牌价后应替换为官方价。
  */
 const ZAI_PRICE = {
+  "glm-5.4": { hit: (2 * 1.1) / 1.7, miss: (8 * 4.6) / 6.9, output: (28 * 16) / 24 },
   "glm-5.3-flash": { hit: 0.23, miss: 0.8, output: 2.8 },
   "glm-5.3-flashx": { hit: 0.57, miss: 2, output: 7 },
   "glm-5.3": { hit: 2, miss: 8, output: 28 },
@@ -104,6 +112,18 @@ const ZAI_PRICE = {
   "glm-5-turbo": { hit: 1.2, miss: 5, output: 22 },
   "glm-5": { hit: 1, miss: 4, output: 18 },
 } as const;
+
+/**
+ * 智谱模型的裸名（查 ZAI_PRICE 用）：`zai-coding-cn/glm-5.3` → `glm-5.3`，
+ * `opencodex/zai/glm-5.4` → `glm-5.4`；不是智谱模型返回 undefined。
+ */
+function zaiBareModel(model: string): string | undefined {
+  const lower = model.toLowerCase();
+  for (const prefix of ["opencodex/zai/", "zai-coding-cn/"]) {
+    if (lower.startsWith(prefix)) return lower.slice(prefix.length);
+  }
+  return lower.startsWith("glm-") ? lower : undefined;
+}
 
 /** 智谱峰谷：周一至周五 14:00-18:00（UTC+8）高峰，其余（含周末）闲时。
  *  非高峰时段套餐积分按 50% 抵扣（docs.bigmodel.cn Coding Plan 用量说明）。 */
@@ -147,7 +167,7 @@ function costOf(
   const cacheWrite = record.cacheWriteTokens ?? 0;
   // 美元牌价估算档（opencodex / openai-codex / github-copilot 下的
   // claude、gpt、grok、kimi 系）：单一价、无峰谷；牌价表未收录记 0。
-  if (USD_PRICED_PROVIDERS.has(provider)) {
+  if (USD_PRICED_PROVIDERS.has(provider) && zaiBareModel(model) === undefined) {
     const price = usdPriceOf(model);
     if (price === undefined) return { cost: 0, peakCost: 0, offCost: 0 };
     const cost =
@@ -159,12 +179,20 @@ function costOf(
       USD_CNY;
     return { cost, peakCost: 0, offCost: 0 };
   }
-  // 计价订阅档（智谱 GLM Coding Plan）：按 API 牌价估算。非高峰时段积分
-  // 5 折抵扣（费用随之减半），峰/闲拆分反映真实消耗差。
-  if (PRICED_PROVIDERS.has(provider)) {
-    const bare = model.slice(provider.length + 1).toLowerCase();
-    const price = ZAI_PRICE[bare as keyof typeof ZAI_PRICE];
-    if (price === undefined) return { cost: 0, peakCost: 0, offCost: 0 };
+  // 智谱 GLM Coding Plan：旧供应商 zai-coding-cn，以及迁到 opencodex 下的
+  // `opencodex/zai/<模型>`。按 API 人民币牌价估算，非高峰时段积分 5 折
+  // 抵扣（费用随之减半），峰/闲拆分反映真实消耗差。
+  if (
+    PRICED_PROVIDERS.has(provider) ||
+    (provider === "opencodex" && zaiBareModel(model) !== undefined)
+  ) {
+    const bare = zaiBareModel(model);
+    const price =
+      bare === undefined
+        ? undefined
+        : ZAI_PRICE[bare as keyof typeof ZAI_PRICE];
+    if (bare === undefined || price === undefined)
+      return { cost: 0, peakCost: 0, offCost: 0 };
     // 基础积分折算；非高峰时段积分按 50% 抵扣（费用随之减半）。
     const base =
       (cacheRead * price.hit +
@@ -784,6 +812,11 @@ export function normalizeOpencodexQuota(parsed: unknown): OpencodexQuota {
     } else if (report.provider === "openai") {
       push("fiveHour", "5小时", quota.fiveHourPercent, quota.fiveHourResetAt);
       push("weekly", "本周", quota.weeklyPercent, quota.weeklyResetAt);
+    } else if (report.provider === "zai") {
+      // 智谱迁到 opencodex 下之后，配额也从这里取（原 kind=zai 的直连接口
+      // 仍保留给还没迁移的旧线路）。
+      push("fiveHour", "5小时限额", quota.fiveHourPercent, quota.fiveHourResetAt);
+      push("weekly", "本周限额", quota.weeklyPercent, quota.weeklyResetAt);
     } else if (report.provider === "cursor") {
       push("monthly", "本月", quota.monthlyPercent, quota.monthlyResetAt);
     } else {

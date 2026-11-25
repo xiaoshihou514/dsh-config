@@ -398,3 +398,98 @@ describe("opencodex 配额映射与圆环布局", () => {
     ).toEqual([]);
   });
 });
+
+describe("智谱迁到 opencodex 下：计价与配额", () => {
+  const usage = record({
+    inputTokens: 500_000,
+    outputTokens: 100_000,
+    cacheReadTokens: 250_000,
+  });
+
+  it("opencodex/zai/glm-5.3-flash 剥掉前缀查智谱人民币表，与旧线路同价", () => {
+    const migrated = pricing.costOf(
+      "opencodex",
+      "opencodex/zai/glm-5.3-flash",
+      friday(15),
+      usage,
+    );
+    const legacy = pricing.costOf(
+      "zai-coding-cn",
+      "zai-coding-cn/glm-5.3-flash",
+      friday(15),
+      usage,
+    );
+    // 0.25*0.23 + 0.5*0.8 + 0.1*2.8 = 0.7375（元）
+    expect(migrated.cost).toBeCloseTo(0.7375, 10);
+    expect(migrated.cost).toBe(legacy.cost);
+  });
+
+  it("glm-5.4 按积分系数折算的估算价：1.29 / 5.33 / 18.67 元每百万", () => {
+    // 智谱高峰是工作日 14-18（北京时间），用 friday(15) 取全额价。
+    const only = (over: Parameters<typeof record>[0]) =>
+      pricing.costOf("opencodex", "opencodex/zai/glm-5.4", friday(15), record(over))
+        .cost;
+    expect(only({ cacheReadTokens: 1_000_000 })).toBeCloseTo(1.29, 2);
+    expect(only({ inputTokens: 1_000_000 })).toBeCloseTo(5.33, 2);
+    expect(only({ outputTokens: 1_000_000 })).toBeCloseTo(18.67, 2);
+    // 三项合计 = 逐项之和（没有互相串项）。
+    expect(
+      only({
+        cacheReadTokens: 1_000_000,
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+      }),
+    ).toBeCloseTo(2 * 1.1 / 1.7 + 8 * 4.6 / 6.9 + 28 * 16 / 24, 10);
+  });
+
+  it("峰谷对新键生效：工作日 14-18 高峰全额，其余 5 折", () => {
+    const peak = pricing.costOf("opencodex", "opencodex/zai/glm-5.3", friday(15), usage);
+    const off = pricing.costOf("opencodex", "opencodex/zai/glm-5.3", friday(20), usage);
+    const weekend = pricing.costOf("opencodex", "opencodex/zai/glm-5.3", saturday(15), usage);
+    expect(peak.peakCost).toBeGreaterThan(0);
+    expect(peak.offCost).toBe(0);
+    expect(off.cost).toBeCloseTo(peak.cost * 0.5, 10);
+    expect(weekend.offCost).toBeCloseTo(peak.cost * 0.5, 10);
+  });
+
+  it("不乘美元汇率：同词元量下与美元档模型量级不同", () => {
+    const zai = pricing.costOf("opencodex", "opencodex/zai/glm-5.3", friday(15), usage);
+    // 0.25*2 + 0.5*8 + 0.1*28 = 7.3（元）；若误乘 7.2 会得到 52.56。
+    expect(zai.cost).toBeCloseTo(7.3, 10);
+  });
+
+  it("美元档其他模型行为不变", () => {
+    const costs = pricing.costOf(
+      "opencodex",
+      "opencodex/anthropic/claude-opus-5-5",
+      peakTime,
+      record({ inputTokens: 1_000_000 }),
+    );
+    expect(costs.cost).toBeCloseTo(4 * 7.2, 10);
+  });
+
+  it("配额 zai 项映射为 5 小时 + 本周双窗口", () => {
+    const quota = normalizeOpencodexQuota({
+      reports: [
+        {
+          provider: "zai",
+          quota: {
+            fiveHourPercent: 23,
+            fiveHourResetAt: 1795612357304,
+            weeklyPercent: 69,
+            weeklyResetAt: 1795968741983,
+          },
+        },
+      ],
+    });
+    expect(quota.providers[0]?.windows).toEqual([
+      { id: "fiveHour", label: "5小时限额", percent: 23, resetAt: 1795612357304 },
+      { id: "weekly", label: "本周限额", percent: 69, resetAt: 1795968741983 },
+    ]);
+  });
+
+  it("配额 zai 项缺失不伪造窗口", () => {
+    const quota = normalizeOpencodexQuota({ reports: [{ provider: "zai", quota: {} }] });
+    expect(quota.providers).toEqual([]);
+  });
+});

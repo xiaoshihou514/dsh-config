@@ -14,7 +14,12 @@ dsh-config 在 DSH Web **侧边栏设置上方的「用量」入口**（`sidebar
   - xAI（<200k prompt 档，DSH 单请求几乎不超 200k，统一用此档）：`grok-4.7` 2.00 / 0.50 / 2.00 / 6.00；`grok-4.7--fast`（Cursor fast 变体，标准价 2 倍）4.00 / 1.00 / 4.00 / 12.00
   - Kimi（Moonshot 官方）：`kimi-k3` 3.00 / 0.30 / 3.00 / 15.00（缓存写价未公布，按输入价，与 zai 口径一致）
   - 无牌价记 0 清单：`opencodex/nvidia/deepseek-ai-deepseek-v4.1-flash`、`opencodex/cloudflare-workers-ai/@cf-deepseek-ai-deepseek-v4.1-flash-1017` 等未收录模型（历史调用量个位数）。
-- `zai-coding-cn`（GLM Coding Plan 包月套餐）按**智谱国内站 API 统一牌价估算**费用（2026-10-17 起计价；此前该供应商记 0，历史聚合不回填）：`glm-5.3-flash` 0.23/0.8/2.8、`glm-5.3-flashx` 0.57/2/7、`glm-5.3` 与 `glm-5.2` 2/8/28、`glm-5.1` 1.3/6/24、`glm-5-turbo` 1.2/5/22、`glm-5` 1/4/18（元/百万词元，缓存命中/未命中输入/输出）。**智谱无峰谷差价**（谷时半价是 DeepSeek 的结构；智谱的「错峰」是套餐额度活动，不影响 API 单价），峰/闲拆分按调用发生时段归属；分档模型按低档计；未知 GLM 模型记 0。
+- 智谱 GLM 按国内站 API 牌价估算费用（元/百万词元，缓存命中/未命中输入/输出）：`glm-5.3-flash` 0.23/0.8/2.8、`glm-5.3-flashx` 0.57/2/7、`glm-5.3` 与 `glm-5.2` 2/8/28、`glm-5.1` 1.3/6/24、`glm-5-turbo` 1.2/5/22、`glm-5` 1/4/18。分档模型按低档计；未收录的 GLM 模型记 0。两条线路共用这一张表（`zaiBareModel` 剥掉供应商前缀后查表）：
+  - 旧线路 `zai-coding-cn/glm-*`：2026-10-17 起计价，此前记 0、历史不回填；历史记录保留不迁移。
+  - 新线路 `opencodex/zai/glm-*`（2026-11-24 起，智谱迁到 opencodex 代理下）：人民币价，**不乘美元汇率**；峰谷同样生效。
+  - **峰谷口径**（两条线路一致）：工作日 14:00–18:00（北京时间）为高峰、按全额；其余时段与周末按 5 折（Coding Plan 非高峰积分 5 折抵扣）。峰/闲拆分记入 `peakCost` / `offCost`。
+  - **`glm-5.4` 是估算价，不是官方标价**：它的按量付费 API 尚未开放（docs.bigmodel.cn/cn/guide/models/glm-5.4「模型 API 将在完成安全评估后开放」），只有官方 Coding Plan 套餐概览页给出的积分抵扣系数——glm-5.4 输入 4.6、缓存命中 1.1、输出 16，对照 glm-5.3 的 6.9 / 1.7 / 24。估算价 = glm-5.3 的官方 API 价 × 两者系数之比：缓存命中 2 × 1.1/1.7 ≈ **1.29**，未命中输入 8 × 4.6/6.9 ≈ **5.33**，输出 28 × 16/24 ≈ **18.67**。官方公布 API 牌价后应替换为官方价。
+  - `glm-5.3-flash` 官方 11 月 24 日至 12 月 24 日有限时系数减半活动，按要求未纳入，仍按上表全价。
 - 其余订阅档（`opencode-free` 及同类免费/token-plan）费用记 0，只统计词元量；筛选标签为 `provider/model`（opencodex 为三段复合名，如 `opencodex/anthropic/claude-opus-5-5`）。
 - `opencodex` 2026-11-13 起纳入记账（此前该供应商所有事件被白名单丢弃，属漏记缺陷）；历史漏记部分由 `scripts/backfill-usage.mjs` 回填——脚本扫描近 30 天会话日志，按现行计价与去重规则重建记录，与存量按「天 × 模型」算差额后幂等折叠写入（自动备份、不动 today 明细）。宿主侧白名单需重启 dsh 才生效；回填必须在**停机窗口**一次跑齐——宿主运行中会把内存里的旧状态全量写回覆盖外部修改，启动后再跑脚本要么无事可做要么有害。
 - 缓存写入按缓存未命中输入计费。
@@ -53,7 +58,9 @@ DeepSeek 官方 2026-08-17 起改用峰谷计价：高峰时段为北京时间 9
 
 ## 供应商限额圆环（`QuotaRing`，2026-11-20 复核定稿）
 
-- 一行并排：DeepSeek 余额卡（文字，保持原样）→ 智谱 → opencodex（Claude / ChatGPT / Cursor）→ Copilot。除 DeepSeek 外，每张卡都是「上圆环、下厂商名」，没有标题头；圆环统一 `RING_SIZE = 72`。
+- 一行并排：DeepSeek 余额卡（文字，保持原样）→ opencodex（Claude / ChatGPT / 智谱 / Cursor）→ Copilot。除 DeepSeek 外，每张卡都是「上圆环、下厂商名」，没有标题头；圆环统一 `RING_SIZE = 72`。
+- 智谱已迁到 opencodex 下（2026-11-24），独立的智谱卡已去掉，配额取 opencodex 配额输出里的 `zai` 项（`fiveHourPercent` / `fiveHourResetAt` / `weeklyPercent` / `weeklyResetAt`）；组装逻辑是导出的纯函数 `zaiRingWindows`（组件与测试共用）。宿主侧 `kind=zai` 的直连接口保留，给还没迁移的旧线路用，但面板不再单独展示它。
+- opencodex 卡的四个位置固定都渲染：配额里缺某一家（未登录 / 未配置）时，那一家落「未配置」灰环并把原因写进浮窗，而不是整个消失；opencodex 命令不可用时四环都落「不可用」。
 - 形态：有 5 小时窗口时上半环画 5 小时、下半环画周/月；只有一个窗口时画整环。中心数字恒为下半环（周/月）的已用百分比。智谱缺 5 小时窗口时补 0% 占位（`missing`），始终保持双环。
 - 间隙：上下弧端点取 ±12°，**底轨也分上下两段画**（整圈底轨会把间隙填平），扣掉圆头线帽后 72px 下约有 5px 净间隙。
 - 配色全部用 `--dsw-*` 主题变量：弧色按剩余量走 success / warn / error，底轨为 `interactive-bg-hover`。智谱峰谷**只用中心数字颜色**表示（高峰 `state-warn-primary` 橙、闲时 `state-success-primary` 绿，不用任何符号），说明写进浮窗末行。

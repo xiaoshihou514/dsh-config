@@ -9,6 +9,10 @@ describe("用量模型家族", () => {
     expect(modelGroupKey("github-copilot/kimi-k3")).toBe("kimi");
     expect(modelGroupKey("deepseek-flash")).toBe("deepseek");
     expect(modelGroupKey("zai-coding-cn/glm-5.3-flash")).toBe("glm");
+    // 智谱迁到 opencodex 下之后的模型键，与旧线路归到同一家族。
+    expect(modelGroupKey("opencodex/zai/glm-5.4")).toBe("glm");
+    expect(modelGroupKey("opencodex/zai/glm-5.3-flash")).toBe("glm");
+    expect(modelGroupKey("opencodex/zai/glm-5-turbo")).toBe("glm");
     expect(modelGroupKey("opencodex/cursor/grok-4.7")).toBe("grok");
     expect(modelGroupKey("opencodex/cursor/grok-4.7--fast")).toBe("grok");
     expect(

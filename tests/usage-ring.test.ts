@@ -12,6 +12,7 @@ import {
   windowTitle,
   zaiPeakStyle,
   zaiWindowKind,
+  zaiRingWindows,
   type RingWindow,
 } from "../src/client/UsageSection.tsx";
 
@@ -146,10 +147,9 @@ describe("windowTitle 悬停文案", () => {
 });
 
 describe("智谱窗口映射与峰谷", () => {
-  it("5时→上半环、周/2w→下半环", () => {
-    expect(zaiWindowKind("5时")).toEqual({ id: "fiveHour", label: "5小时限额" });
-    expect(zaiWindowKind("周")).toEqual({ id: "weekly", label: "本周限额" });
-    expect(zaiWindowKind("2w").id).toBe("weekly");
+  it("配额窗口 id 映射到上半环（5 小时）与下半环（本周）", () => {
+    expect(zaiWindowKind("fiveHour")).toEqual({ id: "fiveHour", label: "5小时限额" });
+    expect(zaiWindowKind("weekly")).toEqual({ id: "weekly", label: "本周限额" });
   });
 
   it("峰谷用中心数字颜色区分（不用符号），说明进悬停", () => {
@@ -159,5 +159,47 @@ describe("智谱窗口映射与峰谷", () => {
     expect(peak.color).toMatch(/^var\(--dsw-/);
     expect(off.color).toMatch(/^var\(--dsw-/);
     expect(`${peak.note}${off.note}`).not.toMatch(/[▲▽△▼]/);
+  });
+
+  describe("zaiRingWindows：opencodex 配额 zai 项 → 双环（组件用的同一函数）", () => {
+    const quota = [
+      { id: "fiveHour", percent: 23, resetAt: 1_000 },
+      { id: "weekly", percent: 69, resetAt: 2_000 },
+    ];
+
+    it("有 5 小时窗口：上 5h 下周，各带峰谷说明，布局为双半环", () => {
+      const windows = zaiRingWindows(quota, true);
+      expect(windows.map((w) => [w.id, w.percent, w.resetAt])).toEqual([
+        ["fiveHour", 23, 1_000],
+        ["weekly", 69, 2_000],
+      ]);
+      expect(windows.every((w) => w.extraNote === zaiPeakStyle(true).note)).toBe(
+        true,
+      );
+      expect(windows.some((w) => w.missing === true)).toBe(false);
+      expect(ringLayout(windows)).toMatchObject({ fullCircle: false });
+    });
+
+    it("缺 5 小时窗口：补 0% 占位并注明未下发，不伪造用量", () => {
+      const windows = zaiRingWindows([{ id: "weekly", percent: 40, resetAt: 2_000 }], false);
+      expect(windows).toHaveLength(2);
+      expect(windows[0]).toMatchObject({
+        id: "fiveHour",
+        percent: 0,
+        missing: true,
+      });
+      expect(windowTitle(windows[0]!)).toContain("接口未下发");
+      expect(ringLayout(windows)).toMatchObject({ fullCircle: false });
+    });
+
+    it("空配额不凭空造环（落灰环占位）", () => {
+      expect(zaiRingWindows([], true)).toEqual([]);
+    });
+
+    it("闲时用闲时说明，不串用高峰说明", () => {
+      const windows = zaiRingWindows(quota, false);
+      expect(windows[0]!.extraNote).toBe(zaiPeakStyle(false).note);
+      expect(windows[0]!.extraNote).not.toBe(zaiPeakStyle(true).note);
+    });
   });
 });

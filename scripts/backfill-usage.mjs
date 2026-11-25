@@ -71,6 +71,9 @@ function usdPriceOf(model) {
 }
 
 const ZAI_PRICE = {
+  // glm-5.4 是估算价：按量 API 未开放，拿 glm-5.3 官方 API 价按 Coding Plan
+  // 积分系数之比折算（官方公布 API 牌价后替换）。与 usage-api.ts 保持一致。
+  "glm-5.4": { hit: (2 * 1.1) / 1.7, miss: (8 * 4.6) / 6.9, output: (28 * 16) / 24 },
   "glm-5.3-flash": { hit: 0.23, miss: 0.8, output: 2.8 },
   "glm-5.3-flashx": { hit: 0.57, miss: 2, output: 7 },
   "glm-5.3": { hit: 2, miss: 8, output: 28 },
@@ -98,12 +101,21 @@ function isZaiPeak(time) {
   return hour >= 14 && hour < 18;
 }
 
+/** 智谱模型的裸名：opencodex/zai/glm-5.4 → glm-5.4；非智谱返回 undefined。 */
+function zaiBareModel(model) {
+  const lower = model.toLowerCase();
+  for (const prefix of ["opencodex/zai/", "zai-coding-cn/"]) {
+    if (lower.startsWith(prefix)) return lower.slice(prefix.length);
+  }
+  return lower.startsWith("glm-") ? lower : undefined;
+}
+
 function costOf(provider, model, at, record) {
   if (SUBSCRIPTION_PROVIDERS.has(provider))
     return { cost: 0, peakCost: 0, offCost: 0 };
   const cacheRead = record.cacheReadTokens ?? 0;
   const cacheWrite = record.cacheWriteTokens ?? 0;
-  if (USD_PRICED_PROVIDERS.has(provider)) {
+  if (USD_PRICED_PROVIDERS.has(provider) && zaiBareModel(model) === undefined) {
     const price = usdPriceOf(model);
     if (price === undefined) return { cost: 0, peakCost: 0, offCost: 0 };
     const cost =
@@ -115,10 +127,14 @@ function costOf(provider, model, at, record) {
       USD_CNY;
     return { cost, peakCost: 0, offCost: 0 };
   }
-  if (PRICED_PROVIDERS.has(provider)) {
-    const bare = model.slice(provider.length + 1).toLowerCase();
-    const price = ZAI_PRICE[bare];
-    if (price === undefined) return { cost: 0, peakCost: 0, offCost: 0 };
+  if (
+    PRICED_PROVIDERS.has(provider) ||
+    (provider === "opencodex" && zaiBareModel(model) !== undefined)
+  ) {
+    const bare = zaiBareModel(model);
+    const price = bare === undefined ? undefined : ZAI_PRICE[bare];
+    if (bare === undefined || price === undefined)
+      return { cost: 0, peakCost: 0, offCost: 0 };
     const base =
       (cacheRead * price.hit +
         (record.inputTokens + cacheWrite) * price.miss +
@@ -256,6 +272,8 @@ async function scanSessions(windowMs) {
   // 因此按「记录仍存在的事件」逐条保留用于折叠（内存放得下：缺口级别几千条）。
   const scanned = new Map(); // `${day}\u0000${model}` -> CellSummary（目标值）
   const scannedCost = new Map(); // `${day}\u0000${project}\u0000${model}` -> 目标费用（元）
+  const scannedPeak = new Map(); // 同键 -> 目标高峰费用（元）
+  const scannedOff = new Map(); // 同键 -> 目标闲时费用（元）
   const records = []; // 待折叠的完整记录（含 project），折叠时再按存量裁剪
   let events = 0;
 
@@ -306,9 +324,11 @@ async function scanSessions(windowMs) {
       const record = records[records.length - 1];
       const triple = `${record.day}\u0000${record.project}\u0000${record.model}`;
       scannedCost.set(triple, (scannedCost.get(triple) ?? 0) + record.cost);
+      scannedPeak.set(triple, (scannedPeak.get(triple) ?? 0) + record.peakCost);
+      scannedOff.set(triple, (scannedOff.get(triple) ?? 0) + record.offCost);
     }
   }
-  return { scanned, scannedCost, records, events };
+  return { scanned, scannedCost, scannedPeak, scannedOff, records, events };
 }
 
 // ===== 主流程 =====
@@ -328,7 +348,8 @@ async function main() {
   for await (const entry of glob("**/session*.jsonl.zstd", { cwd: root })) {
     files.push([entry.split("/")[0], join(root, entry)]);
   }
-  const { scanned, scannedCost, records, events } = await scanSessions(
+  const { scanned, scannedCost, scannedPeak, scannedOff, records, events } =
+    await scanSessions(
     windowMs(windowDays),
   );
   console.log(`扫描到 ${events} 条带 usage 的记账事件（模型键有效）。`);
@@ -381,27 +402,49 @@ async function main() {
 
   // 费用补差：这些模型的存量费用是按旧口径（记 0）落的，条数已齐但费用
   // 缺失。按「天 × 项目 × 模型」三元组把目标费用与存量费用的差额直接加进
-  // 聚合桶（calls/词元不变，只补 cost）。
+  // 聚合桶（calls/词元不变，只补 cost）。峰/闲按扫描目标里的占比拆分差额
+  // （前端费用卡靠 peakCost/offCost 显示拆分，只补 cost 会让拆分少算）。
   let costAdjusted = 0;
   let costDeltaTotal = 0;
+  let peakDeltaTotal = 0;
+  let offDeltaTotal = 0;
+  const byModel = new Map(); // 模型 -> { 桶数, 金额 }
+  const byDay = new Map(); // 日期 -> { 桶数, 金额 }
   for (const [triple, goalCost] of scannedCost) {
     if (goalCost <= 0) continue;
     const [day, project, model] = triple.split("\u0000");
     const bucket = file.days[day];
     if (bucket === undefined) continue;
-    const stored =
-      bucket.cells[`${project}\u0000${model}`]?.cost ?? 0;
+    const key = `${project}\u0000${model}`;
+    const stored = bucket.cells[key]?.cost ?? 0;
     const delta = goalCost - stored;
     if (delta <= 1e-9) continue;
-    bucket.total.cost += delta;
-    const modelBucket = bucket.byModel[model];
-    if (modelBucket !== undefined) modelBucket.cost += delta;
-    const projectBucket = bucket.byProject[project];
-    if (projectBucket !== undefined) projectBucket.cost += delta;
-    const pairBucket = bucket.cells[`${project}\u0000${model}`];
-    if (pairBucket !== undefined) pairBucket.cost += delta;
+    const goalPeak = scannedPeak.get(triple) ?? 0;
+    const peakShare = goalCost > 0 ? Math.min(1, Math.max(0, goalPeak / goalCost)) : 0;
+    const peakDelta = delta * peakShare;
+    const offDelta = delta - peakDelta;
+    const bump = (cell) => {
+      if (cell === undefined) return;
+      cell.cost += delta;
+      cell.peakCost += peakDelta;
+      cell.offCost += offDelta;
+    };
+    bump(bucket.total);
+    bump(bucket.byModel[model]);
+    bump(bucket.byProject[project]);
+    bump(bucket.cells[key]);
     costAdjusted += 1;
     costDeltaTotal += delta;
+    peakDeltaTotal += peakDelta;
+    offDeltaTotal += offDelta;
+    const modelEntry = byModel.get(model) ?? { cells: 0, amount: 0 };
+    modelEntry.cells += 1;
+    modelEntry.amount += delta;
+    byModel.set(model, modelEntry);
+    const dayEntry = byDay.get(day) ?? { cells: 0, amount: 0 };
+    dayEntry.cells += 1;
+    dayEntry.amount += delta;
+    byDay.set(day, dayEntry);
   }
 
   const afterTotals = totalCalls(file);
@@ -411,10 +454,17 @@ async function main() {
   console.log(
     `调用次数总量：${beforeTotals} → ${afterTotals}（净增 ${afterTotals - beforeTotals}）`,
   );
-  if (costAdjusted > 0)
+  if (costAdjusted > 0) {
     console.log(
-      `费用补差 ${costAdjusted} 个（天×项目×模型）桶，合计补 ¥${costDeltaTotal.toFixed(2)}`,
+      `费用补差 ${costAdjusted} 个（天×项目×模型）桶，合计补 ¥${costDeltaTotal.toFixed(2)}（高峰 ¥${peakDeltaTotal.toFixed(2)} · 闲时 ¥${offDeltaTotal.toFixed(2)}）`,
     );
+    console.log("  按模型：");
+    for (const [model, entry] of [...byModel].sort((a, b) => b[1].amount - a[1].amount))
+      console.log(`    ${model}: ${entry.cells} 个桶，¥${entry.amount.toFixed(2)}`);
+    console.log("  按日期：");
+    for (const [day, entry] of [...byDay].sort())
+      console.log(`    ${day}: ${entry.cells} 个桶，¥${entry.amount.toFixed(2)}`);
+  }
   if (dryRun) {
     console.log("dry-run：不写盘。");
     return;
