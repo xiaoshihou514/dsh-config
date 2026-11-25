@@ -4,7 +4,8 @@
  * 原生模型选择器对「子智能体会话」整体禁用，宿主的 `selectModel` 远程接口也拒绝子智能体拥有的
  * 会话（而且会顺手把选择存成默认模型）。模型选择本身只是会话里的一条 `model/selection` 事件：
  * 它优先于创建时的 `agentOptions`，下一步起生效，续跑时也沿用。这里直接对成员的 Agent 记一条，
- * 不改默认模型。
+ * 不改默认模型。成员没加载（dsh 重启后还没被组长恢复）时，以写模式打开它的持久化日志追加这条事件：
+ * 恢复时原生按事件折叠模型选择，会用上最后一条。写模式独占写入权，会话正被别处持有时会被拒绝，不会冲突。
  *
  * - `GET  /dsh-config/office/models`：已注册的供应商及其模型（分组，失败的供应商带 error）。
  * - `GET  /dsh-config/office/models?provider=&model=`：该模型可选的推理强度与默认值。
@@ -45,6 +46,37 @@ interface AgentLike {
 interface SessionLike {
   readonly header: { readonly parentSession?: string };
   append(type: string, data: unknown): unknown;
+}
+
+interface StoredEvent {
+  readonly type: string;
+  readonly seq: number;
+  readonly time: number;
+  readonly data: unknown;
+}
+
+interface WriteHandleLike {
+  read(): Promise<{ readonly events: readonly StoredEvent[] }>;
+  append(events: readonly StoredEvent[]): Promise<void>;
+  flush(): Promise<void>;
+  close(): Promise<void>;
+}
+
+export interface PersistenceLike {
+  open(id: string, access: "write"): Promise<WriteHandleLike>;
+}
+
+/** 没加载的会话：在持久化日志末尾追加一条模型选择（seq 接在最后一条之后）。 */
+export async function appendStoredSelection(persistence: PersistenceLike, id: string, selection: Selection, now = Date.now()): Promise<void> {
+  const handle = await persistence.open(id, "write");
+  try {
+    const { events } = await handle.read();
+    const seq = events.length === 0 ? 0 : events[events.length - 1]!.seq + 1;
+    await handle.append([{ type: "model/selection", seq, time: now, data: selection }]);
+    await handle.flush();
+  } finally {
+    await handle.close().catch(() => {});
+  }
 }
 
 export interface CatalogGroup {
@@ -88,6 +120,7 @@ export function registerMemberModelRoutes(ctx: Context, logger: { warn(format: s
   const llm = () => ctx.get("llm" as never) as LlmLike | undefined;
   const agents = () => ctx.get("agents" as never) as { get(id: string): AgentLike | undefined } | undefined;
   const sessions = () => ctx.get("sessions" as never) as { get(id: string): SessionLike | undefined } | undefined;
+  const persistence = () => ctx.get("sessionPersistence" as never) as PersistenceLike | undefined;
 
   let catalog: { at: number; value: Promise<CatalogGroup[]> } | undefined;
   const loadCatalog = (service: LlmLike): Promise<CatalogGroup[]> => {
@@ -195,14 +228,29 @@ export function registerMemberModelRoutes(ctx: Context, logger: { warn(format: s
           agent.model.select(selection);
         } else {
           const session = sessions()?.get(member);
-          if (session === undefined) {
-            respondJson(response, 409, {
-              ok: false,
-              error: "这个成员现在没有加载（dsh 重启后要等组长恢复它），先给他发条消息或打开组长对话再试",
-            });
-            return;
+          if (session !== undefined) session.append("model/selection", selection);
+          else {
+            // 没加载：直接写进它的日志，恢复时生效
+            const store = persistence();
+            if (store === undefined) {
+              respondJson(response, 503, { ok: false, error: "会话存储不可用" });
+              return;
+            }
+            try {
+              await appendStoredSelection(store, member, selection);
+            } catch (error) {
+              const name = error instanceof Error ? error.name : "";
+              if (/Owned/.test(name)) {
+                respondJson(response, 409, { ok: false, error: "这个成员正在被恢复，稍后再试一次" });
+                return;
+              }
+              if (/NotFound/.test(name)) {
+                respondJson(response, 404, { ok: false, error: "找不到这个成员的会话" });
+                return;
+              }
+              throw error;
+            }
           }
-          session.append("model/selection", selection);
         }
         respondJson(response, 200, { ok: true, selected: selection });
       } catch (error) {
