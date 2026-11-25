@@ -9,8 +9,8 @@ dsh-config 在 DSH Web **侧边栏设置上方的「用量」入口**（`sidebar
 - 用量记录保存在 `$DSH_HOME/dsh-config/usage.json`（**v2 结构**：`days` 为按「自然日 ×（项目 × 模型）」提前聚合的桶（费用含峰谷拆分），`today` 仅保留当前自然日逐条明细，跨天自动折叠；v1 全量 `records` 首次加载时自动迁移为 v2）。
 - `deepseek-official` 的 `deepseek-v4-flash` / `deepseek-v4-pro` 按官方峰谷单价计费。
 - **美元牌价估算档（2026-11-13 起）**：`opencodex`、`openai-codex`、`github-copilot` 下的 claude / gpt / grok / kimi 系模型按各家 API 官方牌价**估算**费用——美元价 × 固定汇率 7.2 折人民币，单一价（峰谷规则不适用），费用字段为估算参考值。牌价（美元/百万词元：输入 / 缓存读 / 缓存写 / 输出；缓存写统一取短时效档，无缓存写牌价的按输入价计）：
-  - Anthropic：`claude-opus-5-5` 4 / 0.20 / 5 / 20；`claude-sonnet-5` 2 / 0.20 / 2.50 / 10（github-copilot 与 opencodex/cursor 线路同价）
-  - OpenAI：`gpt-5.6-luna` 0.20 / 0.02 / 0.25 / 1.20；`gpt-6-luna` 0.10 / 0.01 / 0.125 / 0.50；`gpt-5.6-terra` 2.00 / 0.20 / 2.50 / 12.00；`gpt-5.3-codex-spark` 按 `gpt-5.3-codex` 1.75 / 0.175 / 1.75 / 14.00（官方无 spark 条目）
+  - Anthropic：`claude-opus-5-5` 4 / 0.20 / 5 / 20；`claude-sonnet-5` 2 / 0.20 / 2.50 / 10（github-copilot 与 opencodex/cursor 线路同价）；`claude-sonnet-5-5` 2 / 0.10 / 2.50 / 10（与 sonnet-5 是两个模型，缓存读价不同；2026-11-25 对照官方定价页核对后加入）
+  - OpenAI：`gpt-5.6-luna` 0.20 / 0.02 / 0.25 / 1.20；`gpt-6-luna` 0.10 / 0.01 / 0.125 / 0.50；`gpt-5.6-terra` 2.00 / 0.20 / 2.50 / 12.00；`gpt-6.2-sol` 2.00 / 0.10 / 2.50 / 10.00、`gpt-6.2-astra` 8.00 / 0.40 / 10.00 / 40.00（standard 档短上下文；2026-11-25 对照官方定价页核对后加入）；`gpt-5.3-codex-spark` 按 `gpt-5.3-codex` 1.75 / 0.175 / 1.75 / 14.00（官方无 spark 条目）
   - xAI（<200k prompt 档，DSH 单请求几乎不超 200k，统一用此档）：`grok-4.7` 2.00 / 0.50 / 2.00 / 6.00；`grok-4.7--fast`（Cursor fast 变体，标准价 2 倍）4.00 / 1.00 / 4.00 / 12.00
   - Kimi（Moonshot 官方）：`kimi-k3` 3.00 / 0.30 / 3.00 / 15.00（缓存写价未公布，按输入价，与 zai 口径一致）
   - 无牌价记 0 清单：`opencodex/nvidia/deepseek-ai-deepseek-v4.1-flash`、`opencodex/cloudflare-workers-ai/@cf-deepseek-ai-deepseek-v4.1-flash-1017` 等未收录模型（历史调用量个位数）。

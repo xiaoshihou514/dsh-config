@@ -70,13 +70,21 @@ const USD_CNY = 7.2;
  * 官方定价页（2026-11 标准/短上下文档）；缓存写统一取短时效档
  * （Anthropic 5 分钟 / OpenAI 30 分钟），无缓存写牌价的模型（xAI、Kimi、
  * codex-spark）按输入价计。
+ *
+ * `claude-sonnet-5-5`、`gpt-6.2-sol`、`gpt-6.2-astra` 三条于 2026-11-25
+ * 对照官方定价页逐项核对后加入（standard 档）。注意 `claude-sonnet-5` 与
+ * `claude-sonnet-5-5` 是两个模型、缓存读价不同（0.20 与 0.10），键按末段
+ * 精确匹配，不要合并。
  */
 const USD_PRICE = {
   "claude-opus-5-5": { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 },
   "claude-sonnet-5": { input: 2, cacheRead: 0.2, cacheWrite: 2.5, output: 10 },
+  "claude-sonnet-5-5": { input: 2, cacheRead: 0.1, cacheWrite: 2.5, output: 10 },
   "gpt-5.6-luna": { input: 0.2, cacheRead: 0.02, cacheWrite: 0.25, output: 1.2 },
   "gpt-6-luna": { input: 0.1, cacheRead: 0.01, cacheWrite: 0.125, output: 0.5 },
   "gpt-5.6-terra": { input: 2, cacheRead: 0.2, cacheWrite: 2.5, output: 12 },
+  "gpt-6.2-sol": { input: 2, cacheRead: 0.1, cacheWrite: 2.5, output: 10 },
+  "gpt-6.2-astra": { input: 8, cacheRead: 0.4, cacheWrite: 10, output: 40 },
   "gpt-5.3-codex-spark": { input: 1.75, cacheRead: 0.175, cacheWrite: 1.75, output: 14 },
   "grok-4.7": { input: 2, cacheRead: 0.5, cacheWrite: 2, output: 6 },
   "grok-4.7--fast": { input: 4, cacheRead: 1, cacheWrite: 4, output: 12 },

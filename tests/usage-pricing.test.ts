@@ -493,3 +493,47 @@ describe("智谱迁到 opencodex 下：计价与配额", () => {
     expect(quota.providers).toEqual([]);
   });
 });
+
+describe("2026-11-25 对照官方定价页核对后加入的三个模型", () => {
+  const USD_CNY = 7.2;
+  /** 逐项计价：每项各一百万词元单独算，返回折算后的人民币费用。 */
+  const item = (model: string, over: Parameters<typeof record>[0]) =>
+    pricing.costOf("opencodex", model, peakTime, record(over)).cost;
+
+  it("claude-sonnet-5-5：2 / 0.10 / 2.50 / 10（与 sonnet-5 是两个模型，缓存读价不同）", () => {
+    const model = "opencodex/anthropic/claude-sonnet-5-5";
+    expect(item(model, { inputTokens: 1_000_000 })).toBeCloseTo(2 * USD_CNY, 10);
+    expect(item(model, { cacheReadTokens: 1_000_000 })).toBeCloseTo(0.1 * USD_CNY, 10);
+    expect(item(model, { cacheWriteTokens: 1_000_000 })).toBeCloseTo(2.5 * USD_CNY, 10);
+    expect(item(model, { outputTokens: 1_000_000 })).toBeCloseTo(10 * USD_CNY, 10);
+    // 回归：这个键此前因表里只有 claude-sonnet-5 而记 0。
+    expect(item(model, { inputTokens: 1_000_000 })).toBeGreaterThan(0);
+  });
+
+  it("claude-sonnet-5 保持原价，不因新增 5-5 而改变", () => {
+    const model = "github-copilot/claude-sonnet-5";
+    expect(item(model, { cacheReadTokens: 1_000_000 })).toBeCloseTo(0.2 * USD_CNY, 10);
+    expect(item(model, { cacheWriteTokens: 1_000_000 })).toBeCloseTo(2.5 * USD_CNY, 10);
+  });
+
+  it("gpt-6.2-sol：2 / 0.10 / 2.50 / 10", () => {
+    const model = "opencodex/gpt-6.2-sol";
+    expect(item(model, { inputTokens: 1_000_000 })).toBeCloseTo(2 * USD_CNY, 10);
+    expect(item(model, { cacheReadTokens: 1_000_000 })).toBeCloseTo(0.1 * USD_CNY, 10);
+    expect(item(model, { cacheWriteTokens: 1_000_000 })).toBeCloseTo(2.5 * USD_CNY, 10);
+    expect(item(model, { outputTokens: 1_000_000 })).toBeCloseTo(10 * USD_CNY, 10);
+  });
+
+  it("gpt-6.2-astra：8 / 0.40 / 10 / 40", () => {
+    const model = "opencodex/gpt-6.2-astra";
+    expect(item(model, { inputTokens: 1_000_000 })).toBeCloseTo(8 * USD_CNY, 10);
+    expect(item(model, { cacheReadTokens: 1_000_000 })).toBeCloseTo(0.4 * USD_CNY, 10);
+    expect(item(model, { cacheWriteTokens: 1_000_000 })).toBeCloseTo(10 * USD_CNY, 10);
+    expect(item(model, { outputTokens: 1_000_000 })).toBeCloseTo(40 * USD_CNY, 10);
+  });
+
+  it("缓存写按「写价 − 输入价」的增量计：缓存写不重复收输入费", () => {
+    // 只有缓存写 100 万词元：应只收 10（写价），而不是 8 + 10。
+    expect(item("opencodex/gpt-6.2-astra", { cacheWriteTokens: 1_000_000 })).toBeCloseTo(10 * USD_CNY, 10);
+  });
+});
